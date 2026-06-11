@@ -1,0 +1,239 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { createClient } from "../utils/supabase/client";
+import { useEngine } from "../app/context/EngineContext";
+
+interface UserProfile {
+  id: string;
+  full_name: string;
+  email: string;
+  avatar_url?: string;
+  ministries: string[];
+  unavailable_dates: string[];
+}
+
+export default function Sidebar() {
+  const supabase = createClient();
+  const pathname = usePathname();
+  const { simulatedRole, simulatedUserId } = useEngine();
+
+  // Modal Layout States
+  const [isAccountModalOpen, setIsAccountModalOpen] = useState(false);
+  const [activeProfile, setActiveProfile] = useState<UserProfile | null>(null);
+  const [newBlockoutDate, setNewBlockoutDate] = useState("2026-06-21");
+  const [isSavingSchedule, setIsSavingSchedule] = useState(false);
+
+  // Sync profile metrics instantly when switching developer identities
+  async function fetchActiveProfileContext() {
+    if (!simulatedUserId) return;
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("*")
+      .eq("id", simulatedUserId)
+      .maybeSingle();
+
+    if (!error && data) {
+      setActiveProfile({
+        ...data,
+        ministries: data.ministries || [],
+        unavailable_dates: data.unavailable_dates || []
+      });
+    }
+  }
+
+  useEffect(() => {
+    fetchActiveProfileContext();
+  }, [simulatedUserId, isAccountModalOpen]);
+
+  // Schedule management logic nodes
+  async function handleAddBlockoutDateSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!activeProfile || !newBlockoutDate || isSavingSchedule) return;
+    if (activeProfile.unavailable_dates.includes(newBlockoutDate)) return;
+
+    setIsSavingSchedule(true);
+    const updatedDates = [...activeProfile.unavailable_dates, newBlockoutDate].sort();
+
+    const { error } = await supabase
+      .from("profiles")
+      .update({ unavailable_dates: updatedDates })
+      .eq("id", activeProfile.id);
+
+    if (!error) {
+      setActiveProfile({ ...activeProfile, unavailable_dates: updatedDates });
+    } else {
+      alert(`Schedule Save Failed: ${error.message}`);
+    }
+    setIsSavingSchedule(false);
+  }
+
+  async function handleRemoveBlockoutDate(dateToRemove: string) {
+    if (!activeProfile || isSavingSchedule) return;
+
+    setIsSavingSchedule(true);
+    const updatedDates = activeProfile.unavailable_dates.filter(d => d !== dateToRemove);
+
+    const { error } = await supabase
+      .from("profiles")
+      .update({ unavailable_dates: updatedDates })
+      .eq("id", activeProfile.id);
+
+    if (!error) {
+      setActiveProfile({ ...activeProfile, unavailable_dates: updatedDates });
+    }
+    setIsSavingSchedule(false);
+  }
+
+  const navItems = [
+    { icon: "/assets/home.svg", href: "/dashboard", activePattern: "/dashboard" },
+    { icon: "/assets/music.svg", href: "/songs", activePattern: "/songs" },
+    { icon: "/assets/events.svg", href: "/events", activePattern: "/events" },
+  ];
+
+  return (
+    <>
+      <aside className="w-20 min-h-screen bg-white border-r border-zinc-200 flex flex-col items-center py-6 justify-between shrink-0 select-none z-40 sticky top-0">
+        <div className="flex flex-col items-center gap-8 w-full">
+          <Link href="/dashboard" className="w-10 h-10 flex items-center justify-center transition-transform active:scale-95">
+            <img src="/assets/logo.svg" className="w-9 h-9 object-contain" alt="Logo" />
+          </Link>
+
+          {/* Dynamic Nav Link Stack with Fixed Hover States */}
+          <div className="flex flex-col items-center gap-4 w-full px-2">
+            {navItems.map((item) => {
+              const isActive = pathname.startsWith(item.activePattern);
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all duration-150 ${
+                    isActive 
+                      ? "bg-zinc-100 text-zinc-950 shadow-inner scale-100" 
+                      : "bg-transparent text-zinc-400 hover:bg-zinc-50 hover:text-zinc-600 hover:scale-105"
+                  }`}
+                >
+                  <img src={item.icon} className="w-5 h-5 object-contain transition-transform group-hover:scale-110" alt="" />
+                </Link>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* BOTTOM USER PROFILE BUBBLE (Clickable triggers Account & Schedule overlay panel) */}
+        <div className="w-full flex justify-center">
+          <button 
+            type="button"
+            onClick={() => setIsAccountModalOpen(true)}
+            className={`w-11 h-11 rounded-full bg-blue-600 text-white font-black text-xs flex items-center justify-center shadow-md border-2 transition-all hover:scale-110 active:scale-95 cursor-pointer ${
+              simulatedRole !== "none" ? "border-amber-400 ring-4 ring-amber-400/20" : "border-zinc-100 hover:border-blue-300"
+            }`}
+          >
+            {activeProfile?.avatar_url ? (
+              <img src={activeProfile.avatar_url} className="w-full h-full rounded-full object-cover" alt="" />
+            ) : (
+              <span>{simulatedRole === "admin" ? "A" : simulatedRole === "member" ? "M" : "U"}</span>
+            )}
+          </button>
+        </div>
+      </aside>
+
+      {/* ======================================================== */}
+      {/* --- UNIFIED MODAL OVERLAY: ACCOUNT & SCHEDULE PORTAL --- */}
+      {/* ======================================================== */}
+      {isAccountModalOpen && activeProfile && (
+        <div className="fixed inset-0 bg-zinc-950/60 backdrop-blur-sm z-[200000] flex items-center justify-center p-4 select-none animate-in fade-in duration-150">
+          <div className="bg-white rounded-[2.5rem] shadow-2xl border w-full max-w-2xl p-8 relative grid grid-cols-1 md:grid-cols-2 gap-8 animate-in zoom-in-95 duration-150">
+            <button 
+              type="button" 
+              onClick={() => setIsAccountModalOpen(false)}
+              className="absolute top-6 right-6 w-8 h-8 rounded-full bg-zinc-50 text-zinc-400 text-xs font-bold border flex items-center justify-center hover:bg-zinc-100"
+            >
+              ✕
+            </button>
+
+            {/* Panel Column 1: Account Info Profile Core Details */}
+            <div className="space-y-5 border-b md:border-b-0 md:border-r pb-6 md:pb-0 md:pr-6 border-zinc-100">
+              <div className="flex items-center gap-4">
+                {activeProfile.avatar_url ? (
+                  <img src={activeProfile.avatar_url} className="w-16 h-16 rounded-2xl object-cover border" alt="" />
+                ) : (
+                  <div className="w-16 h-16 rounded-2xl bg-blue-600 text-white text-xl font-black flex items-center justify-center shadow-md">
+                    {activeProfile.full_name?.charAt(0)}
+                  </div>
+                )}
+                <div>
+                  <h3 className="text-xl font-black text-zinc-900 tracking-tight flex items-center gap-1.5">
+                    {activeProfile.full_name}
+                    {simulatedRole !== "none" && <span className="bg-amber-100 border border-amber-200 text-amber-800 text-[8px] font-black px-1.5 py-0.5 rounded">SIM</span>}
+                  </h3>
+                  <p className="text-xs text-zinc-400 font-bold mt-0.5">{activeProfile.email}</p>
+                </div>
+              </div>
+
+              <div className="space-y-1.5 pt-2">
+                <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block">Qualified Skill Teams</label>
+                <div className="flex flex-wrap gap-1.5">
+                  {activeProfile.ministries.map(m => (
+                    <span key={m} className="px-3 py-1 bg-zinc-50 border font-extrabold text-[11px] text-zinc-600 rounded-full">{m}</span>
+                  ))}
+                  {activeProfile.ministries.length === 0 && <span className="text-xs italic text-zinc-400">No special teams mapped.</span>}
+                </div>
+              </div>
+            </div>
+
+            {/* Panel Column 2: The Schedule Modal Blockout Manager */}
+            <div className="space-y-4 flex flex-col justify-between">
+              <div>
+                <h4 className="text-base font-black text-zinc-900 tracking-tight flex items-center gap-1.5">
+                  📅 Blockout Schedule Manager
+                </h4>
+                <p className="text-[11px] font-bold text-zinc-400 mt-0.5">Flag dates you are unavailable to serve to automatically filter yourself out of roster line-ups.</p>
+              </div>
+
+              {/* Staged dates listing table corridor */}
+              <div className="bg-zinc-50 rounded-2xl border p-3.5 max-h-40 overflow-y-auto custom-scrollbar space-y-1.5 shadow-inner">
+                {activeProfile.unavailable_dates.map(dateStr => (
+                  <div key={dateStr} className="flex items-center justify-between p-2 bg-white rounded-xl border border-zinc-200/60 text-xs font-bold text-zinc-700">
+                    <span>🚫 {dateStr}</span>
+                    <button 
+                      type="button" 
+                      onClick={() => handleRemoveBlockoutDate(dateStr)}
+                      className="text-[10px] text-zinc-400 hover:text-red-500 font-bold p-1 px-2 hover:bg-red-50 rounded-lg transition-colors"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                ))}
+                {activeProfile.unavailable_dates.length === 0 && (
+                  <div className="p-4 text-center text-xs italic text-zinc-400 font-medium">Your calendar is completely open. No blockout markers flagged.</div>
+                )}
+              </div>
+
+              {/* Inline input form node to append future schedule restrictions */}
+              <form onSubmit={handleAddBlockoutDateSubmit} className="flex gap-2 pt-2">
+                <input 
+                  type="date" 
+                  required
+                  value={newBlockoutDate}
+                  onChange={e => setNewBlockoutDate(e.target.value)}
+                  className="bg-zinc-50 border rounded-xl px-3 py-2 text-xs font-bold outline-none focus:border-blue-500 flex-1 cursor-pointer"
+                />
+                <button 
+                  type="submit"
+                  disabled={isSavingSchedule}
+                  className="px-4 bg-black hover:bg-blue-700 text-white font-black text-xs rounded-xl shadow-md uppercase tracking-wider transition-all disabled:opacity-40"
+                >
+                  {isSavingSchedule ? "Syncing..." : "Block Date"}
+                </button>
+              </form>
+            </div>
+
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
