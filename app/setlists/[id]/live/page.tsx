@@ -87,6 +87,7 @@ export default function SetlistPerformanceRoomPage() {
 
   // Master Setlist Tracking States
   const [loading, setLoading] = useState(true);
+  const [loadingStatus, setLoadingStatus] = useState("Initializing performance space...");
   const [setlistName, setNewSetlistName] = useState("Live Performance Setlist");
   const [tracksList, setTracksList] = useState<SetlistTrackItem[]>([]);
   const [currentTrackIndex, setCurrentTrackIndex] = useState<number>(0);
@@ -95,6 +96,9 @@ export default function SetlistPerformanceRoomPage() {
   const [activeSong, setActiveSong] = useState<SongRecord | null>(null);
   const [sections, setSections] = useState<ArrangementSection[]>([]);
   const [activeDisplayKey, setActiveDisplayKey] = useState<string>("G");
+  
+  // Custom Accessibility Layout State
+  const [lyricsFontSize, setLyricsFontSize] = useState<number>(16);
 
   // Advanced Drag and Drop Interactive Feedback States
   const [isStructureModalOpen, setIsStructureModalOpen] = useState(false);
@@ -109,15 +113,19 @@ export default function SetlistPerformanceRoomPage() {
 
   // Interface Synchronization Control States
   const [isPlayingFlow, setIsPlayingFlow] = useState(false);
-  const [isPausedFlow, setIsPausedFlow] = useState(false);
   const [currentSectionIndex, setCurrentSectionIndex] = useState<number>(0);
   const [currentBeat, setCurrentBeat] = useState<number>(1);
 
-  // Precision Timeline Mechanical Tracking Refs
+  // Network Lobby Communication Pointer Reference
+  const realtimeChannelRef = useRef<any>(null);
+
+  // Ref Buffer Layers - Decouples state changes from animation loops
+  const activeSongRef = useRef<SongRecord | null>(null);
+  const sectionsRef = useRef<ArrangementSection[]>([]);
+  const tracksListRef = useRef<SetlistTrackItem[]>([]);
   const isPlayingRef = useRef(false);
   const currentSectionIndexRef = useRef(0);
   const sectionStartTimeRef = useRef<number>(0);
-  const pauseOffsetMsRef = useRef<number>(0);
   const totalBeatsRef = useRef<number>(0);
   const lastBeatRef = useRef<number>(1);
   const animationFrameRef = useRef<number | null>(null);
@@ -128,48 +136,154 @@ export default function SetlistPerformanceRoomPage() {
   const accentProgressBarRef = useRef<HTMLDivElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 
+  // Synchronize layout state tracking variables seamlessly
+  useEffect(() => { activeSongRef.current = activeSong; }, [activeSong]);
+  useEffect(() => { sectionsRef.current = sections; }, [sections]);
+  useEffect(() => { tracksListRef.current = tracksList; }, [tracksList]);
+
   // ==========================================================
-  // --- REAL-TIME PERSISTED DATA SYNC LAYERS -----------------
+  // --- REAL-TIME NETWORK BROADCAST SYNC ENGINE -------------
+  // ==========================================================
+  useEffect(() => {
+    if (!setlistId) return;
+
+    const lobbyChannel = supabase.channel(`setlist_lobby_${setlistId}`);
+
+    lobbyChannel
+      .on("broadcast", { event: "lobby_sync" }, ({ payload }) => {
+        if (payload.action === "START") {
+          currentSectionIndexRef.current = payload.sectionIndex;
+          setCurrentSectionIndex(payload.sectionIndex);
+          isPlayingRef.current = true;
+          setIsPlayingFlow(true);
+        } 
+        else if (payload.action === "STOP") {
+          executeLocalResetSequence();
+        } 
+        else if (payload.action === "JUMP") {
+          currentSectionIndexRef.current = payload.sectionIndex;
+          setCurrentSectionIndex(payload.sectionIndex);
+          lastBeatRef.current = 1;
+          setCurrentBeat(1);
+          if (isPlayingRef.current) {
+            sectionStartTimeRef.current = performance.now();
+          } else {
+            if (backdropProgressRef.current) backdropProgressRef.current.style.transform = "scaleX(0)";
+            if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = "scaleX(0)";
+          }
+        }
+        else if (payload.action === "TRACK_CHANGE") {
+          mountTargetSetlistTrackIndex(payload.trackIndex, tracksListRef.current);
+        }
+      })
+      .subscribe();
+
+    realtimeChannelRef.current = lobbyChannel;
+
+    return () => {
+      if (lobbyChannel) supabase.removeChannel(lobbyChannel);
+    };
+  }, [setlistId]);
+
+  function executeLocalResetSequence() {
+    isPlayingRef.current = false;
+    setIsPlayingFlow(false);
+    
+    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+    
+    currentSectionIndexRef.current = 0;
+    lastBeatRef.current = 1;
+    
+    setCurrentSectionIndex(0);
+    setCurrentBeat(1);
+
+    if (backdropProgressRef.current) backdropProgressRef.current.style.transform = "scaleX(0)";
+    if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = "scaleX(0)";
+  }
+
+  // ==========================================================
+  // --- RESILIENT PERSISTED LOADING MATRIX WITH FALLBACK GATE -
   // ==========================================================
   async function loadSetlistPerformanceEnvironment() {
     try {
       setLoading(true);
-      const { data: setlistRow } = await supabase
+      
+      // Early Hydration Gate: Wait until Next.js compiles the URL route tokens
+      if (!setlistId) {
+        setLoadingStatus("Waiting for Next.js route parameters to hydrate...");
+        return;
+      }
+
+      setLoadingStatus("Connecting to database and pulling room metadata...");
+      const { data: setlistRow, error: setlistError } = await supabase
         .from("setlists")
         .select("name")
         .eq("id", setlistId)
         .maybeSingle();
+      
+      if (setlistError) console.error("Setlist metadata query warning:", setlistError);
       if (setlistRow?.name) setNewSetlistName(setlistRow.name);
 
-      const { data: tracksData } = await supabase
+      setLoadingStatus("Extracting track lineup array allocations (Column Probe A)...");
+      let rawQueryData: any[] | null = null;
+
+      const primaryResponse = await supabase
         .from("setlist_songs")
         .select("id, sequence_order, start_time, custom_key, custom_structure, songs (*)")
         .eq("setlist_id", setlistId)
         .order("sequence_order", { ascending: true });
 
-      if (tracksData && tracksData.length > 0) {
-        const formattedTracks = tracksData.map(t => ({
-          id: t.id,
-          sequence_order: t.sequence_order,
-          start_time: t.start_time,
-          custom_key: t.custom_key || undefined,
-          custom_structure: t.custom_structure ? (t.custom_structure as unknown as ArrangementSection[]) : null,
-          songs: t.songs as unknown as SongRecord
-        })).filter(t => t.songs !== null);
+      if (primaryResponse.error) {
+        console.warn("Primary schema query rejected. Re-routing database traffic to Fallback Lane B...", primaryResponse.error);
+        setLoadingStatus("Primary schema parsing failed. Executing fallback alignment path...");
+        
+        const fallbackResponse = await supabase
+          .from("setlist_songs")
+          .select("id, sequence_order, start_time, custom_key, songs (*)")
+          .eq("setlist_id", setlistId)
+          .order("sequence_order", { ascending: true });
+        
+        rawQueryData = fallbackResponse.data;
+        if (fallbackResponse.error) {
+          console.error("Fallback lane failed completely:", fallbackResponse.error);
+          setLoadingStatus(`Database Error: ${fallbackResponse.error.message}`);
+          return;
+        }
+      } else {
+        rawQueryData = primaryResponse.data;
+      }
+
+      if (rawQueryData && rawQueryData.length > 0) {
+        setLoadingStatus("Compiling abstract lyric chord maps and building sheet layout matrices...");
+        const formattedTracks = rawQueryData.map((t: any) => {
+          const flattenedSongNode = Array.isArray(t.songs) ? t.songs[0] : t.songs;
+          
+          return {
+            id: t.id,
+            sequence_order: t.sequence_order,
+            start_time: t.start_time,
+            custom_key: t.custom_key || undefined,
+            custom_structure: t.custom_structure ? (t.custom_structure as unknown as ArrangementSection[]) : null,
+            songs: flattenedSongNode as unknown as SongRecord
+          };
+        }).filter(t => t.songs !== null && t.songs !== undefined);
 
         setTracksList(formattedTracks);
         if (formattedTracks.length > 0) {
           await mountTargetSetlistTrackIndex(0, formattedTracks);
         }
+      } else {
+        setLoadingStatus("Handshake clean, but this setlist has no songs added to it yet.");
       }
-    } catch (err) {
-      console.error("Lobby initialization breakdown:", err);
+    } catch (err: any) {
+      console.error("Lobby initialization crash:", err);
+      setLoadingStatus(`Critical Crash: ${err?.message || "Check connection parameters"}`);
     } finally {
       setLoading(false);
     }
   }
 
-  async function mountTargetSetlistTrackIndex(trackIndex: number, currentTracksArray = tracksList) {
+  async function mountTargetSetlistTrackIndex(trackIndex: number, currentTracksArray = tracksListRef.current) {
     const targetTrackItem = currentTracksArray[trackIndex];
     if (!targetTrackItem || !targetTrackItem.songs) return;
 
@@ -189,7 +303,7 @@ export default function SetlistPerformanceRoomPage() {
 
       setSections(sectionsData || []);
     }
-    handleResetFlowTrigger();
+    executeLocalResetSequence();
   }
 
   useEffect(() => {
@@ -198,6 +312,37 @@ export default function SetlistPerformanceRoomPage() {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
   }, [setlistId]);
+
+  function handleUserSelectTrackBadge(trackIdx: number) {
+    mountTargetSetlistTrackIndex(trackIdx, tracksListRef.current);
+    if (realtimeChannelRef.current) {
+      realtimeChannelRef.current.send({
+        type: "broadcast",
+        event: "lobby_sync",
+        payload: { action: "TRACK_CHANGE", trackIndex: trackIdx }
+      });
+    }
+  }
+
+  function handleAdvanceToNextSetlistTrack() {
+    const nextTrackIndex = currentTrackIndex + 1;
+    if (nextTrackIndex < tracksListRef.current.length) {
+      mountTargetSetlistTrackIndex(nextTrackIndex, tracksListRef.current);
+      if (realtimeChannelRef.current) {
+        realtimeChannelRef.current.send({
+          type: "broadcast",
+          event: "lobby_sync",
+          payload: { action: "TRACK_CHANGE", trackIndex: nextTrackIndex }
+        });
+      }
+      setTimeout(() => {
+        isPlayingRef.current = true;
+        setIsPlayingFlow(true);
+      }, 120);
+    } else {
+      handleResetFlowTrigger();
+    }
+  }
 
   // ==========================================================
   // --- INDEPENDENT CONTAINER PANEL SCROLLER -----------------
@@ -219,66 +364,69 @@ export default function SetlistPerformanceRoomPage() {
   }, [currentSectionIndex, sections]);
 
   // ==========================================================
-  // --- METRONOME ENGINE CONVERSION MECHANICS ----------------
+  // --- COMPOSER ENGINE HARDWARE ANIMATION TIMELINE LOOP -----
   // ==========================================================
-  function handleAdvanceToNextSetlistTrack() {
-    const nextTrackIndex = currentTrackIndex + 1;
-    if (nextTrackIndex < tracksList.length) {
-      mountTargetSetlistTrackIndex(nextTrackIndex);
-      setTimeout(() => {
-        isPlayingRef.current = true;
-        setIsPlayingFlow(true);
-      }, 120);
-    } else {
-      handleResetFlowTrigger();
-    }
-  }
-
-  const clockExecutionTick = (timestamp: number) => {
-    if (!isPlayingRef.current || !activeSong || sections.length === 0) return;
-
-    const beatSpeedMs = (60 / (activeSong.tempo || 75)) * 1000;
-    const currentSection = sections[currentSectionIndexRef.current];
-    if (!currentSection) {
-      handleAdvanceToNextSetlistTrack();
+  useEffect(() => {
+    if (!isPlayingFlow) {
+      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
       return;
     }
 
-    const timings = activeSong.section_timings?.[currentSection.section_name] || { measures: 4, beats: 0 };
-    const totalBeats = (timings.measures * 4) + timings.beats || 16;
-    const totalDurationMs = totalBeats * beatSpeedMs;
+    sectionStartTimeRef.current = performance.now();
+    lastBeatRef.current = 1;
 
-    const elapsedMs = timestamp - sectionStartTimeRef.current;
-    const progressRatio = Math.min(1, elapsedMs / totalDurationMs);
+    const clockExecutionTick = (timestamp: number) => {
+      if (!isPlayingRef.current || !activeSongRef.current || sectionsRef.current.length === 0) return;
 
-    if (backdropProgressRef.current) backdropProgressRef.current.style.transform = `scaleX(${progressRatio})`;
-    if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = `scaleX(${progressRatio})`;
+      const song = activeSongRef.current;
+      const secs = sectionsRef.current;
+      const idx = currentSectionIndexRef.current;
 
-    const currentBeatPulse = Math.floor(elapsedMs / beatSpeedMs) % 4 + 1;
-    if (currentBeatPulse !== lastBeatRef.current) {
-      lastBeatRef.current = currentBeatPulse;
-      setCurrentBeat(currentBeatPulse);
-    }
-
-    if (elapsedMs >= totalDurationMs) {
-      const nextIndex = currentSectionIndexRef.current + 1;
-      if (nextIndex < sections.length) {
-        const overrun = elapsedMs - totalDurationMs;
-        currentSectionIndexRef.current = nextIndex;
-        setCurrentSectionIndex(nextIndex);
-        sectionStartTimeRef.current = performance.now() - overrun;
-        
-        const nextSection = sections[nextIndex];
-        const nextTimings = activeSong.section_timings?.[nextSection.section_name] || { measures: 4, beats: 0 };
-        totalBeatsRef.current = (nextTimings.measures * 4) + nextTimings.beats || 16;
-      } else {
+      const currentSection = secs[idx];
+      if (!currentSection) {
         handleAdvanceToNextSetlistTrack();
         return;
       }
-    }
+
+      const beatSpeedMs = (60 / (song.tempo || 75)) * 1000;
+      const timings = song.section_timings?.[currentSection.section_name] || { measures: 4, beats: 0 };
+      const totalBeats = (timings.measures * 4) + timings.beats || 16;
+      const totalDurationMs = totalBeats * beatSpeedMs;
+
+      const elapsedMs = timestamp - sectionStartTimeRef.current;
+      const progressRatio = Math.min(1, elapsedMs / totalDurationMs);
+
+      if (backdropProgressRef.current) backdropProgressRef.current.style.transform = `scaleX(${progressRatio})`;
+      if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = `scaleX(${progressRatio})`;
+
+      const currentBeatPulse = Math.floor(elapsedMs / beatSpeedMs) % 4 + 1;
+      if (currentBeatPulse !== lastBeatRef.current) {
+        lastBeatRef.current = currentBeatPulse;
+        setCurrentBeat(currentBeatPulse);
+      }
+
+      if (elapsedMs >= totalDurationMs) {
+        const nextIndex = idx + 1;
+        if (nextIndex < secs.length) {
+          const overrun = elapsedMs - totalDurationMs;
+          currentSectionIndexRef.current = nextIndex;
+          setCurrentSectionIndex(nextIndex);
+          sectionStartTimeRef.current = performance.now() - overrun;
+        } else {
+          handleAdvanceToNextSetlistTrack();
+          return;
+        }
+      }
+
+      animationFrameRef.current = requestAnimationFrame(clockExecutionTick);
+    };
 
     animationFrameRef.current = requestAnimationFrame(clockExecutionTick);
-  };
+
+    return () => {
+      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+    };
+  }, [isPlayingFlow]);
 
   function handleToggleFlowPlaybackState() {
     if (isPlayingFlow) {
@@ -287,27 +435,40 @@ export default function SetlistPerformanceRoomPage() {
       if (sections.length === 0 || !activeSong) return;
       isPlayingRef.current = true;
       setIsPlayingFlow(true);
+
+      if (realtimeChannelRef.current) {
+        realtimeChannelRef.current.send({
+          type: "broadcast",
+          event: "lobby_sync",
+          payload: { action: "START", sectionIndex: currentSectionIndex }
+        });
+      }
     }
   }
 
   function handleResetFlowTrigger() {
-    isPlayingRef.current = false;
-    setIsPlayingFlow(false);
-    
-    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-    
-    currentSectionIndexRef.current = 0;
-    pauseOffsetMsRef.current = 0;
-    lastBeatRef.current = 1;
-    
-    setCurrentSectionIndex(0);
-    setCurrentBeat(1);
-
-    if (backdropProgressRef.current) backdropProgressRef.current.style.transform = "scaleX(0)";
-    if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = "scaleX(0)";
+    executeLocalResetSequence();
+    if (realtimeChannelRef.current) {
+      realtimeChannelRef.current.send({
+        type: "broadcast",
+        event: "lobby_sync",
+        payload: { action: "STOP" }
+      });
+    }
   }
 
   function handleSelectSectionDirectly(index: number) {
+    handleSelectSectionDirectlyLocally(index);
+    if (realtimeChannelRef.current) {
+      realtimeChannelRef.current.send({
+        type: "broadcast",
+        event: "lobby_sync",
+        payload: { action: "JUMP", sectionIndex: index }
+      });
+    }
+  }
+
+  function handleSelectSectionDirectlyLocally(index: number) {
     currentSectionIndexRef.current = index;
     setCurrentSectionIndex(index);
     lastBeatRef.current = 1;
@@ -346,7 +507,7 @@ export default function SetlistPerformanceRoomPage() {
   }
 
   // ==========================================================
-  // --- HOISTED LAYOUT PERSISTED TRANSPOSER ACTIONS ----------
+  // --- TRANSPOSER MODAL ACTIONS ----------------------------
   // ==========================================================
   function handleOpenTransposerModal() {
     if (!activeSong || isPlayingRef.current) return;
@@ -373,29 +534,32 @@ export default function SetlistPerformanceRoomPage() {
     setActiveDisplayKey(formattedNewKeyName);
     setIsTransposerOpen(false);
 
-    const targetTrackRowId = tracksList[currentTrackIndex].id;
-    await supabase
-      .from("setlist_songs")
-      .update({ custom_key: formattedNewKeyName })
-      .eq("id", targetTrackRowId);
+    const targetTrackRowId = tracksListRef.current[currentTrackIndex]?.id;
+    if (targetTrackRowId) {
+      await supabase
+        .from("setlist_songs")
+        .update({ custom_key: formattedNewKeyName })
+        .eq("id", targetTrackRowId);
+    }
 
     setTracksList(prev => prev.map((t, idx) => idx === currentTrackIndex ? { ...t, custom_key: formattedNewKeyName } : t));
     handleResetFlowTrigger();
   }
 
   // ==========================================================
-  // --- DRAG & DROP STRUCTURE BUILDER ENGINE WITH AUTO-SAVE -
+  // --- MODAL SEQUENCE REORDER OVERRIDES ACTIONS ------------
   // ==========================================================
   async function saveMutatedStructurePayload(updatedBlocks: ArrangementSection[]) {
     if (!activeSong) return;
     setIsSavingStructure(true);
 
-    const targetTrackRowId = tracksList[currentTrackIndex].id;
-    
-    await supabase
-      .from("setlist_songs")
-      .update({ custom_structure: updatedBlocks as any })
-      .eq("id", targetTrackRowId);
+    const targetTrackRowId = tracksListRef.current[currentTrackIndex]?.id;
+    if (targetTrackRowId) {
+      await supabase
+        .from("setlist_songs")
+        .update({ custom_structure: updatedBlocks as any })
+        .eq("id", targetTrackRowId);
+    }
 
     setTracksList(prev => prev.map((t, idx) => idx === currentTrackIndex ? { ...t, custom_structure: updatedBlocks } : t));
     setIsSavingStructure(false);
@@ -444,7 +608,7 @@ export default function SetlistPerformanceRoomPage() {
   }
 
   // ==========================================================
-  // --- MEMOIZED AST SYNTAX COMPILER TREES -------------------
+  // --- MEMOIZED PARSED AST TOKENS COMPILER TREES ------------
   // ==========================================================
   const runtimeSemitoneDelta = useMemo(() => {
     if (!activeSong || !activeDisplayKey) return 0;
@@ -462,9 +626,10 @@ export default function SetlistPerformanceRoomPage() {
 
   const memoizedSongAstTree = useMemo(() => {
     return sections.map((section): CompiledSectionToken => {
-      if (!section.content.trim()) return { id: section.id, section_name: section.section_name, lines: [] };
+      const rawText = section.content || "";
+      if (!rawText.trim()) return { id: section.id, section_name: section.section_name, lines: [] };
 
-      const linesArray = section.content.split("\n").map((line): ParsedLineToken => {
+      const linesArray = rawText.split("\n").map((line): ParsedLineToken => {
         let commentText = "";
         const cleanLineText = line.replace(/\{([^\}]+)\}/g, (_, p1) => { commentText = p1.trim(); return ""; });
         const wordsMatch = cleanLineText.match(/(?:\[[^\]]+\]|\S)+/g) || [];
@@ -487,10 +652,27 @@ export default function SetlistPerformanceRoomPage() {
     });
   }, [sections]);
 
-  if (loading) return <div className="p-8 text-center text-xs font-black uppercase text-zinc-400 tracking-widest animate-pulse">Syncing Live Performance Room...</div>;
-  if (!activeSong) return <div className="p-12 text-center text-sm font-bold text-zinc-500">No tracks loaded inside active setlist indexes.</div>;
+  // FIX: Added explicit diagnostic loading shell wrapper returns
+  if (loading) {
+    return (
+      <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#f8f9fa] p-6 text-center select-none">
+        <div className="max-w-md space-y-4">
+          <div className="text-xs font-black uppercase text-blue-600 tracking-widest animate-pulse">
+            Syncing Live Performance Room...
+          </div>
+          <div className="bg-white border border-zinc-200 rounded-2xl p-4 shadow-sm text-[11px] font-mono font-bold text-zinc-500 max-w-sm mx-auto leading-relaxed">
+            🔍 Status: {loadingStatus}
+          </div>
+          <p className="text-[10px] text-zinc-400 font-medium">
+            If this hangs permanently, press <kbd className="bg-zinc-100 px-1 rounded border text-[9px]">F12</kbd> and look for red connection rejections inside the Console panel.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
-  // FIX: Declared targets accurately right before processing layout templates!
+  if (tracksList.length === 0) return <div className="p-12 text-center text-sm font-bold text-zinc-500">No tracks loaded inside active setlist indexes.</div>;
+
   const highlightedTargetSectionName = sections[currentSectionIndex]?.section_name || "FLOW";
   const upcomingTrackItem = tracksList[currentTrackIndex + 1] || null;
 
@@ -504,7 +686,6 @@ export default function SetlistPerformanceRoomPage() {
       <div id="fixed-live-header" className="w-full bg-[#f8f9fa] border-b border-zinc-200/50 p-4 md:p-6 flex-shrink-0 z-50">
         <div className="max-w-5xl mx-auto bg-white border border-zinc-200 rounded-[2rem] shadow-sm flex flex-col gap-4 relative overflow-hidden p-6">
           
-          {/* TIMELINE PROGRESS MASKS BAR HANDLES */}
           <div 
             ref={backdropProgressRef}
             className="absolute inset-y-0 left-0 bg-blue-500/5 pointer-events-none z-0 origin-left will-change-transform w-full"
@@ -516,7 +697,7 @@ export default function SetlistPerformanceRoomPage() {
             style={{ transform: "scaleX(0)" }}
           />
 
-          {/* ROW 1: PRIMARY HEADERS, CONTROLS, LIGHT DECK */}
+          {/* ROW 1: CONTROLS, RADIAL TOGGLES, PULSING LIGHTS */}
           <div className="relative z-10 flex flex-col lg:flex-row lg:items-center justify-between gap-5 w-full">
             
             <div className="flex items-center gap-4 min-w-0 flex-1">
@@ -530,7 +711,7 @@ export default function SetlistPerformanceRoomPage() {
               <div className="min-w-0 leading-tight space-y-1">
                 <div className="flex items-center gap-2">
                   <span className="bg-zinc-950 text-white font-black text-[9px] uppercase tracking-widest px-2.5 py-0.5 rounded-md">
-                    TRACK {currentTrackIndex + 1}/{tracksList.length}
+                    LOBBY CONNECTED
                   </span>
                   <span className="bg-blue-50 border border-blue-100 text-blue-600 font-mono font-black text-[10px] px-2 py-0.5 rounded-md shadow-inner">
                     ⏱ {activeSong?.tempo || "--"} BPM
@@ -566,6 +747,27 @@ export default function SetlistPerformanceRoomPage() {
 
             {/* CONTROL BLOCK ACTIONS CLUSTER */}
             <div className="flex items-center gap-2.5 self-end lg:self-center shrink-0">
+              
+              <div className="flex items-center bg-zinc-50 border border-zinc-200 p-1 rounded-xl shadow-inner gap-0.5">
+                <button
+                  type="button"
+                  onClick={() => setLyricsFontSize(prev => Math.max(12, prev - 2))}
+                  className="w-8 h-8 bg-white hover:bg-zinc-100 border border-zinc-200/60 text-zinc-700 rounded-lg font-black text-xs cursor-pointer flex items-center justify-center"
+                >
+                  A-
+                </button>
+                <span className="text-[10px] font-mono font-black text-zinc-400 px-1.5 min-w-[36px] text-center">
+                  {lyricsFontSize}px
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setLyricsFontSize(prev => Math.min(24, prev + 2))}
+                  className="w-8 h-8 bg-white hover:bg-zinc-100 border border-zinc-200/60 text-zinc-700 rounded-lg font-black text-xs cursor-pointer flex items-center justify-center"
+                >
+                  A+
+                </button>
+              </div>
+
               <button
                 type="button"
                 disabled={isPlayingFlow}
@@ -599,14 +801,14 @@ export default function SetlistPerformanceRoomPage() {
 
           </div>
 
-          {/* ROW 2: ISOLATING THE ENTIRE SONGS SPAN TRACKLIST ROW */}
+          {/* ROW 2: SINGLE SONG BAR TRACKLIST DOCK ROW */}
           <div className="w-full border-t border-zinc-100 pt-3 flex flex-wrap items-center gap-2 relative z-10">
             {tracksList.map((track, trackIdx) => (
               <button
                 key={track.id}
                 type="button"
                 disabled={isPlayingFlow}
-                onClick={() => mountTargetSetlistTrackIndex(trackIdx)}
+                onClick={() => handleUserSelectTrackBadge(trackIdx)}
                 className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all disabled:opacity-40 border ${
                   currentTrackIndex === trackIdx
                     ? "bg-blue-600 border-blue-500 text-white shadow-sm"
@@ -699,7 +901,12 @@ export default function SetlistPerformanceRoomPage() {
                                 })}
                               </div>
                             )}
-                            <div className="text-[15px] font-sans font-bold text-zinc-800 tracking-tight">{wordObj.word || " "}</div>
+                            <div 
+                              style={{ fontSize: `${lyricsFontSize}px` }}
+                              className="font-sans font-bold text-zinc-800 tracking-tight transition-all duration-100"
+                            >
+                              {wordObj.word || " "}
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -718,7 +925,7 @@ export default function SetlistPerformanceRoomPage() {
           {upcomingTrackItem?.songs && (
             <div className="pt-4 animate-in fade-in duration-300">
               <div 
-                onClick={() => mountTargetSetlistTrackIndex(currentTrackIndex + 1)}
+                onClick={() => handleUserSelectTrackBadge(currentTrackIndex + 1)}
                 className="w-full bg-zinc-50 border border-dashed border-zinc-300/80 hover:bg-zinc-100/50 hover:border-zinc-400 rounded-3xl p-5 text-center cursor-pointer transition-all select-none group"
               >
                 <span className="text-[10px] font-black tracking-widest text-zinc-400 uppercase block mb-1">Up Next In Queue</span>
