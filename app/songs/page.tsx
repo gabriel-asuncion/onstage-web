@@ -1,10 +1,30 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "../../utils/supabase/client";
 import { useEngine } from "../context/EngineContext";
-import { getAllSongs, getSongChordChart } from "../../utils/supabase/actions";
+import { getSongChordChart } from "../../utils/supabase/actions";
+
+// =======================================================
+// --- SURGICAL FIX: HOISTED DIATONIC MODES MAP DECK -----
+// =======================================================
+const DIATONIC_MODES_MAP: { [key: string]: { root: string; suffix: string }[] } = {
+  "C":  [{root:"C",suffix:""}, {root:"D",suffix:"m"}, {root:"E",suffix:"m"}, {root:"F",suffix:""}, {root:"G",suffix:""}, {root:"A",suffix:"m"}, {root:"B",suffix:"dim"}],
+  "Db": [{root:"Db",suffix:""},{root:"Eb",suffix:"m"},{root:"F",suffix:"m"},{root:"Gb",suffix:""},{root:"Ab",suffix:""},{root:"Bb",suffix:"m"},{root:"C",suffix:"dim"}],
+  "D":  [{root:"D",suffix:""}, {root:"E",suffix:"m"}, {root:"F#",suffix:"m"},{root:"G",suffix:""}, {root:"A",suffix:""}, {root:"B",suffix:"m"}, {root:"C#",suffix:"dim"}],
+  "Eb": [{root:"Eb",suffix:""},{root:"F",suffix:"m"}, {root:"G",suffix:"m"}, {root:"Ab",suffix:""},{root:"Bb",suffix:""},{root:"C",suffix:"m"}, {root:"D",suffix:"dim"}],
+  "E":  [{root:"E",suffix:""}, {root:"F#",suffix:"m"},{root:"G#",suffix:"m"},{root:"A",suffix:""}, {root:"B",suffix:""}, {root:"C#",suffix:"m"},{root:"D#",suffix:"dim"}],
+  "F":  [{root:"F",suffix:""}, {root:"G",suffix:"m"}, {root:"A",suffix:"m"}, {root:"Bb",suffix:""},{root:"C",suffix:""}, {root:"D",suffix:"m"}, {root:"E",suffix:"dim"}],
+  "F#": [{root:"F#",suffix:""},{root:"G#",suffix:"m"},{root:"A#",suffix:"m"},{root:"B",suffix:""}, {root:"C#",suffix:""},{root:"D#",suffix:"m"}, {root:"F",suffix:"dim"}],
+  "G":  [{root:"G",suffix:""}, {root:"A",suffix:"m"}, {root:"B",suffix:"m"}, {root:"C",suffix:""}, {root:"D",suffix:""}, {root:"E",suffix:"m"}, {root:"F#",suffix:"dim"}],
+  "Ab": [{root:"Ab",suffix:""},{root:"Bb",suffix:"m"},{root:"C",suffix:"m"}, {root:"Db",suffix:""},{root:"Eb",suffix:""},{root:"F",suffix:"m"}, {root:"G",suffix:"dim"}],
+  "A":  [{root:"A",suffix:"m"}, {root:"B",suffix:"m"}, {root:"C#",suffix:"m"},{root:"D",suffix:""}, {root:"E",suffix:""}, {root:"F#",suffix:"m"},{root:"G#",suffix:"dim"}],
+  "Bb": [{root:"Bb",suffix:""},{root:"C",suffix:"m"}, {root:"D",suffix:"m"}, {root:"Eb",suffix:""},{root:"F",suffix:""}, {root:"G",suffix:"m"}, {root:"A",suffix:"dim"}],
+  "B":  [{root:"B",suffix:""}, {root:"C#",suffix:"m"},{root:"D#",suffix:"m"},{root:"E",suffix:""}, {root:"F#",suffix:""},{root:"G#",suffix:"m"},{root:"A#",suffix:"dim"}],
+  "Am":  [{root:"A",suffix:"m"}, {root:"B",suffix:"dim"},{root:"C",suffix:""}, {root:"D",suffix:"m"}, {root:"E",suffix:"m"}, {root:"F",suffix:""}, {root:"G",suffix:""}],
+  "Bm":  [{root:"B",suffix:"m"}, {root:"C#",suffix:"dim"},{root:"D",suffix:""}, {root:"E",suffix:"m"}, {root:"F#",suffix:"m"},{root:"G",suffix:""}, {root:"A",suffix:""}]
+};
 
 interface SongSectionBlock {
   id: string;
@@ -40,9 +60,9 @@ const AVAILABLE_STRUCTURE_TEMPLATES = [
 
 const ENCLOSURE_POPUP_CATALOG = [
   { id: "IN", baseType: "Intro", display: "Intro" },
-  { id: "V1", baseType: "Verse", display: "Verse 1" },
+  { id: "V1", baseType: "Verse", display: "Verse" },
   { id: "P",  baseType: "Pre-Chorus", display: "Pre-Chorus" },
-  { id: "C1", baseType: "Chorus", display: "Chorus 1" },
+  { id: "C1", baseType: "Chorus", display: "Chorus" },
   { id: "R",  baseType: "Refrain", display: "Refrain" },
   { id: "PC", baseType: "Post-Chorus", display: "Post-Chorus" },
   { id: "B",  baseType: "Bridge", display: "Bridge" },
@@ -98,6 +118,7 @@ export default function SongsPage() {
   const supabase = createClient();
   const router = useRouter();
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const editorContentContainerRef = useRef<HTMLDivElement | null>(null);
   
   const { simulatedRole, simulatedUserId } = useEngine();
 
@@ -106,7 +127,10 @@ export default function SongsPage() {
   const [songSearchQuery, setSongSearchQuery] = useState("");
   const [bookmarkedSongIds, setBookmarkedSongIds] = useState<string[]>([]);
   
+  // Safe Close Modification Tracking State Flags
   const [isEditorOpen, setIsEditorOpen] = useState(false);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [isConfirmExitModalOpen, setIsConfirmExitModalOpen] = useState(false);
   const [editingSongId, setEditingSongId] = useState<string | null>(null); 
   const [editorActiveTab, setEditorActiveTab] = useState<"details" | "content" | "structure">("details");
   
@@ -121,7 +145,6 @@ export default function SongsPage() {
   const [formSections, setFormSections] = useState<SongSectionBlock[]>([]);
   const [sectionTimings, setSectionTimings] = useState<SectionTimingMap>({});
   
-  // New Symmetrical Transposer States inside editor popups
   const [isKeyPopupOpen, setIsKeyPopupOpen] = useState(false);
   const [modalKeyRoot, setModalKeyRoot] = useState("G");
   const [modalKeyAccidental, setModalKeyAccidental] = useState<"" | "#" | "b">("");
@@ -142,45 +165,85 @@ export default function SongsPage() {
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [pastedRawLyricsText, setPastedRawLyricsText] = useState("");
   const [activeReassignSectionId, setActiveReassignSectionId] = useState<string | null>(null);
+  
+  // Interactive Drag & Placement Highlight Tracking States
   const [draggedStructureIndex, setDraggedStructureIndex] = useState<number | null>(null);
+  const [dragOverStructureIndex, setDragOverStructureIndex] = useState<number | null>(null);
 
-  const loadSongsData = async () => {
-    try {
-      const songs = await getAllSongs();
-      setAllDatabaseSongs(songs || []);
-    } catch (e) {
-      console.error("Failed to load songs assets:", e);
-    }
-    setLoading(false);
+  // Helper routine to break down query parameter arrays
+  const parseColonWrappedKeywords = (rawQuery: string) => {
+    const tokens = { title: "", artist: "", key: "", lyrics: "", theme: "" };
+    if (!rawQuery.trim()) return tokens;
+
+    let processedString = rawQuery;
+    const isolateToken = (prefix: string) => {
+      const regex = new RegExp(`${prefix}\\s*([^:]+?)(?=\\s*(w:artist:|:key:|:lyrics:|:theme:|$))`, 'i');
+      const match = processedString.match(regex);
+      if (match) {
+        processedString = processedString.replace(match[0], "").trim();
+        return match[1].trim();
+      }
+      return "";
+    };
+
+    tokens.artist = isolateToken(":artist:");
+    tokens.key = isolateToken(":key:");
+    tokens.lyrics = isolateToken(":lyrics:");
+    tokens.theme = isolateToken(":theme:");
+    tokens.title = processedString.trim();
+    return tokens;
   };
 
-  useEffect(() => {
-    async function syncActiveUserBookmarksMatrix() {
-      if (!simulatedUserId || simulatedUserId === "00000000-0000-0000-0000-000000000000") {
-        setBookmarkedSongIds([]);
-        return;
-      }
-      
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("bookmarked_songs")
-        .eq("id", simulatedUserId)
-        .maybeSingle();
+  // HIGH PERFORMANCE SERVER-SIDE SYNC ROUTINE WITH HARD 20-ROW VISUAL BARS LIMIT
+  const loadSongsData = async () => {
+    try {
+      setLoading(true);
+      const searchTokens = parseColonWrappedKeywords(songSearchQuery);
 
-      if (!error && data?.bookmarked_songs) {
-        setBookmarkedSongIds(data.bookmarked_songs);
-      } else {
-        setBookmarkedSongIds([]);
+      let dbQueryBuilder = supabase
+        .from("songs")
+        .select("*")
+        .order("created_at", { ascending: false }) // Old songs push back out of standard views bounds
+        .limit(20);                               // Locks row count performance strictly to 20
+
+      if (searchTokens.title) dbQueryBuilder = dbQueryBuilder.ilike("title", `%${searchTokens.title}%`);
+      if (searchTokens.artist) dbQueryBuilder = dbQueryBuilder.ilike("artist", `%${searchTokens.artist}%`);
+      if (searchTokens.key) dbQueryBuilder = dbQueryBuilder.ilike("original_key", `%${searchTokens.key}%`);
+      if (searchTokens.theme) dbQueryBuilder = dbQueryBuilder.ilike("themes", `%${searchTokens.theme}%`);
+      if (searchTokens.lyrics) dbQueryBuilder = dbQueryBuilder.ilike("chordpro_content", `%${searchTokens.lyrics}%`);
+
+      const { data: matchedSongs, error } = await dbQueryBuilder;
+      if (!error && matchedSongs) {
+        setAllDatabaseSongs(matchedSongs);
       }
+
+      const handleClearSpecificTokenChip = (tokenPrefix: string, tokenValue: string) => {
+        const targetMatchPattern = new RegExp(`${tokenPrefix}\\s*${tokenValue.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')}`, 'i');
+        setSongSearchQuery(prev => prev.replace(targetMatchPattern, "").trim());
+      };
+    } catch (e) {
+      console.error("Failed to load songs assets:", e);
+    } finally {
+      setLoading(false);
     }
-
-    syncActiveUserBookmarksMatrix();
-  }, [simulatedUserId]);
-
-  useEffect(() => {
-    loadSongsData();
-  }, []);
-
+  };
+  function handleClearSpecificTokenChip(tokenPrefix: string, tokenValue: string) {
+    const targetMatchPattern = new RegExp(`${tokenPrefix}\\s*${tokenValue.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')}`, 'i');
+    setSongSearchQuery(prev => prev.replace(targetMatchPattern, "").trim());
+  }
+  function handleStructureDragStart(idx: number) {
+    setDraggedStructureIndex(idx);
+  }
+  function handleSelectKeywordSuggestion(token: string) {
+    setSongSearchQuery(prev => {
+      const words = prev.split(/\s+/);
+      words[words.length - 1] = token + " ";
+      return words.join(" ");
+    });
+    if (searchInputRef.current) {
+      searchInputRef.current.focus();
+    }
+  }
   const handleToggleBookmark = async (e: React.MouseEvent, songId: string) => {
     e.stopPropagation();
     if (!simulatedUserId || simulatedUserId === "00000000-0000-0000-0000-000000000000") return;
@@ -206,50 +269,88 @@ export default function SongsPage() {
     }
   };
 
-  const handleOpenAddSongModal = () => {
-    setEditingSongId(null); setFormTitle(""); setFormTempo(""); setFormKey("G"); setFormArtist(""); setFormThemes([]); setSectionTimings({}); setFormSections([{ id: "sec-1", type: "Verse 1", label: "Verse 1", content: "", repetitions: 1 }]);
-    setIsAddChordsModeActive(false); setChordTargetCoordinate(null); setEditorActiveTab("details"); setIsEditorOpen(true);
+  // Safety Dismiss Prompt Layer
+  const handleAttemptDismissal = () => {
+    if (hasUnsavedChanges) {
+      setIsConfirmExitModalOpen(true);
+      return;
+    }
+    setHasUnsavedChanges(false);
+    setIsEditorOpen(false);
   };
 
-  const handleOpenEditSongModal = async (song: any) => {
-    setEditingSongId(song.id); setFormTitle(song.title || ""); setFormTempo(song.tempo || ""); setFormKey(song.original_key || "G"); setFormArtist(song.artist || ""); setFormThemes(song.themes ? song.themes.split(",").map((t: string) => t.trim()).filter(Boolean) : []);
-    setSectionTimings(song.section_timings || {});
-
-    const sectionsRaw = await getSongChordChart(song.id);
-    if (sectionsRaw && sectionsRaw.length > 0) {
-      setFormSections(sectionsRaw.map((s: any, idx: number) => ({ 
-        id: s.id || `sec-${idx}`, 
-        type: s.section_name || "Verse 1", 
-        label: s.section_name || "Verse 1", 
-        content: s.content || "", 
-        repetitions: 1
-      })));
-    } else { setFormSections([{ id: "sec-1", type: "Verse 1", label: "Verse 1", content: "", repetitions: 1 }]); }
-    setIsAddChordsModeActive(false); setChordTargetCoordinate(null); setEditorActiveTab("details"); setIsEditorOpen(true);
+  // Click Outside Backdrop Catch Node
+  const handleBackdropClick = (e: React.MouseEvent) => {
+    if (editorContentContainerRef.current && !editorContentContainerRef.current.contains(e.target as Node)) {
+      handleAttemptDismissal();
+    }
   };
 
-  const handleOpenKeySelectionPopup = () => {
-    const cleanKeyBase = formKey.endsWith("m") ? formKey.slice(0, -1) : formKey;
-    let baseLetter = cleanKeyBase.charAt(0);
-    let accidentalSign: "" | "#" | "b" = "";
-    
-    if (cleanKeyBase.includes("#")) accidentalSign = "#";
-    else if (cleanKeyBase.includes("b")) accidentalSign = "b";
+  // =======================================================
+  // --- RESTORED: AIR-TIGHT HOISTED WORKSPACE LOGIC CONTROLLER FUNCTIONS
+  // =======================================================
+  function renderSymmetricalLivePreviewLine(sectionType: string, contentText: string) {
+    if (!contentText.trim()) return <p className="text-zinc-400 italic text-xs font-semibold py-1">Empty line segment...</p>;
+    return contentText.split("\n").map((line, lineIdx) => {
+      let lineCommentText = "";
+      const wordsArray = line.replace(/\{([^\}]+)\}/g, (m, p1) => { lineCommentText = p1.trim(); return ""; }).match(/(?:\[[^\]]+\]|\S)+/g) || [];
+      const isLineNotesTargeted = notesTargetCoordinate?.sectionType === sectionType && notesTargetCoordinate?.lineIdx === lineIdx;
 
-    setModalKeyRoot(baseLetter);
-    setModalKeyAccidental(accidentalSign);
-    setIsKeyPopupOpen(true);
-  };
+      return (
+        <div key={lineIdx} onClick={() => { if (isAddNotesModeActive) { setNotesTargetCoordinate({ sectionType, lineIdx }); setCustomCommentInputValue(lineCommentText); } }} className={`flex flex-col sm:flex-row sm:items-center justify-between gap-2 py-1 px-2 rounded-xl transition-all duration-150 relative ${isAddNotesModeActive ? `cursor-pointer border border-dashed border-transparent hover:border-purple-400 hover:bg-purple-50/20 shadow-sm ${isLineNotesTargeted ? '!border-purple-600 !bg-purple-50/30' : ''}` : 'border border-transparent'}`}>
+          <div className="flex flex-wrap items-end gap-x-1.5 gap-y-2 py-0.5 leading-none flex-1">
+            {wordsArray.map((chunk, currentWordIdx) => {
+              const chordRegex = /\[([^\]]+)\]/g; const extractedChordsList: string[] = []; let matchResult;
+              while ((matchResult = chordRegex.exec(chunk)) !== null) { extractedChordsList.push(matchResult[1]); }
+              const cleanWordDisplay = chunk.replace(/\[[^\]]+\]/g, "");
+              const isTargetedCoordinate = chordTargetCoordinate?.sectionType === sectionType && chordTargetCoordinate?.lineIdx === lineIdx && chordTargetCoordinate?.wordIdx === currentWordIdx;
+              const hasNotation = extractedChordsList.length > 0;
 
-  const handleSaveModalKeySelection = (e: React.FormEvent) => {
+              return (
+                <div key={currentWordIdx} onClick={(e) => { if (isAddChordsModeActive) { e.stopPropagation(); setChordTargetCoordinate({ sectionType, lineIdx, wordIdx: currentWordIdx }); if (hasNotation) { setCustomChordInputValue(extractedChordsList[0]); } } }} className={`flex flex-col items-start relative select-none rounded-lg px-2 py-0.5 transition-all duration-150 ${isAddChordsModeActive ? `cursor-pointer border shadow-sm ${hasNotation ? 'border-blue-500 bg-blue-50/40 ring-1 ring-blue-400/20 font-semibold' : 'border-zinc-200 bg-white hover:bg-zinc-50'}` : 'border border-transparent'} ${isTargetedCoordinate ? '!bg-blue-600 !text-white ring-2 ring-blue-500/30 font-bold scale-105 z-10 border-blue-600' : ''}`}>
+                  {hasNotation && (
+                    <div className="min-h-[1rem] text-[10px] font-mono font-black tracking-tight flex flex-wrap gap-0.5 mb-0.5 leading-none select-none">
+                      {extractedChordsList.map((ch, cIndex) => (
+                        <span key={cIndex} className="flex items-center gap-0.5">{ch.split(/\s+/).map((subCh, subIdx) => <span key={subIdx} className={`px-0.5 rounded border font-bold ${subCh === "~" || subCh === "-" || subCh === "->" ? "text-zinc-400 bg-transparent border-transparent font-sans normal-case" : "text-blue-600 bg-blue-50/80 border-blue-200/40"}`}>{subCh}</span>)}</span>
+                      ))}
+                    </div>
+                  )}
+                  <div className="text-[13px] font-sans font-bold leading-tight">{cleanWordDisplay || " "}</div>
+                </div>
+              );
+            })}
+          </div>
+          {lineCommentText && <div style={{ fontFamily: "'Nothing You Could Do', cursive" }} className="text-[14px] text-zinc-500 tracking-wide select-none whitespace-nowrap shrink-0 sm:text-right sm:pl-2 self-center pb-0.5">{lineCommentText}</div>}
+        </div>
+      );
+    });
+  }
+
+  function handleSelectNewKeySignature(newKey: string) {
+    if (newKey === formKey) return;
+    const oldIdx = CHROMATIC_SCALE.indexOf(normalizeKeyNote(formKey.endsWith("m") ? formKey.slice(0, -1) : formKey));
+    const newIdx = CHROMATIC_SCALE.indexOf(normalizeKeyNote(newKey.endsWith("m") ? newKey.slice(0, -1) : newKey));
+    if (oldIdx !== -1 && newIdx !== -1) {
+      const semitoneDelta = (newIdx - oldIdx + 12) % 12;
+      if (semitoneDelta !== 0) {
+        setHasUnsavedChanges(true);
+        setFormSections(prev => prev.map(sec => ({ 
+          ...sec, 
+          content: sec.content.replace(/\[([^\]]+)\]/g, (m, inner) => `[${transposeBracketContent(inner, semitoneDelta)}]`) 
+        })));
+      }
+    }
+    setFormKey(newKey); 
+    setIsKeyPopupOpen(false);
+  }
+  function handleSaveModalKeySelection(e: React.FormEvent) {
     e.preventDefault();
     const isMinorSong = formKey.endsWith("m");
     const nextKeyComputedName = `${modalKeyRoot}${modalKeyAccidental}${isMinorSong ? "m" : ""}`;
     
     handleSelectNewKeySignature(nextKeyComputedName);
-  };
-
-  const handleCommitSongChangesToDB = async () => {
+  }
+  async function handleCommitSongChangesToDB() {
     if (!formTitle.trim()) return;
     setLoading(true);
     const songPayload = {
@@ -283,139 +384,59 @@ export default function SongsPage() {
           });
         }
       }
+      setHasUnsavedChanges(false);
       await loadSongsData();
       setIsEditorOpen(false);
-    } catch (err) { console.error(err); }
-    finally { setLoading(false); }
-  };
+    } catch (err) { 
+      console.error(err); 
+    } finally { 
+      setLoading(false); 
+    }
+  }
 
-  const executeChordInjectionAtIndex = (injectedTokenStr: string) => {
+  // RESTORED: Symmetrical chord input matrix logic node
+  function executeChordInjectionAtIndex(injectedTokenStr: string) {
     if (!chordTargetCoordinate) return;
     const { sectionType, lineIdx, wordIdx = 0 } = chordTargetCoordinate;
     const cleanInput = injectedTokenStr.trim();
     let bracketedTag = cleanInput !== "" ? ((cleanInput.startsWith("[") && cleanInput.endsWith("]")) ? cleanInput : `[${cleanInput}]`) : "";
 
+    setHasUnsavedChanges(true);
     setFormSections(prev => prev.map(sec => {
       if (sec.type !== sectionType) return sec;
       const lines = sec.content.split("\n");
       let realWordCounter = 0;
-      lines[lineIdx] = (lines[lineIdx] || "").replace(/(?:\[[^\]]+\]|\{[^\}]+\}|\S)+/g, (match) => {
+      lines[lineIdx] = (lines[lineIdx] || "").replace(/(?:\[[^\]]+\]|\{\s*[^\}]+\s*\}|\S)+/g, (match) => {
         if (realWordCounter === wordIdx) { realWordCounter++; return `${bracketedTag}${match.replace(/\[[^\]]+\]/g, "").replace(/\{[^\}]+\}/g, "")}`; }
         realWordCounter++; return match;
       });
       return { ...sec, content: lines.join("\n") };
     }));
-    setChordTargetCoordinate(null); setCustomChordInputValue("");
-  };
+    setChordTargetCoordinate(null); 
+    setCustomChordInputValue("");
+  }
 
-  const executeLineCommentInjection = (injectedCommentStr: string) => {
+  // RESTORED: Symmetrical row comment input builder mapping node
+  function executeLineCommentInjection(injectedCommentStr: string) {
     if (!notesTargetCoordinate) return;
     const { sectionType, lineIdx } = notesTargetCoordinate;
     const cleanInput = injectedCommentStr.trim();
     let taggedComment = cleanInput !== "" ? ((cleanInput.startsWith("{") && cleanInput.endsWith("}")) ? cleanInput : `{${cleanInput}}`) : "";
 
+    setHasUnsavedChanges(true);
     setFormSections(prev => prev.map(sec => {
       if (sec.type !== sectionType) return sec;
       const lines = sec.content.split("\n");
       lines[lineIdx] = (lines[lineIdx] || "").replace(/\{[^\}]+\}/g, "").trim() + (taggedComment ? ` ${taggedComment}` : "");
       return { ...sec, content: lines.join("\n") };
     }));
-    setNotesTargetCoordinate(null); setCustomCommentInputValue("");
-  };
+    setNotesTargetCoordinate(null); 
+    setCustomCommentInputValue("");
+  }
 
-  const activeScaleDiatonicDeck = DIATONIC_MODES_MAP[formKey] || DIATONIC_MODES_MAP["G"];
-
-  useEffect(() => {
-    const handleNashvilleNumberKeyInjections = (e: KeyboardEvent) => {
-      if (!isAddChordsModeActive || !chordTargetCoordinate || document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA") return;
-      if (["1", "2", "3", "4", "5", "6", "7"].includes(e.key)) {
-        e.preventDefault();
-        const targetedScaleChord = activeScaleDiatonicDeck[parseInt(e.key, 10) - 1];
-        if (targetedScaleChord) {
-          const formattedFullChordStr = `${targetedScaleChord.root}${targetedScaleChord.suffix}`;
-          const { sectionType, lineIdx, wordIdx = 0 } = chordTargetCoordinate;
-          setFormSections(prev => prev.map(sec => {
-            if (sec.type !== sectionType) return sec;
-            const lines = sec.content.split("\n");
-            let realWordCounter = 0;
-            lines[lineIdx] = (lines[lineIdx] || "").replace(/(?:\[[^\]]+\]|\{[^\}]+\}|\S)+/g, (match) => {
-              if (realWordCounter === wordIdx) { realWordCounter++; return `[${formattedFullChordStr}]${match.replace(/\[[^\]]+\]/g, "").replace(/\{[^\}]+\}/g, "")}`; }
-              realWordCounter++; return match;
-            });
-            return { ...sec, content: lines.join("\n") };
-          }));
-          setChordTargetCoordinate(null);
-        }
-      }
-    };
-    window.addEventListener("keydown", handleNashvilleNumberKeyInjections);
-    return () => window.removeEventListener("keydown", handleNashvilleNumberKeyInjections);
-  }, [isAddChordsModeActive, chordTargetCoordinate, activeScaleDiatonicDeck]);
-
-  const handleSelectNewKeySignature = (newKey: string) => {
-    if (newKey === formKey) return;
-    const oldIdx = CHROMATIC_SCALE.indexOf(normalizeKeyNote(formKey.endsWith("m") ? formKey.slice(0, -1) : formKey));
-    const newIdx = CHROMATIC_SCALE.indexOf(normalizeKeyNote(newKey.endsWith("m") ? newKey.slice(0, -1) : newKey));
-    if (oldIdx !== -1 && newIdx !== -1) {
-      const semitoneDelta = (newIdx - oldIdx + 12) % 12;
-      if (semitoneDelta !== 0) {
-        setFormSections(prev => prev.map(sec => ({ ...sec, content: sec.content.replace(/\[([^\]]+)\]/g, (m, inner) => `[${transposeBracketContent(inner, semitoneDelta)}]`) })));
-      }
-    }
-    setFormKey(newKey); setIsKeyPopupOpen(false);
-  };
-
-  const renderSymmetricalLivePreviewLine = (sectionType: string, contentText: string) => {
-    if (!contentText.trim()) return <p className="text-zinc-400 italic text-xs font-semibold py-1">Empty line segment...</p>;
-    return contentText.split("\n").map((line, lineIdx) => {
-      let lineCommentText = "";
-      const wordsArray = line.replace(/\{([^\}]+)\}/g, (m, p1) => { lineCommentText = p1.trim(); return ""; }).match(/(?:\[[^\]]+\]|\S)+/g) || [];
-      const isLineNotesTargeted = notesTargetCoordinate?.sectionType === sectionType && notesTargetCoordinate?.lineIdx === lineIdx;
-
-      return (
-        <div key={lineIdx} onClick={() => { if (isAddNotesModeActive) { setNotesTargetCoordinate({ sectionType, lineIdx }); setCustomCommentInputValue(lineCommentText); } }} className={`flex flex-col sm:flex-row sm:items-center justify-between gap-4 py-2 px-2.5 rounded-2xl transition-all duration-150 relative ${isAddNotesModeActive ? `cursor-pointer border-2 border-dashed border-transparent hover:border-purple-400 hover:bg-purple-50/20 shadow-sm ${isLineNotesTargeted ? '!border-purple-600 !bg-purple-50/30' : ''}` : 'border border-transparent'}`}>
-          <div className="flex flex-wrap items-end gap-x-1.5 gap-y-3 py-1.5 leading-none flex-1">
-            {wordsArray.map((chunk, currentWordIdx) => {
-              const chordRegex = /\[([^\]]+)\]/g; const extractedChordsList: string[] = []; let matchResult;
-              while ((matchResult = chordRegex.exec(chunk)) !== null) { extractedChordsList.push(matchResult[1]); }
-              const cleanWordDisplay = chunk.replace(/\[[^\]]+\]/g, "");
-              const isTargetedCoordinate = chordTargetCoordinate?.sectionType === sectionType && chordTargetCoordinate?.lineIdx === lineIdx && chordTargetCoordinate?.wordIdx === currentWordIdx;
-              const hasNotation = extractedChordsList.length > 0;
-
-              return (
-                <div key={currentWordIdx} onClick={(e) => { if (isAddChordsModeActive) { e.stopPropagation(); setChordTargetCoordinate({ sectionType, lineIdx, wordIdx: currentWordIdx }); if (hasNotation) { setCustomChordInputValue(extractedChordsList[0]); } } }} className={`flex flex-col items-start relative select-none rounded-[14px] px-2.5 py-1 transition-all duration-150 ${isAddChordsModeActive ? `cursor-pointer border shadow-sm ${hasNotation ? 'border-blue-500 bg-blue-50/40 ring-1 ring-blue-400/20 font-semibold' : 'border-zinc-200 bg-white hover:bg-zinc-50'}` : 'border border-transparent'} ${isTargetedCoordinate ? '!bg-blue-600 !text-white ring-4 ring-blue-500/30 font-bold scale-105 z-10 border-blue-600' : ''}`}>
-                  {hasNotation && (
-                    <div className="min-h-[1.25rem] text-[11px] font-mono font-black tracking-tight flex flex-wrap gap-1 mb-0.5 leading-none select-none">
-                      {extractedChordsList.map((ch, cIndex) => (
-                        <span key={cIndex} className="flex items-center gap-1">{ch.split(/\s+/).map((subCh, subIdx) => <span key={subIdx} className={`px-1 rounded border font-bold ${subCh === "~" || subCh === "-" || subCh === "->" ? "text-zinc-400 bg-transparent border-transparent font-sans normal-case" : "text-blue-600 bg-blue-50/80 border-blue-200/40"}`}>{subCh}</span>)}</span>
-                      ))}
-                    </div>
-                  )}
-                  <div className="text-[14px] font-sans font-bold leading-tight">{cleanWordDisplay || " "}</div>
-                </div>
-              );
-            })}
-          </div>
-          {lineCommentText && <div style={{ fontFamily: "'Nothing You Could Do', cursive" }} className="text-[16px] text-zinc-500 tracking-wide select-none whitespace-nowrap shrink-0 sm:text-right sm:pl-4 self-center pb-0.5">{lineCommentText}</div>}
-        </div>
-      );
-    });
-  };
-
-  const handleStructureDragStart = (idx: number) => {
-    setDraggedStructureIndex(idx);
-  };
-
-  const handleStructureDrop = (e: React.DragEvent, targetIdx: number) => {
-    e.preventDefault();
-    if (draggedStructureIndex !== null && draggedStructureIndex !== targetIdx) {
-      const reordered = [...formSections]; const [removed] = reordered.splice(draggedStructureIndex, 1); reordered.splice(targetIdx, 0, removed);
-      setFormSections(reordered); setDraggedStructureIndex(null);
-    }
-  };
-
-  const executeRawLyricsImportAction = () => {
+  function executeRawLyricsImportAction() {
     if (!pastedRawLyricsText.trim()) return;
+    setHasUnsavedChanges(true);
     const cleanLines = pastedRawLyricsText.split(/\r?\n/).map(l => l.trim());
     let currentSectionType = "";
     let currentBuffer: string[] = [];
@@ -458,49 +479,156 @@ export default function SongsPage() {
     setIsImportModalOpen(false); 
     setPastedRawLyricsText("");
     setEditorActiveTab("content");
-  };
+  }
 
-  const parseColonWrappedKeywords = (rawQuery: string) => {
-    const tokens = { title: "", artist: "", key: "", lyrics: "", theme: "" };
-    if (!rawQuery.trim()) return tokens;
+  // RESTORED: Unified Modal Launcher Controllers
+  function handleOpenAddSongModal() {
+    setEditingSongId(null); setFormTitle(""); setFormTempo(""); setFormKey("G"); setFormArtist(""); setFormThemes([]); setSectionTimings({}); setFormSections([{ id: "sec-1", type: "Verse 1", label: "Verse 1", content: "", repetitions: 1 }]);
+    setIsAddChordsModeActive(false); setChordTargetCoordinate(null); setEditorActiveTab("details"); setHasUnsavedChanges(false); setIsEditorOpen(true);
+  }
 
-    let processedString = rawQuery;
+  async function handleOpenEditSongModal(song: any) {
+    setEditingSongId(song.id); setFormTitle(song.title || ""); setFormTempo(song.tempo || ""); setFormKey(song.original_key || "G"); setFormArtist(song.artist || ""); setFormThemes(song.themes ? song.themes.split(",").map((t: string) => t.trim()).filter(Boolean) : []);
+    setSectionTimings(song.section_timings || {});
 
-    const isolateToken = (prefix: string) => {
-      const regex = new RegExp(`${prefix}\\s*([^:]+?)(?=\\s*(?::artist:|:key:|:lyrics:|:theme:|$))`, 'i');
-      const match = processedString.match(regex);
-      if (match) {
-        processedString = processedString.replace(match[0], "").trim();
-        return match[1].trim().toLowerCase();
-      }
-      return "";
-    };
+    const sectionsRaw = await getSongChordChart(song.id);
+    if (sectionsRaw && sectionsRaw.length > 0) {
+      setFormSections(sectionsRaw.map((s: any, idx: number) => ({ 
+        id: s.id || `sec-${idx}`, 
+        type: s.section_name || "Verse 1", 
+        label: s.section_name || "Verse 1", 
+        content: s.content || "", 
+        repetitions: 1
+      })));
+    } else { setFormSections([{ id: "sec-1", type: "Verse 1", label: "Verse 1", content: "", repetitions: 1 }]); }
+    setIsAddChordsModeActive(false); setChordTargetCoordinate(null); setEditorActiveTab("details"); setHasUnsavedChanges(false); setIsEditorOpen(true);
+  }
 
-    tokens.artist = isolateToken(":artist:");
-    tokens.key = isolateToken(":key:");
-    tokens.lyrics = isolateToken(":lyrics:");
-    tokens.theme = isolateToken(":theme:");
+  function handleOpenKeySelectionPopup() {
+    const cleanKeyBase = formKey.endsWith("m") ? formKey.slice(0, -1) : formKey;
+    let baseLetter = cleanKeyBase.charAt(0);
+    let accidentalSign: "" | "#" | "b" = "";
     
-    tokens.title = processedString.trim().toLowerCase();
-    return tokens;
+    if (cleanKeyBase.includes("#")) accidentalSign = "#";
+    else if (cleanKeyBase.includes("b")) accidentalSign = "b";
+
+    setModalKeyRoot(baseLetter);
+    setModalKeyAccidental(accidentalSign);
+    setIsKeyPopupOpen(true);
+  }
+
+  // =======================================================
+  // --- HOISTED HOOK LAYERS: STRICT UNCONDITIONAL TOP EXECUTION
+  // =======================================================
+
+  // Hook 1: Sync server-side queries on input adjustments
+  useEffect(() => {
+    loadSongsData();
+  }, [songSearchQuery]);
+
+  // Hook 2: Keyboard Escape Key Hardware Sync
+  useEffect(() => {
+    const handleModalHardwareEscapeKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && isEditorOpen) {
+        handleAttemptDismissal();
+      }
+    };
+    window.addEventListener("keydown", handleModalHardwareEscapeKey);
+    return () => window.removeEventListener("keydown", handleModalHardwareEscapeKey);
+  }, [isEditorOpen, hasUnsavedChanges]);
+
+  // Hook 3: Sync Active User Bookmark Matrix
+  useEffect(() => {
+    async function syncActiveUserBookmarksMatrix() {
+      if (!simulatedUserId || simulatedUserId === "00000000-0000-0000-0000-000000000000") {
+        setBookmarkedSongIds([]);
+        return;
+      }
+      
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("bookmarked_songs")
+        .eq("id", simulatedUserId)
+        .maybeSingle();
+
+      if (!error && data?.bookmarked_songs) {
+        setBookmarkedSongIds(data.bookmarked_songs);
+      } else {
+        setBookmarkedSongIds([]);
+      }
+    }
+    syncActiveUserBookmarksMatrix();
+  }, [simulatedUserId]);
+
+  const activeScaleDiatonicDeck = useMemo(() => DIATONIC_MODES_MAP[formKey] || DIATONIC_MODES_MAP["G"], [formKey]);
+
+  // Hook 4: Nashville Number Keyboard Input & Backspace Notation Stripper Binding Matrix
+  useEffect(() => {
+    const handleNashvilleNumberKeyInjections = (e: KeyboardEvent) => {
+      if (!isAddChordsModeActive || !chordTargetCoordinate || document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA") return;
+      
+      if (["1", "2", "3", "4", "5", "6", "7"].includes(e.key)) {
+        e.preventDefault();
+        const targetedScaleChord = activeScaleDiatonicDeck[parseInt(e.key, 10) - 1];
+        if (targetedScaleChord) {
+          const formattedFullChordStr = `${targetedScaleChord.root}${targetedScaleChord.suffix}`;
+          const { sectionType, lineIdx, wordIdx = 0 } = chordTargetCoordinate;
+          setHasUnsavedChanges(true);
+          setFormSections(prev => prev.map(sec => {
+            if (sec.type !== sectionType) return sec;
+            const lines = sec.content.split("\n");
+            let realWordCounter = 0;
+            lines[lineIdx] = (lines[lineIdx] || "").replace(/(?:\[[^\]]+\]|\{\s*[^\}]+\s*\}|\S)+/g, (match) => {
+              if (realWordCounter === wordIdx) { realWordCounter++; return `[${formattedFullChordStr}]${match.replace(/\[[^\]]+\]/g, "").replace(/\{[^\}]+\}/g, "")}`; }
+              realWordCounter++; return match;
+            });
+            return { ...sec, content: lines.join("\n") };
+          }));
+          setChordTargetCoordinate(null);
+        }
+      } else if (e.key === "Backspace") {
+        // SURGICAL ADDITION: Backspace Notation Clear Engine
+        e.preventDefault();
+        const { sectionType, lineIdx, wordIdx = 0 } = chordTargetCoordinate;
+        setHasUnsavedChanges(true);
+        setFormSections(prev => prev.map(sec => {
+          if (sec.type !== sectionType) return sec;
+          const lines = sec.content.split("\n");
+          let realWordCounter = 0;
+          lines[lineIdx] = (lines[lineIdx] || "").replace(/(?:\[[^\]]+\]|\{\s*[^\}]+\s*\}|\S)+/g, (match) => {
+            if (realWordCounter === wordIdx) { 
+              realWordCounter++; 
+              return match.replace(/\[[^\]]+\]/g, ""); // Completely strips bracketed chords from current word block
+            }
+            realWordCounter++; 
+            return match;
+          });
+          return { ...sec, content: lines.join("\n") };
+        }));
+        setChordTargetCoordinate(null);
+      }
+    };
+    window.addEventListener("keydown", handleNashvilleNumberKeyInjections);
+    return () => window.removeEventListener("keydown", handleNashvilleNumberKeyInjections);
+  }, [isAddChordsModeActive, chordTargetCoordinate, activeScaleDiatonicDeck]);
+
+  const handleStructureDropOverride = (e: React.DragEvent, targetIdx: number) => {
+    e.preventDefault();
+    if (draggedStructureIndex !== null && draggedStructureIndex !== targetIdx) {
+      setHasUnsavedChanges(true);
+      const reordered = [...formSections]; 
+      const [removed] = reordered.splice(draggedStructureIndex, 1); 
+      reordered.splice(targetIdx, 0, removed);
+      setFormSections(reordered); 
+    }
+    setDraggedStructureIndex(null);
+    setDragOverStructureIndex(null);
   };
+  // paste this right below handleStructureDropOverride:
 
-  const searchTokens = parseColonWrappedKeywords(songSearchQuery);
 
-  const filteredSongs = allDatabaseSongs.filter(song => {
-    if (searchTokens.title && !song.title?.toLowerCase().includes(searchTokens.title)) return false;
-    if (searchTokens.artist && !song.artist?.toLowerCase().includes(searchTokens.artist)) return false;
-    if (searchTokens.key && !song.original_key?.toLowerCase().includes(searchTokens.key)) return false;
-    if (searchTokens.theme && !song.themes?.toLowerCase().includes(searchTokens.theme)) return false;
-    if (searchTokens.lyrics && !song.chordpro_content?.toLowerCase().includes(searchTokens.lyrics)) return false;
-    return true;
-  });
-
-  const getCentralizedMetricsTuple = (sectionType: string) => {
-    return sectionTimings[sectionType] || { measures: 0, beats: 0 };
-  };
-
-  const handleUpdateCentralizedMetrics = (sectionType: string, field: "measures" | "beats", value: number) => {
+  function handleUpdateCentralizedMetrics(sectionType: string, field: "measures" | "beats", value: number) {
+    setHasUnsavedChanges(true);
     setSectionTimings(prev => {
       const currentTuple = prev[sectionType] || { measures: 0, beats: 0 };
       return {
@@ -511,15 +639,13 @@ export default function SongsPage() {
         }
       };
     });
-  };
+  }
 
-  const filteredEnclosurePopupCatalog = ENCLOSURE_POPUP_CATALOG.filter(item => item.display.toLowerCase().includes(sectionSearchTerm.toLowerCase()));
   const uniqueContentSectionsList = formSections.reduce((acc: SongSectionBlock[], curr) => { if (!acc.some(item => item.type === curr.type)) acc.push(curr); return acc; }, []);
   const existingCachedDatabaseArtists = Array.from(new Set(allDatabaseSongs.map(s => s.artist).filter(Boolean))) as string[];
   const filteredArtistSuggestions = existingCachedDatabaseArtists.filter(art => art.toLowerCase().includes(formArtist.toLowerCase()) && art.toLowerCase() !== formArtist.toLowerCase().trim());
   const filteredThemeCatalogSuggestions = CHRISTIAN_THEMES_PRESETS.filter(th => th.toLowerCase().includes(themeInputSearchValue.toLowerCase()) && !formThemes.includes(th));
-  const isChordInputBlank = customChordInputValue.trim() === ""; const isCommentInputBlank = customCommentInputValue.trim() === "";
-
+  
   const typingWordsArray = songSearchQuery.split(/\s+/);
   const currentActiveWordFragment = typingWordsArray[typingWordsArray.length - 1] || "";
   const shouldShowHintsDropdown = currentActiveWordFragment.startsWith(":");
@@ -527,93 +653,101 @@ export default function SongsPage() {
     item.token.toLowerCase().includes(currentActiveWordFragment.toLowerCase())
   );
 
-  const handleSelectKeywordSuggestion = (token: string) => {
-    const tokensList = [...typingWordsArray];
-    tokensList[tokensList.length - 1] = token + " "; 
-    setSongSearchQuery(tokensList.join(" "));
-    if (searchInputRef.current) searchInputRef.current.focus();
+  const filteredEnclosurePopupCatalog = ENCLOSURE_POPUP_CATALOG.filter(item => item.display.toLowerCase().includes(sectionSearchTerm.toLowerCase()));
+  const isChordInputBlank = customChordInputValue.trim() === ""; const isCommentInputBlank = customCommentInputValue.trim() === "";
+
+  const searchTokensMetrics = parseColonWrappedKeywords(songSearchQuery);
+
+  const getCentralizedMetricsTuple = (sectionType: string) => {
+    return sectionTimings[sectionType] || { measures: 0, beats: 0 };
   };
 
-  const handleClearSpecificTokenChip = (tokenPrefix: string, tokenValue: string) => {
-    const targetMatchPattern = new RegExp(`${tokenPrefix}\\s*${tokenValue.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')}`, 'i');
-    setSongSearchQuery(prev => prev.replace(targetMatchPattern, "").trim());
-  };
+  
 
-  if (loading && allDatabaseSongs.length === 0) return <div className="p-8 text-center text-xs font-black uppercase text-zinc-400 tracking-widest animate-pulse">Loading Songs...</div>;
+  if (loading && allDatabaseSongs.length === 0) {
+    return (
+      <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#f8f9fa] p-4 text-center select-none animate-pulse">
+        <div className="text-[10px] font-mono font-black uppercase text-blue-600 tracking-widest">
+          Syncing Catalog Rows...
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="p-6 md:p-8 max-w-7xl w-full mx-auto space-y-6 animate-in fade-in duration-200">
+    <div className="p-4 md:p-8 max-w-7xl w-full mx-auto space-y-4 md:space-y-6 animate-in fade-in duration-200">
       <style dangerouslySetInnerHTML={{__html: `@import url('https://fonts.googleapis.com/css2?family=Nothing+You+Could+Do&display=swap');`}} />
 
-      <div className="bg-white border border-zinc-200 rounded-3xl p-6 shadow-sm">
-        <div className="flex flex-col sm:flex-row justify-between sm:items-center border-b border-zinc-100 pb-4 mb-6 gap-4">
-          <div className="flex items-center gap-4">
+      {/* --- RESPONSIVE MAIN CONTAINER --- */}
+      <div className="bg-white border border-zinc-200 rounded-xl md:rounded-3xl p-4 md:p-6 shadow-sm">
+        
+        {/* COMPACT SEARCH FILTER & HEADER ACTIONS DECK */}
+        <div className="flex flex-col sm:flex-row justify-between sm:items-center border-b border-zinc-100 pb-3 mb-4 md:mb-6 gap-3">
+          <div className="flex items-center gap-3">
             {simulatedRole === "admin" && (
-              <button onClick={handleOpenAddSongModal} className="w-12 h-12 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center font-black text-xl shadow-md transition-transform active:scale-95">＋</button>
+              <button onClick={handleOpenAddSongModal} className="w-10 h-10 rounded-xl bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center font-black text-lg shadow-md transition-transform active:scale-95">＋</button>
             )}
             <div>
-              <h3 className="text-xl font-bold text-zinc-950 tracking-tight">Songs Database</h3>
-              <p className="text-[10px] text-zinc-400 font-bold tracking-normal mt-0.5">Type <span className="font-mono text-blue-600 bg-zinc-50 px-1.5 border rounded">:</span> to prompt Discord-style advanced keyword parameters search engines filters.</p>
+              <h3 className="text-lg md:text-xl font-bold text-zinc-950 tracking-tight">Songs Database</h3>
             </div>
           </div>
           
-          <div className="flex-1 max-w-xl flex flex-col gap-1.5 relative overflow-visible">
-            <div className="w-full flex flex-wrap items-center gap-2 bg-zinc-50 rounded-2xl px-4 py-3 border border-zinc-200 shadow-inner focus-within:bg-white focus-within:border-blue-500 transition-all">
+          <div className="flex-1 max-w-xl flex flex-col gap-1 relative overflow-visible">
+            <div className="w-full flex flex-wrap items-center gap-1.5 bg-zinc-50 rounded-xl px-3 py-2.5 border border-zinc-200 shadow-inner focus-within:bg-white focus-within:border-blue-500 transition-all">
               
-              {searchTokens.artist && (
-                <div className="inline-flex items-center gap-1.5 bg-white border border-zinc-250 text-zinc-800 text-[11px] font-black px-2.5 py-1 rounded-xl shadow-sm animate-in zoom-in-95">
-                  <span className="opacity-40 font-mono text-[10px] bg-zinc-50 px-1 rounded border">:artist:</span>
-                  <span className="max-w-[80px] truncate">{searchTokens.artist}</span>
-                  <button type="button" onClick={() => handleClearSpecificTokenChip(":artist:", searchTokens.artist)} className="text-[11px] ml-1 font-bold text-zinc-400 hover:text-red-500 transition-colors">✕</button>
+              {searchTokensMetrics.artist && (
+                <div className="inline-flex items-center gap-1 bg-white border border-zinc-250 text-zinc-800 text-[10px] font-black px-2 py-0.5 rounded-lg shadow-sm animate-in zoom-in-95">
+                  <span className="opacity-40 font-mono text-[9px] bg-zinc-50 px-1 rounded border">:artist:</span>
+                  <span className="max-w-[70px] truncate">{searchTokensMetrics.artist}</span>
+                  <button type="button" onClick={() => handleClearSpecificTokenChip(":artist:", searchTokensMetrics.artist)} className="text-[10px] ml-0.5 font-bold text-zinc-400 hover:text-red-500 transition-colors">✕</button>
                 </div>
               )}
 
-              {searchTokens.key && (
-                <div className="inline-flex items-center gap-1.5 bg-white border border-zinc-250 text-zinc-800 text-[11px] font-black px-2.5 py-1 rounded-xl shadow-sm animate-in zoom-in-95">
-                  <span className="opacity-40 font-mono text-[10px] bg-zinc-50 px-1 rounded border">:key:</span>
-                  <span className="uppercase">{searchTokens.key}</span>
-                  <button type="button" onClick={() => handleClearSpecificTokenChip(":key:", searchTokens.key)} className="text-[11px] ml-1 font-bold text-zinc-400 hover:text-red-500 transition-colors">✕</button>
+              {searchTokensMetrics.key && (
+                <div className="inline-flex items-center gap-1 bg-white border border-zinc-250 text-zinc-800 text-[10px] font-black px-2 py-0.5 rounded-lg shadow-sm animate-in zoom-in-95">
+                  <span className="opacity-40 font-mono text-[9px] bg-zinc-50 px-1 rounded border">:key:</span>
+                  <span className="uppercase">{searchTokensMetrics.key}</span>
+                  <button type="button" onClick={() => handleClearSpecificTokenChip(":key:", searchTokensMetrics.key)} className="text-[10px] ml-0.5 font-bold text-zinc-400 hover:text-red-500 transition-colors">✕</button>
                 </div>
               )}
 
-              {searchTokens.lyrics && (
-                <div className="inline-flex items-center gap-1.5 bg-white border border-zinc-250 text-zinc-800 text-[11px] font-black px-2.5 py-1 rounded-xl shadow-sm animate-in zoom-in-95">
-                  <span className="opacity-40 font-mono text-[10px] bg-zinc-50 px-1 rounded border">:lyrics:</span>
-                  <span className="max-w-[80px] truncate">"{searchTokens.lyrics}"</span>
-                  <button type="button" onClick={() => handleClearSpecificTokenChip(":lyrics:", searchTokens.lyrics)} className="text-[11px] ml-1 font-bold text-zinc-400 hover:text-red-500 transition-colors">✕</button>
+              {searchTokensMetrics.lyrics && (
+                <div className="inline-flex items-center gap-1 bg-white border border-zinc-250 text-zinc-800 text-[10px] font-black px-2 py-0.5 rounded-lg shadow-sm animate-in zoom-in-95">
+                  <span className="opacity-40 font-mono text-[9px] bg-zinc-50 px-1 rounded border">:lyrics:</span>
+                  <span className="max-w-[70px] truncate">"{searchTokensMetrics.lyrics}"</span>
+                  <button type="button" onClick={() => handleClearSpecificTokenChip(":lyrics:", searchTokensMetrics.lyrics)} className="text-[10px] ml-0.5 font-bold text-zinc-400 hover:text-red-500 transition-colors">✕</button>
                 </div>
               )}
 
-              {searchTokens.theme && (
-                <div className="inline-flex items-center gap-1.5 bg-white border border-zinc-250 text-zinc-800 text-[11px] font-black px-2.5 py-1 rounded-xl shadow-sm animate-in zoom-in-95">
-                  <span className="opacity-40 font-mono text-[10px] bg-zinc-50 px-1 rounded border">:theme:</span>
-                  <span className="capitalize max-w-[80px] truncate">{searchTokens.theme}</span>
-                  <button type="button" onClick={() => handleClearSpecificTokenChip(":theme:", searchTokens.theme)} className="text-[11px] ml-1 font-bold text-zinc-400 hover:text-red-500 transition-colors">✕</button>
+              {searchTokensMetrics.theme && (
+                <div className="inline-flex items-center gap-1 bg-white border border-zinc-250 text-zinc-800 text-[10px] font-black px-2 py-0.5 rounded-lg shadow-sm animate-in zoom-in-95">
+                  <span className="opacity-40 font-mono text-[9px] bg-zinc-50 px-1 rounded border">:theme:</span>
+                  <span className="capitalize max-w-[70px] truncate">{searchTokensMetrics.theme}</span>
+                  <button type="button" onClick={() => handleClearSpecificTokenChip(":theme:", searchTokensMetrics.theme)} className="text-[10px] ml-0.5 font-bold text-zinc-400 hover:text-red-500 transition-colors">✕</button>
                 </div>
               )}
 
               <input 
                 ref={searchInputRef}
                 type="text" 
-                placeholder={songSearchQuery.trim() === "" ? "Search library tracking parameters..." : ""} 
+                placeholder={songSearchQuery.trim() === "" ? "Search library parameters..." : ""} 
                 value={songSearchQuery} 
                 onChange={e => setSongSearchQuery(e.target.value)} 
-                className="flex-1 min-w-[120px] text-xs font-semibold text-zinc-800 bg-transparent outline-none placeholder-zinc-400" 
+                className="flex-1 min-w-[100px] text-xs font-semibold text-zinc-800 bg-transparent outline-none placeholder-zinc-400" 
               />
             </div>
 
             {shouldShowHintsDropdown && filteredKeywordSuggestions.length > 0 && (
-              <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-zinc-200/90 rounded-2xl shadow-2xl p-2.5 z-[999999] flex flex-col gap-1 max-h-48 overflow-y-auto custom-scrollbar animate-in slide-in-from-top-2 duration-150">
-                <div className="px-3 py-1.5 text-[9px] font-black uppercase text-zinc-400 tracking-wider border-b select-none">Search Context Operators Suggestions</div>
+              <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-zinc-200/90 rounded-xl shadow-2xl p-2 z-[999999] flex flex-col gap-0.5 max-h-40 overflow-y-auto custom-scrollbar animate-in slide-in-from-top-1 duration-100">
                 {filteredKeywordSuggestions.map((item) => (
                   <button
                     key={item.token}
                     type="button"
                     onClick={() => handleSelectKeywordSuggestion(item.token)}
-                    className="w-full flex items-center justify-between text-left p-2.5 px-3 rounded-xl hover:bg-blue-50/60 transition-colors cursor-pointer group"
+                    className="w-full flex items-center justify-between text-left p-2 rounded-lg hover:bg-blue-50/60 transition-colors cursor-pointer group text-[11px]"
                   >
-                    <span className="text-xs font-mono font-black text-blue-600 bg-blue-50/50 border border-blue-200/40 px-1.5 py-0.5 rounded-lg group-hover:bg-blue-100 transition-colors">{item.token}</span>
-                    <span className="text-[11px] font-bold text-zinc-400 text-right group-hover:text-zinc-600 transition-colors">{item.hint}</span>
+                    <span className="font-mono font-black text-blue-600 bg-blue-50/50 border border-blue-200/40 px-1 rounded group-hover:bg-blue-100 transition-colors">{item.token}</span>
+                    <span className="font-bold text-zinc-400 text-right group-hover:text-zinc-600 transition-colors">{item.hint}</span>
                   </button>
                 ))}
               </div>
@@ -621,97 +755,122 @@ export default function SongsPage() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 content-start">
-          {filteredSongs.map(song => {
+        {/* SONG GRID TILE CARDS LINEUP DOCK */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 md:gap-4 content-start">
+          {allDatabaseSongs.map(song => {
             const isBookmarked = bookmarkedSongIds.includes(song.id);
             return (
-              <div key={song.id} onClick={() => handleOpenEditSongModal(song)} className="p-5 rounded-2xl border border-zinc-200 bg-white hover:bg-blue-50/20 hover:border-blue-300 transition-all cursor-pointer flex flex-col justify-between min-h-[125px] group select-none shadow-sm relative overflow-hidden">
-                <div className="space-y-1.5 pr-8">
-                  <h4 className="font-extrabold text-[15px] tracking-tight group-hover:text-blue-600 line-clamp-2">{song.title}</h4>
-                  <p className="text-[11px] font-bold text-zinc-400 truncate">👤 {song.artist || "Unknown Artist"}</p>
+              <div 
+                key={song.id} 
+                onClick={() => handleOpenEditSongModal(song)} 
+                className="p-4 rounded-xl border border-zinc-200 bg-white hover:bg-blue-50/20 hover:border-blue-300 transition-all cursor-pointer flex flex-col justify-between min-h-[110px] group select-none shadow-sm relative overflow-hidden"
+              >
+                <div className="space-y-1 pr-6">
+                  <h4 className="font-extrabold text-[14px] tracking-tight group-hover:text-blue-600 line-clamp-2">{song.title}</h4>
+                  <p className="text-[10px] font-bold text-zinc-400 truncate">👤 {song.artist || "Unknown Artist"}</p>
                 </div>
                 
                 <button 
                   type="button" 
                   onClick={(e) => handleToggleBookmark(e, song.id)} 
-                  className="absolute top-4 right-4 w-6 h-6 flex items-center justify-center transition-transform hover:scale-110 active:scale-95 z-20 cursor-pointer"
+                  className="absolute top-3.5 right-3.5 w-5 h-5 flex items-center justify-center transition-transform hover:scale-110 active:scale-95 z-20 cursor-pointer"
                 >
                   <img src={isBookmarked ? "/assets/bookmark-active.svg" : "/assets/bookmark.svg"} alt="" className="w-full h-full object-contain" />
                 </button>
 
-                <div className="flex items-center justify-between mt-4 pt-2 border-t border-zinc-100/60"><span className="px-2 py-0.5 rounded-full bg-white border border-zinc-200 text-[10px] font-black uppercase text-zinc-500 shadow-inner">{song.original_key || "G"}</span><span className="text-[11px] font-bold text-zinc-400">{song.tempo || "74"} BPM</span></div>
+                <div className="flex items-center justify-between mt-3 pt-1.5 border-t border-zinc-100/60">
+                  <span className="px-1.5 py-0.5 rounded bg-white border border-zinc-200 text-[9px] font-black uppercase text-zinc-500 shadow-inner">{song.original_key || "G"}</span>
+                  <span className="text-[10px] font-bold text-zinc-400">{song.tempo || "74"} BPM</span>
+                </div>
               </div>
             );
           })}
 
-          {filteredSongs.length === 0 && (
-            <div className="col-span-full py-12 text-center text-xs font-semibold italic text-zinc-400 select-none border border-dashed rounded-2xl bg-zinc-50/50">No catalog songs records found matching current keyword context parameters tokens.</div>
+          {allDatabaseSongs.length === 0 && (
+            <div className="col-span-full py-8 text-center text-[11px] font-semibold italic text-zinc-400 select-none border border-dashed rounded-xl bg-zinc-50/50">No catalog songs records found matching current query tokens.</div>
           )}
         </div>
       </div>
 
+      {/* --- SECTIONS DRAWERS & WORKSPACE POPUPS --- */}
       {isEditorOpen && (
-        <div className="fixed inset-0 bg-zinc-900/60 backdrop-blur-sm z-[1000] flex items-center justify-center p-4 md:p-6 animate-in fade-in">
-          <div className="bg-[#f8f9fa] rounded-[2.5rem] shadow-2xl w-full max-w-4xl h-[85vh] flex flex-col overflow-hidden border border-zinc-200 relative pb-20 animate-in zoom-in-95">
-            <div className="bg-white border-b border-zinc-200 px-8 py-5 flex items-center justify-between flex-shrink-0">
-              <div className="flex items-center gap-3">
-                <button type="button" onClick={() => setIsEditorOpen(false)} className="w-9 h-9 rounded-full bg-zinc-100 hover:bg-zinc-200 text-zinc-600 font-bold text-sm flex items-center justify-center">‹</button>
-                <h3 className="font-black text-lg text-zinc-900 tracking-tight">{editingSongId ? "Modify Worship Arrangement" : "Create Studio Track Node"}</h3>
+        <div 
+          onClick={handleBackdropClick}
+          className="fixed inset-0 bg-zinc-900/60 backdrop-blur-sm z-[1000] flex items-center justify-center p-3 md:p-6 pb-16 md:pb-0 animate-in fade-in"
+        >
+          <div 
+            ref={editorContentContainerRef}
+            className="bg-[#f8f9fa] rounded-xl md:rounded-[2.5rem] shadow-2xl w-full max-w-4xl h-[78vh] md:h-[85vh] flex flex-col overflow-hidden border border-zinc-200 relative pb-16 md:pb-20 animate-in zoom-in-95"
+          >
+            {/* STICKY DISMISS HEADER BAR DOCK */}
+            <div className="bg-white border-b border-zinc-200 px-4 md:px-8 py-3.5 flex items-center justify-between flex-shrink-0">
+              <div className="flex items-center gap-2">
+                <button type="button" onClick={handleAttemptDismissal} className="w-7 h-7 rounded-lg bg-zinc-100 text-zinc-600 font-bold text-xs flex items-center justify-center">‹</button>
+                <h3 className="font-black text-sm md:text-base text-zinc-900 tracking-tight">{editingSongId ? "Modify Worship Arrangement" : "Create Studio Track Node"}</h3>
               </div>
-              <div className="flex items-center gap-2.5 select-none">
-                {editorActiveTab === "content" && (
-                  <>
-                    <button type="button" onClick={() => setIsImportModalOpen(true)} className="px-4 py-2 text-xs font-black text-blue-600 bg-blue-50 border border-blue-200 hover:bg-blue-100 rounded-xl block shadow-sm">📥 Import Raw Lyrics</button>
-                    <button type="button" onClick={() => { const nextState = !isRealtimePreviewActive; setIsRealtimePreviewActive(nextState); if (!nextState) { setIsAddChordsModeActive(false); setIsAddNotesModeActive(false); setChordTargetCoordinate(null); setNotesTargetCoordinate(null); } }} className={`px-4 py-2 text-xs font-black rounded-xl border transition-all ${isRealtimePreviewActive ? 'bg-blue-600 border-blue-500 text-white shadow-md' : 'bg-white border-zinc-200'}`}> {isRealtimePreviewActive ? "👁️ Hide Live Preview" : "👁️ Show Live Preview"} </button>
-                    <button type="button" disabled={!isRealtimePreviewActive} onClick={() => { setIsAddChordsModeActive(!isAddChordsModeActive); setIsAddNotesModeActive(false); setChordTargetCoordinate(null); setNotesTargetCoordinate(null); }} className={`px-4 py-2 text-xs font-black rounded-xl border transition-all disabled:opacity-40 ${isAddChordsModeActive ? 'bg-amber-500 border-amber-400 text-white' : 'bg-white border-zinc-200'}`}> {isAddChordsModeActive ? "🎸 Locking..." : "🎸 Add Notation"} </button>
-                    <button type="button" disabled={!isRealtimePreviewActive} onClick={() => { setIsAddNotesModeActive(!isAddNotesModeActive); setIsAddChordsModeActive(false); setChordTargetCoordinate(null); setNotesTargetCoordinate(null); }} className={`px-4 py-2 text-xs font-black rounded-xl border transition-all disabled:opacity-40 ${isAddNotesModeActive ? 'bg-purple-600 border-purple-500 text-white shadow-md' : 'bg-white border-zinc-200'}`}> 📝 Add Notes </button>
-                  </>
-                )}
-              </div>
+              
+              <div className="hidden md:flex items-center gap-2 select-none">
+              {editorActiveTab === "content" && (
+                <>
+                  <button type="button" onClick={() => setIsImportModalOpen(true)} className="px-3 py-1.5 text-[11px] font-black text-blue-600 bg-blue-50 border border-blue-200 hover:bg-blue-100 rounded-lg block shadow-sm">📥 Import Raw Lyrics</button>
+                  <button type="button" onClick={() => { const nextState = !isRealtimePreviewActive; setIsRealtimePreviewActive(nextState); if (!nextState) { setIsAddChordsModeActive(false); setIsAddNotesModeActive(false); setChordTargetCoordinate(null); setNotesTargetCoordinate(null); } }} className={`px-3 py-1.5 text-[11px] font-black rounded-lg border transition-all ${isRealtimePreviewActive ? 'bg-blue-600 border-blue-500 text-white shadow-md' : 'bg-white border-zinc-200'}`}> {isRealtimePreviewActive ? "👁️ Hide Preview" : "👁️ Show Preview"} </button>
+                  <button type="button" disabled={!isRealtimePreviewActive} onClick={() => { setIsAddChordsModeActive(!isAddChordsModeActive); setIsAddNotesModeActive(false); setChordTargetCoordinate(null); setNotesTargetCoordinate(null); }} className={`px-3 py-1.5 text-[11px] font-black rounded-lg border transition-all disabled:opacity-40 ${isAddChordsModeActive ? 'bg-amber-500 border-amber-400 text-white' : 'bg-white border-zinc-200'}`}> {isAddChordsModeActive ? "🎸 Lock Mode" : "🎸 Add Notation"} </button>
+                  <button type="button" disabled={!isRealtimePreviewActive} onClick={() => { setIsAddNotesModeActive(!isAddNotesModeActive); setIsAddChordsModeActive(false); setChordTargetCoordinate(null); setNotesTargetCoordinate(null); }} className={`px-3 py-1.5 text-[11px] font-black rounded-lg border transition-all disabled:opacity-40 ${isAddNotesModeActive ? 'bg-purple-600 border-purple-500 text-white shadow-md' : 'bg-white border-zinc-200'}`}> 📝 Add Notes </button>
+                </>
+              )}
+            </div>
             </div>
 
-            <div className="bg-white px-8 py-0 flex gap-6 border-b border-zinc-100 text-sm font-bold flex-shrink-0 select-none">
-              {(["details", "content", "structure"] as const).map(tab => (
-                <button key={tab} type="button" onClick={() => setEditorActiveTab(tab)} className={`py-3.5 capitalize tracking-wide transition-all border-b-2 font-black ${editorActiveTab === tab ? 'border-blue-600 text-blue-600' : 'border-transparent text-zinc-400 hover:text-zinc-600'}`}>{tab}</button>
-              ))}
+            {/* TWIN-BAR LEVEL 2 ACTION SUB TAB CONTAINERS */}
+            <div className="bg-white flex flex-col flex-shrink-0 border-b border-zinc-100 select-none w-full">
+              <div className="px-4 md:px-8 flex gap-4 text-xs font-bold border-b border-zinc-100">
+                {(["details", "content", "structure"] as const).map(tab => (
+                  <button key={tab} type="button" onClick={() => setEditorActiveTab(tab)} className={`py-2.5 capitalize tracking-wide transition-all border-b-2 font-black ${editorActiveTab === tab ? 'border-blue-600 text-blue-600' : 'border-transparent text-zinc-400 hover:text-zinc-600'}`}>{tab}</button>
+                ))}
+              </div>
+
+              {/* REFACTORED MOBILE CONTENT ACTION SLIDER SUB BAR */}
+              {editorActiveTab === "content" && (
+                <div className="w-full bg-zinc-50/60 p-2 flex items-center gap-1.5 overflow-x-auto overflow-y-hidden flex-nowrap scrollbar-none border-b border-zinc-100 md:hidden animate-in slide-in-from-top-1">
+                  <button type="button" onClick={() => setIsImportModalOpen(true)} className="px-2.5 py-1.5 bg-white border border-zinc-200 rounded-md text-[9px] font-black uppercase tracking-wider text-zinc-700 shrink-0 shadow-sm">📥 Import</button>
+                  <button type="button" onClick={() => { const nextState = !isRealtimePreviewActive; setIsRealtimePreviewActive(nextState); if (!nextState) { setIsAddChordsModeActive(false); setIsAddNotesModeActive(false); setChordTargetCoordinate(null); setNotesTargetCoordinate(null); } }} className={`px-2.5 py-1.5 rounded-md text-[9px] font-black uppercase tracking-wider shrink-0 border shadow-sm transition-colors ${isRealtimePreviewActive ? 'bg-blue-600 border-blue-500 text-white' : 'bg-white border-zinc-200 text-zinc-700'}`}>👁️ {isRealtimePreviewActive ? "Hide Live" : "Preview"}</button>
+                  <button type="button" disabled={!isRealtimePreviewActive} onClick={() => { setIsAddChordsModeActive(!isAddChordsModeActive); setIsAddNotesModeActive(false); setChordTargetCoordinate(null); setNotesTargetCoordinate(null); }} className={`px-2.5 py-1.5 rounded-md text-[9px] font-black uppercase tracking-wider shrink-0 border transition-all disabled:opacity-40 ${isAddChordsModeActive ? 'bg-amber-500 border-amber-400 text-white shadow-sm' : 'bg-white border-zinc-200 text-zinc-700'}`}>🎸 Chords</button>
+                  <button type="button" disabled={!isRealtimePreviewActive} onClick={() => { setIsAddNotesModeActive(!isAddNotesModeActive); setIsAddChordsModeActive(false); setChordTargetCoordinate(null); setNotesTargetCoordinate(null); }} className={`px-2.5 py-1.5 rounded-md text-[9px] font-black uppercase tracking-wider shrink-0 border transition-all disabled:opacity-40 ${isAddNotesModeActive ? 'bg-purple-600 border-purple-500 text-white shadow-sm' : 'bg-white border-zinc-200 text-zinc-700'}`}>📝 Note Rows</button>
+                </div>
+              )}
             </div>
 
-            <div className="flex-1 overflow-y-auto p-8 pb-24 custom-scrollbar relative">
+            {/* INTERNAL PRIMARY CONTENT SHEETS CANVAS */}
+            <div className="flex-1 overflow-y-auto p-4 md:p-8 pb-20 custom-scrollbar relative space-y-3">
               {editorActiveTab === "details" && (
-                <div className="max-w-2xl mx-auto space-y-6 animate-in fade-in">
-                  <div className="bg-white p-8 rounded-3xl border border-zinc-200 space-y-6">
-                    <div><label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block mb-1.5">Track Title Signature *</label><input type="text" value={formTitle} onChange={e => setFormTitle(e.target.value)} className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-3.5 text-sm font-bold text-zinc-800 bg-zinc-50/50 outline-none" /></div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div><label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block mb-1.5">BPM Tempo Count</label><input type="number" value={formTempo} onChange={e => setFormTempo(e.target.value)} className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-3.5 text-sm outline-none" /></div>
-                      
-                      {/* RED DIRECTIVE ROUTE: Connected directly to the target open transposer action click */}
+                <div className="max-w-2xl mx-auto animate-in fade-in">
+                  <div className="bg-white p-4 md:p-6 rounded-xl md:rounded-3xl border border-zinc-200 space-y-4">
+                    <div><label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Track Title Signature *</label><input type="text" value={formTitle} className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-2.5 text-xs font-bold text-zinc-800 bg-zinc-50/50 outline-none" onChange={e => { setHasUnsavedChanges(true); setFormTitle(e.target.value); }} /></div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div><label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block mb-1">BPM Tempo Count</label><input type="number" value={formTempo} className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-2.5 text-xs outline-none" onChange={e => { setHasUnsavedChanges(true); setFormTempo(e.target.value); }} /></div>
                       <div>
-                        <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block mb-1.5">Original Target Key Signature *</label>
-                        <button 
-                          type="button" 
-                          onClick={handleOpenKeySelectionPopup} 
-                          className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-3.5 text-sm font-bold text-zinc-800 bg-zinc-50/50 text-left flex justify-between items-center outline-none"
-                        >
+                        <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Original Target Key Signature *</label>
+                        <button type="button" onClick={handleOpenKeySelectionPopup} className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-2.5 text-xs font-bold text-zinc-800 bg-zinc-50/50 text-left flex justify-between items-center outline-none">
                           <span>{formKey ? `Key of ${formKey}` : "Select Key"}</span>
-                          <span className="text-xs text-zinc-400">▼</span>
+                          <span className="text-[10px] text-zinc-400">▼</span>
                         </button>
                       </div>
                     </div>
                     
                     <div className="relative">
-                      <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block mb-1.5">Artist / Author Label Signature *</label><input type="text" value={formArtist} onFocus={() => setIsArtistDropdownFocused(true)} onBlur={() => setTimeout(() => setIsArtistDropdownFocused(false), 200)} onChange={e => setFormArtist(e.target.value)} className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-3.5 text-sm outline-none" />
+                      <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Artist / Author Label Signature *</label><input type="text" value={formArtist} onFocus={() => setIsArtistDropdownFocused(true)} onBlur={() => setTimeout(() => setIsArtistDropdownFocused(false), 200)} onChange={e => { setHasUnsavedChanges(true); setFormArtist(e.target.value); }} className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-2.5 text-xs outline-none" />
                       {isArtistDropdownFocused && filteredArtistSuggestions.length > 0 && (
-                        <div className="absolute top-full left-0 right-0 mt-1 bg-white border rounded-xl max-h-40 overflow-y-auto z-[3000] shadow-xl">{filteredArtistSuggestions.map(art => <button key={art} type="button" onClick={() => setFormArtist(art)} className="w-full px-4 py-2.5 text-left text-xs font-bold border-b last:border-0 block">👤 {art}</button>)}</div>
+                        <div className="absolute top-full left-0 right-0 mt-0.5 bg-white border rounded-xl max-h-32 overflow-y-auto z-[3000] shadow-xl">{filteredArtistSuggestions.map(art => <button key={art} type="button" className="w-full text-left px-3 py-2 text-xs font-bold block border-b" onClick={() => { setHasUnsavedChanges(true); setFormArtist(art); }}>👤 {art}</button>)}</div>
                       )}
                     </div>
                     <div className="relative">
-                      <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block mb-1.5">Themes / Set Categories</label>
-                      <div className="w-full border rounded-xl p-2 bg-zinc-50/50 flex flex-wrap gap-2 items-center shadow-inner">
-                        {formThemes.map(tag => <span key={tag} className="px-3 py-1 bg-zinc-950 text-white rounded-xl text-xs font-bold flex items-center gap-1.5">{tag}<button type="button" onClick={() => setFormThemes(prev => prev.filter(t => t !== tag))} className="text-[10px] text-zinc-400">✕</button></span>)}
-                        <input type="text" value={themeInputSearchValue} onFocus={() => setIsThemeDropdownFocused(true)} onBlur={() => setTimeout(() => setIsThemeDropdownFocused(false), 200)} onChange={e => setThemeInputSearchValue(e.target.value)} placeholder="Type themes..." className="flex-1 bg-transparent border-0 outline-none text-xs font-bold p-1.5 text-zinc-800" />
+                      <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Themes / Set Categories</label>
+                      <div className="w-full border rounded-xl p-1.5 bg-zinc-50/50 flex flex-wrap gap-1.5 items-center shadow-inner">
+                        {formThemes.map(tag => <span key={tag} className="px-2.5 py-0.5 bg-zinc-950 text-white rounded-lg text-[10px] font-bold flex items-center gap-1">{tag}<button type="button" className="text-[9px] text-zinc-400" onClick={() => { setHasUnsavedChanges(true); setFormThemes(prev => prev.filter(t => t !== tag)); }}>✕</button></span>)}
+                        <input type="text" value={themeInputSearchValue} onFocus={() => setIsThemeDropdownFocused(true)} onBlur={() => setTimeout(() => setIsThemeDropdownFocused(false), 200)} placeholder="Add themes..." className="flex-1 bg-transparent border-0 outline-none text-xs font-bold p-1 text-zinc-800" onChange={e => setThemeInputSearchValue(e.target.value)} />
                       </div>
                       {isThemeDropdownFocused && filteredThemeCatalogSuggestions.length > 0 && (
-                        <div className="absolute top-full left-0 right-0 mt-1 bg-white border rounded-xl max-h-48 overflow-y-auto z-[3000] shadow-xl">{filteredThemeCatalogSuggestions.map(th => <button key={th} type="button" onClick={() => { setFormThemes([...formThemes, th]); setThemeInputSearchValue(""); }} className="w-full px-4 py-2.5 text-left text-xs font-extrabold border-b last:border-0 block">🏷️ {th}</button>)}</div>
+                        <div className="absolute top-full left-0 right-0 mt-0.5 bg-white border rounded-xl max-h-36 overflow-y-auto z-[3000] shadow-xl">{filteredThemeCatalogSuggestions.map(th => <button key={th} type="button" className="w-full px-3 py-2 text-left text-xs font-extrabold block border-b" onClick={() => { setHasUnsavedChanges(true); setFormThemes([...formThemes, th]); setThemeInputSearchValue(""); }}>{th}</button>)}</div>
                       )}
                     </div>
                   </div>
@@ -719,94 +878,67 @@ export default function SongsPage() {
               )}
 
               {editorActiveTab === "content" && (
-                <div className="max-w-3xl mx-auto space-y-6 pb-12 animate-in fade-in">
-                  <div className="space-y-6">
+                <div className="max-w-3xl mx-auto space-y-3 pb-6 animate-in fade-in">
+                  <div className="space-y-3">
                     {formSections.map((sec) => {
                       const timingTuple = getCentralizedMetricsTuple(sec.type);
 
                       return (
-                        <div key={sec.id} className="bg-white border rounded-2xl p-5 space-y-3 relative overflow-visible shadow-sm">
-                          <div className="flex flex-wrap items-center justify-between gap-3 overflow-visible relative">
-                            <div className="flex flex-wrap items-center gap-2 overflow-visible relative">
-                              <div className="relative overflow-visible">
-                                <button 
-                                  type="button"
-                                  onClick={() => setActiveReassignSectionId(activeReassignSectionId === sec.id ? null : sec.id)}
-                                  className="px-4 py-1.5 bg-cyan-100 hover:bg-cyan-200 text-cyan-800 font-black text-[10px] rounded-full uppercase tracking-wider block transition-all shadow-sm flex items-center gap-1.5"
-                                >
+                        <div key={sec.id} className="bg-white border rounded-xl p-3.5 space-y-2 relative shadow-sm">
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <div className="relative">
+                                <button type="button" className="px-2.5 py-1 bg-cyan-100 hover:bg-cyan-200 text-cyan-800 font-black text-[9px] rounded-full uppercase tracking-wider block shadow-sm flex items-center gap-1" onClick={() => setActiveReassignSectionId(activeReassignSectionId === sec.id ? null : sec.id)}>
                                   <span>{sec.type}</span>
                                   <span className="text-[8px] opacity-60">▼</span>
                                 </button>
                                 {activeReassignSectionId === sec.id && (
-                                  <div className="absolute top-full left-0 mt-1 bg-zinc-950 text-white rounded-2xl border max-h-48 w-44 overflow-y-auto z-[5000] p-1">
+                                  <div className="absolute top-full left-0 mt-1 bg-zinc-950 text-white rounded-xl border max-h-40 w-36 overflow-y-auto z-[5000] p-1">
                                     {ENCLOSURE_POPUP_CATALOG.map(tmpl => (
-                                      <button 
-                                        key={tmpl.id} 
-                                        type="button" 
-                                        onClick={() => {
-                                          const existingNumbers = formSections
-                                            .filter(x => x.type.toLowerCase().startsWith(tmpl.baseType.toLowerCase()))
-                                            .map(x => {
-                                              const match = x.type.match(/\d+/);
-                                              return match ? parseInt(match[0], 10) : 0;
-                                            });
-                                          const nextNum = existingNumbers.length > 0 ? Math.max(...existingNumbers) + 1 : 1;
-                                          const dynamicTypeString = `${tmpl.baseType} ${nextNum}`;
-
-                                          setFormSections(formSections.map(item => item.id === sec.id ? { ...item, type: dynamicTypeString, label: tmpl.display } : item));
-                                          setActiveReassignSectionId(null);
-                                        }} 
-                                        className="w-full text-left px-3 py-2 text-[11px] font-bold rounded-xl block border-b border-zinc-900 last:border-0"
-                                      >
-                                        🏷️ {tmpl.display}
-                                      </button>
+                                      <button key={tmpl.id} type="button" className="w-full text-left px-3 py-2 text-[11px] font-bold rounded-xl block border-b border-zinc-900 last:border-0" onClick={() => {
+                                        const existingNumbers = formSections.filter(x => x.type.toLowerCase().startsWith(tmpl.baseType.toLowerCase())).map(x => { const match = x.type.match(/\d+/); return match ? parseInt(match[0], 10) : 0; });
+                                        const nextNum = existingNumbers.length > 0 ? Math.max(...existingNumbers) + 1 : 1;
+                                        const dynamicTypeString = `${tmpl.baseType} ${nextNum}`;
+                                        setHasUnsavedChanges(true);
+                                        setFormSections(formSections.map(item => item.id === sec.id ? { ...item, type: dynamicTypeString, label: tmpl.display } : item));
+                                        setActiveReassignSectionId(null);
+                                      }}>{tmpl.display}</button>
                                     ))}
                                   </div>
                                 )}
                               </div>
 
-                              <div className="flex items-center gap-1 bg-zinc-50 border rounded-xl px-2.5 py-1 text-[11px] font-bold text-zinc-700 shadow-inner">
-                                <span className="text-[9px] font-black uppercase text-zinc-400 tracking-wider">Measures:</span>
-                                <input 
-                                  type="number" 
-                                  min={0} 
-                                  value={timingTuple.measures} 
-                                  onChange={(e) => {
-                                    const val = Math.max(0, parseInt(e.target.value, 10) || 0);
-                                    handleUpdateCentralizedMetrics(sec.type, "measures", val);
-                                  }}
-                                  className="w-10 bg-transparent text-center font-black text-zinc-800 outline-none" 
-                                />
+                              <div className="flex items-center gap-1 bg-zinc-50 border rounded-lg px-2 py-0.5 text-[10px] font-bold text-zinc-600 shadow-inner">
+                                <span className="text-[8px] font-black uppercase text-zinc-400">M:</span>
+                                <input type="number" min={0} value={timingTuple.measures} className="w-6 bg-transparent text-center font-black text-zinc-800 outline-none" onChange={(e) => handleUpdateCentralizedMetrics(sec.type, "measures", Math.max(0, parseInt(e.target.value, 10) || 0))} />
                               </div>
 
-                              <div className="flex items-center gap-1 bg-zinc-50 border rounded-xl px-2.5 py-1 text-[11px] font-bold text-zinc-700 shadow-inner">
-                                <span className="text-[9px] font-black uppercase text-zinc-400 tracking-wider">Beats:</span>
-                                <input 
-                                  type="number" 
-                                  min={0}
-                                  max={3}
-                                  value={timingTuple.beats} 
-                                  onChange={(e) => {
-                                    const val = Math.min(3, Math.max(0, parseInt(e.target.value, 10) || 0));
-                                    handleUpdateCentralizedMetrics(sec.type, "beats", val);
-                                  }}
-                                  className="w-8 bg-transparent text-center font-black text-zinc-800 outline-none" 
-                                />
+                              <div className="flex items-center gap-1 bg-zinc-50 border rounded-lg px-2 py-0.5 text-[10px] font-bold text-zinc-600 shadow-inner">
+                                <span className="text-[8px] font-black uppercase text-zinc-400">B:</span>
+                                <input type="number" min={0} max={3} value={timingTuple.beats} className="w-5 bg-transparent text-center font-black text-zinc-800 outline-none" onChange={(e) => handleUpdateCentralizedMetrics(sec.type, "beats", Math.min(3, Math.max(0, parseInt(e.target.value, 10) || 0)))} />
                               </div>
                             </div>
 
                             {simulatedRole === "admin" && (
-                              <button type="button" onClick={() => setFormSections(prev => prev.filter(x => x.id !== sec.id))} className="w-7 h-7 rounded-full bg-zinc-50 text-zinc-400 text-xs border flex items-center justify-center">✕</button>
+                              <button type="button" className="w-6 h-6 rounded-lg bg-zinc-50 text-zinc-400 text-xs border flex items-center justify-center" onClick={() => { setHasUnsavedChanges(true); setFormSections(prev => prev.filter(x => x.id !== sec.id)); }}>✕</button>
                             )}
                           </div>
 
                           {isRealtimePreviewActive ? (
-                            <div className="bg-zinc-50/50 p-4 rounded-xl border border-dashed border-zinc-200">
+                            <div className="bg-zinc-50/50 p-2.5 rounded-xl border border-dashed border-zinc-200">
                               {renderSymmetricalLivePreviewLine(sec.type, sec.content)}
                             </div>
                           ) : (
                             <div>
-                              <textarea rows={4} value={sec.content} onChange={(e) => setFormSections(formSections.map(x => x.type === sec.type ? { ...x, content: e.target.value } : x))} className="w-full border rounded-xl p-3 font-mono text-sm resize-none outline-none focus:border-zinc-400" />
+                              <textarea 
+                                rows={Math.max(4, sec.content.split("\n").length)} 
+                                value={sec.content} 
+                                className="w-full border rounded-xl p-2.5 font-mono text-xs resize-none outline-none focus:border-zinc-400 bg-zinc-50/20 overflow-hidden" 
+                                onChange={(e) => { 
+                                  setHasUnsavedChanges(true); 
+                                  setFormSections(formSections.map(x => x.type === sec.type ? { ...x, content: e.target.value } : x)); 
+                                }} 
+                              />
                             </div>
                           )}
                         </div>
@@ -814,42 +946,126 @@ export default function SongsPage() {
                     })}
                   </div>
                   {simulatedRole === "admin" && (
-                    <button type="button" onClick={() => setIsSectionSelectorOpen(true)} className="w-full border-2 border-dashed py-4 text-center rounded-2xl text-blue-600 font-black text-xs uppercase tracking-wider block hover:bg-zinc-50 transition-colors">＋ Add New Section Enclosures</button>
+                    <button type="button" className="w-full border border-dashed py-3 text-center rounded-xl text-blue-600 font-black text-xs uppercase tracking-wider block hover:bg-zinc-50 transition-colors" onClick={() => setIsSectionSelectorOpen(true)}>＋ Add New Section Enclosures</button>
                   )}
                 </div>
               )}
 
               {editorActiveTab === "structure" && (
-                <div className="max-w-4xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-6 pb-12 animate-in fade-in">
-                  <div className="bg-white border p-6 rounded-3xl shadow-sm"><h4 className="font-black text-sm mb-4 border-b pb-2">📊 Current Play Order</h4><div className="space-y-2 min-h-[300px]">{formSections.map((sec, idx) => <div key={sec.id} draggable={simulatedRole === "admin"} onDragStart={() => handleStructureDragStart(idx)} onDragOver={e => e.preventDefault()} onDrop={e => handleStructureDrop(e, idx)} className="flex items-center justify-between p-4 bg-zinc-50 border rounded-2xl shadow-inner cursor-grab active:cursor-grabbing"><span className="text-sm font-bold">{sec.type}</span>{simulatedRole === "admin" && <button type="button" onClick={() => setFormSections(prev => prev.filter(x => x.id !== sec.id))} className="text-xs font-bold text-zinc-400 hover:text-red-500">Remove</button>}</div>)}</div></div>
-                  <div className="bg-white border p-6 rounded-3xl shadow-sm"><h4 className="font-black text-sm mb-4 border-b pb-2">🧱 Template Catalog</h4><div className="grid grid-cols-1 gap-2 max-h-[440px] overflow-y-auto custom-scrollbar">{uniqueContentSectionsList.map(tmpl => <div key={tmpl.id} className="p-4 border rounded-2xl flex items-center justify-between bg-white"><span className="text-xs font-bold">{tmpl.type}</span><button type="button" onClick={() => setFormSections([...formSections, { id: `sec-dup-${Date.now()}-${Math.random()}`, type: tmpl.type, label: tmpl.label, content: tmpl.content, repetitions: 1 }])} className="w-8 h-8 rounded-xl bg-zinc-50 border flex items-center justify-center text-sm font-black hover:bg-blue-600 hover:text-white transition-colors">＋</button></div>)}</div></div>
+                <div className="max-w-4xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-4 pb-6 animate-in fade-in select-none">
+                  
+                  {/* LEFT SURFACE: ACTIVE PLAN TIMELINE CHRONOLOGY */}
+                  <div className="space-y-2">
+                    <h4 className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-1">
+                      Active Performance Sequence
+                    </h4>
+                    <div className="space-y-1.5 min-h-[220px] bg-zinc-50/40 p-3 rounded-xl border border-zinc-200/60 shadow-inner">
+                      {formSections.map((sec, idx) => {
+                        const isBeingDragged = draggedStructureIndex === idx;
+                        const isHoveredTarget = dragOverStructureIndex === idx;
+
+                        return (
+                          <div 
+                            key={sec.id} 
+                            draggable={simulatedRole === "admin"} 
+                            onDragStart={() => handleStructureDragStart(idx)} 
+                            onDragOver={(e) => { e.preventDefault(); if (dragOverStructureIndex !== idx) setDragOverStructureIndex(idx); }}
+                            onDragLeave={() => { if (dragOverStructureIndex === idx) setDragOverStructureIndex(null); }}
+                            onDragEnd={() => { setDraggedStructureIndex(null); setDragOverStructureIndex(null); }}
+                            onDrop={(e) => handleStructureDropOverride(e, idx)}
+                            className={`flex items-center justify-between p-3.5 border rounded-xl transition-all duration-150 ${
+                              isBeingDragged 
+                                ? "opacity-30 bg-zinc-150 border-zinc-300 cursor-grabbing" 
+                                : isHoveredTarget
+                                ? "border-blue-500 bg-blue-50/50 scale-[1.01] ring-2 ring-blue-400/20 shadow-md cursor-pointer"
+                                : "bg-white border-zinc-200/80 shadow-sm cursor-grab hover:bg-zinc-50"
+                            }`}
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <span className="text-[11px] text-zinc-400 font-mono font-bold shrink-0">#{idx + 1}</span>
+                              <span className="text-xs font-black uppercase tracking-wider text-zinc-700 truncate">{sec.type}</span>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              {simulatedRole === "admin" && (
+                                <button 
+                                  type="button" 
+                                  onClick={() => { setHasUnsavedChanges(true); setFormSections(prev => prev.filter(x => x.id !== sec.id)); }}
+                                  className="text-[10px] font-bold text-zinc-400 hover:text-red-500 px-1 transition-colors cursor-pointer"
+                                >
+                                  ✕ Remove
+                                </button>
+                              )}
+                              <span className="text-zinc-300 text-sm font-bold select-none">☰</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {formSections.length === 0 && (
+                        <div className="text-center text-xs italic text-zinc-400 py-12 font-medium">Timeline sequence empty. Append cards from the blueprint drawer.</div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* RIGHT SURFACE: ARRANGEMENT TEMPLATES drawer */}
+                  <div className="space-y-2">
+                    <h4 className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-1">
+                      Add Block Element
+                    </h4>
+                    <div className="grid grid-cols-1 gap-1.5 bg-zinc-50/40 p-3 rounded-xl border border-zinc-200/60 shadow-inner max-h-[360px] overflow-y-auto custom-scrollbar">
+                      {uniqueContentSectionsList.map(tmpl => (
+                        <div 
+                          key={tmpl.id} 
+                          className="p-2.5 border border-zinc-200/80 bg-white hover:bg-blue-50/10 hover:border-blue-300 rounded-xl flex items-center justify-between shadow-sm transition-all group select-none"
+                        >
+                          <span className="text-xs font-black text-zinc-700 uppercase tracking-wider flex items-center gap-1.5">
+                            <span className="opacity-60 text-xs shrink-0">🏷️</span> {tmpl.type}
+                          </span>
+                          <button 
+                            type="button" 
+                            onClick={() => { 
+                              setHasUnsavedChanges(true); 
+                              setFormSections([...formSections, { id: `sec-dup-${Date.now()}-${Math.random()}`, type: tmpl.type, label: tmpl.label, content: tmpl.content, repetitions: 1 }]); 
+                            }} 
+                            className="w-6 h-6 rounded-lg bg-zinc-50 hover:bg-blue-600 border border-zinc-200 hover:border-blue-500 text-zinc-400 group-hover:text-white flex items-center justify-center font-black text-xs transition-colors cursor-pointer"
+                          >
+                            ＋
+                          </button>
+                        </div>
+                      ))}
+                      {uniqueContentSectionsList.length === 0 && (
+                        <div className="text-center text-xs italic text-zinc-400 py-12 font-medium">No sections built inside the layout. Document lyrics blocks first.</div>
+                      )}
+                    </div>
+                  </div>
+
                 </div>
               )}
             </div>
 
-            {/* UNIFIED PERSISTENT MULTI-TAB ACTION FOOTER CONSOLE */}
-            <div className="absolute bottom-0 left-0 right-0 h-20 bg-white border-t px-8 flex items-center justify-between z-50 shadow-md flex-shrink-0 select-none rounded-b-[2.5rem]">
-              <div className="flex items-center gap-3 flex-1 min-w-0 pr-4">
+            {/* UNIFIED PERSISTENT SUB FOOTER CONTROL DECK */}
+            <div className="absolute bottom-0 left-0 right-0 h-16 bg-white border-t px-4 md:px-8 flex items-center justify-between z-50 shadow-md flex-shrink-0 select-none rounded-b-xl md:rounded-b-[2.5rem]">
+              <div className="flex items-center gap-2 flex-1 min-w-0 pr-2">
                 {editorActiveTab === "content" && isAddChordsModeActive && (
-                  <div className="flex items-center gap-2 bg-amber-50/40 border border-amber-200/60 p-1.5 px-3 rounded-xl animate-in slide-in-from-bottom-2 duration-150">
-                    <span className="text-[10px] font-black uppercase text-amber-600 tracking-tight">🎸 Chords</span>
-                    <select value={selectedChordRoot} onChange={e => { const r = e.target.value; setSelectedChordRoot(r); const m = activeScaleDiatonicDeck.find(o => o.root === r); setCustomChordInputValue(`${r}${m ? m.suffix : ""}`); }} className="bg-white border rounded-lg px-2 py-1 text-xs font-bold outline-none">{activeScaleDiatonicDeck.map((opt, i) => <option key={i} value={opt.root}>{opt.root}{opt.suffix}</option>)}</select>
-                    <input type="text" value={customChordInputValue} onChange={e => setCustomChordInputValue(e.target.value)} className="border bg-white rounded-lg px-2 py-1 text-center w-20 text-xs font-black outline-none" />
-                    <button type="button" onClick={() => executeChordInjectionAtIndex(customChordInputValue)} className={`px-4 py-1 rounded-lg font-black text-[11px] uppercase tracking-wide text-white ${isChordInputBlank ? 'bg-red-600' : 'bg-blue-600'}`}>{isChordInputBlank ? "Clear" : "Insert"}</button>
+                  <div className="flex items-center gap-1 bg-amber-50/40 border border-amber-200/60 p-1 rounded-xl animate-in slide-in-from-bottom-1 max-w-full overflow-x-auto">
+                    <span className="text-[8px] font-black uppercase text-amber-600 tracking-tight shrink-0 px-1">🎸 Notation</span>
+                    <select value={selectedChordRoot} className="bg-white border rounded-md px-1.5 py-0.5 text-[10px] font-bold outline-none" onChange={e => { const r = e.target.value; setSelectedChordRoot(r); const m = activeScaleDiatonicDeck.find(o => o.root === r); setCustomChordInputValue(`${r}${m ? m.suffix : ""}`); }}>{activeScaleDiatonicDeck.map((opt, i) => <option key={i} value={opt.root}>{opt.root}{opt.suffix}</option>)}</select>
+                    <input type="text" value={customChordInputValue} className="border bg-white rounded-md px-1.5 py-0.5 text-center w-14 text-[10px] font-black outline-none" onChange={e => setCustomChordInputValue(e.target.value)} />
+                    <button type="button" className={`px-2.5 py-1 rounded-md font-black text-[9px] uppercase tracking-wide text-white shrink-0 ${isChordInputBlank ? 'bg-red-600' : 'bg-blue-600'}`} onClick={() => executeChordInjectionAtIndex(customChordInputValue)}>{isChordInputBlank ? "Clear" : "Add"}</button>
                   </div>
                 )}
 
                 {editorActiveTab === "content" && isAddNotesModeActive && (
-                  <div className="flex items-center gap-2 bg-purple-50/40 border border-purple-200/60 p-1.5 px-3 rounded-xl flex-1 max-w-lg animate-in slide-in-from-bottom-2 duration-150">
-                    <span className="text-[10px] font-black uppercase text-purple-600 tracking-tight shrink-0">📝 Notes</span>
-                    <input type="text" value={customCommentInputValue} onChange={e => setCustomCommentInputValue(e.target.value)} placeholder="Type row details here..." className="border bg-white rounded-lg px-3 py-1 text-xs font-bold flex-1 outline-none" />
-                    <button type="button" onClick={() => executeLineCommentInjection(customCommentInputValue)} className={`px-4 py-1 rounded-lg font-black text-[11px] uppercase tracking-wide text-white shrink-0 ${isCommentInputBlank ? 'bg-red-600' : 'bg-purple-600'}`}>{isCommentInputBlank ? "Clear" : "Save Note"}</button>
+                  <div className="flex items-center gap-1.5 bg-purple-50/40 border border-purple-200/60 p-1 rounded-xl flex-1 max-w-md animate-in slide-in-from-bottom-1">
+                    <span className="text-[8px] font-black uppercase text-purple-600 tracking-tight shrink-0 px-1">📝 Note</span>
+                    <input type="text" value={customCommentInputValue} placeholder="Type row comment..." className="border bg-white rounded-md px-2 py-0.5 text-[10px] font-bold flex-1 outline-none" onChange={e => setCustomCommentInputValue(e.target.value)} />
+                    <button type="button" className={`px-2.5 py-1 rounded-md font-black text-[9px] uppercase tracking-wide text-white shrink-0 ${isCommentInputBlank ? 'bg-red-600' : 'bg-purple-600'}`} onClick={() => executeLineCommentInjection(customCommentInputValue)}>{isCommentInputBlank ? "Clear" : "Save"}</button>
                   </div>
                 )}
 
                 {!(editorActiveTab === "content" && (isAddChordsModeActive || isAddNotesModeActive)) && editingSongId && simulatedRole === "admin" && (
                   <button 
                     type="button" 
+                    className="px-3 py-2 rounded-xl bg-red-50 text-red-600 font-bold text-[10px] uppercase border border-red-200 hover:bg-red-100 transition-all cursor-pointer"
                     onClick={async () => {
                       if (confirm("Are you completely sure you want to delete this song arrangement permanently out of database plan grids?")) {
                         setLoading(true);
@@ -860,7 +1076,6 @@ export default function SongsPage() {
                         } else { setLoading(false); }
                       }
                     }} 
-                    className="px-5 py-2.5 rounded-xl bg-red-50 text-red-600 font-bold text-xs uppercase border border-red-200 hover:bg-red-100 transition-all flex items-center gap-2 cursor-pointer"
                   >
                     🗑️ Delete Song
                   </button>
@@ -871,8 +1086,8 @@ export default function SongsPage() {
                 {(simulatedRole === "admin" || simulatedRole === "member") && (
                   <button 
                     type="button" 
+                    className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-black text-[10px] uppercase tracking-wider shadow-md active:scale-95 transition-all"
                     onClick={handleCommitSongChangesToDB} 
-                    className="px-8 py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-black text-xs uppercase tracking-widest shadow-md active:scale-95 transition-all cursor-pointer"
                   >
                     Save Arrangement
                   </button>
@@ -880,38 +1095,68 @@ export default function SongsPage() {
               </div>
             </div>
 
+            {/* EMBEDDED MODAL CONFIRMATION DIALOG SHEET OVERLAY CONTAINER */}
+            {isConfirmExitModalOpen && (
+              <div className="fixed inset-0 bg-zinc-900/40 backdrop-blur-sm z-[2000] flex items-center justify-center p-4 select-none animate-in fade-in duration-150">
+                <div className="bg-white border border-zinc-200 rounded-2xl shadow-2xl p-6 max-w-sm w-full space-y-4 animate-in zoom-in-95 duration-150">
+                  <div className="space-y-1">
+                    <h4 className="font-extrabold text-base text-zinc-900 tracking-tight">Unsaved Modifications</h4>
+                    <p className="text-xs text-zinc-500 font-medium leading-relaxed">
+                      You have active modifications inside your arrangement canvas layers. Discard changes and close workspace?
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <button 
+                      type="button" 
+                      onClick={() => setIsConfirmExitModalOpen(false)} 
+                      className="py-2.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 text-[11px] font-black uppercase tracking-wider rounded-xl transition-all cursor-pointer"
+                    >
+                      Keep Editing
+                    </button>
+                    <button 
+                      type="button" 
+                      onClick={() => {
+                        setHasUnsavedChanges(false);
+                        setIsConfirmExitModalOpen(false);
+                        setIsEditorOpen(false);
+                      }} 
+                      className="py-2.5 bg-red-600 hover:bg-red-700 text-white text-[11px] font-black uppercase tracking-wider rounded-xl shadow-md transition-all active:scale-95 cursor-pointer"
+                    >
+                      Discard & Exit
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
           </div>
         </div>
       )}
 
+      {/* --- ADD SECTION BLOCK SELECTION MODAL --- */}
       {isSectionSelectorOpen && (
         <div className="fixed inset-0 bg-zinc-950/60 backdrop-blur-sm z-[11000] flex items-center justify-center p-4">
-          <div className="bg-white rounded-[2rem] p-6 w-full max-w-md shadow-2xl border space-y-4 animate-in zoom-in-95">
-            <div className="flex justify-between items-center border-b pb-2">
-              <h4 className="font-black text-zinc-900 text-sm">Add New Enclosure Section</h4>
-              <button type="button" onClick={() => setIsSectionSelectorOpen(false)} className="text-zinc-400 text-xs font-bold">Close</button>
+          <div className="bg-white rounded-xl p-4 w-full max-w-xs shadow-2xl border space-y-3 animate-in zoom-in-95">
+            <div className="flex justify-between items-center border-b pb-1.5">
+              <h4 className="font-black text-zinc-900 text-xs">Add Section block</h4>
+              <button type="button" className="text-zinc-400 text-xs font-bold" onClick={() => setIsSectionSelectorOpen(false)}>Close</button>
             </div>
-            <input type="text" placeholder="Filter templates..." value={sectionSearchTerm} onChange={e => setSectionSearchTerm(e.target.value)} className="w-full bg-zinc-50 border rounded-xl px-3 py-2 text-xs font-bold outline-none" />
-            <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto custom-scrollbar">
+            <input type="text" placeholder="Filter templates..." value={sectionSearchTerm} className="w-full bg-zinc-50 border rounded-xl px-2.5 py-1.5 text-xs font-bold outline-none" onChange={e => setSectionSearchTerm(e.target.value)} />
+            <div className="grid grid-cols-2 gap-1.5 max-h-36 overflow-y-auto custom-scrollbar">
               {filteredEnclosurePopupCatalog.map(tmpl => (
                 <button 
                   key={tmpl.id} type="button" 
+                  className="px-3 py-2 hover:bg-zinc-50 text-left border rounded-lg text-[11px] font-bold text-zinc-700 transition-colors"
                   onClick={() => {
-                    const existingNumbers = formSections
-                      .filter(x => x.type.toLowerCase().startsWith(tmpl.baseType.toLowerCase()))
-                      .map(x => {
-                        const match = x.type.match(/\d+/);
-                        return match ? parseInt(match[0], 10) : 0;
-                      });
+                    const existingNumbers = formSections.filter(x => x.type.toLowerCase().startsWith(tmpl.baseType.toLowerCase())).map(x => { const match = x.type.match(/\d+/); return match ? parseInt(match[0], 10) : 0; });
                     const nextNum = existingNumbers.length > 0 ? Math.max(...existingNumbers) + 1 : 1;
                     const blockTypeString = `${tmpl.baseType} ${nextNum}`;
-
-                    setFormSections([...formSections, { id: `sec-add-${Date.now()}-${Math.random()}`, type: blockTypeString, label: tmpl.display, content: "" }]);
+                    setHasUnsavedChanges(true);
+                    setFormSections([...formSections, { id: `sec-add-${Date.now()}-${Math.random()}`, type: blockTypeString, label: tmpl.display, content: "", repetitions: 1 }]);
                     setIsSectionSelectorOpen(false); setSectionSearchTerm("");
                   }} 
-                  className="px-4 py-3 hover:bg-zinc-50 text-left border rounded-xl text-xs font-bold text-zinc-700 transition-colors"
                 >
-                  🏷️ {tmpl.display}
+                  {tmpl.display}
                 </button>
               ))}
             </div>
@@ -921,91 +1166,44 @@ export default function SongsPage() {
 
       {isImportModalOpen && (
         <div className="fixed inset-0 bg-zinc-950/60 backdrop-blur-md z-[11000] flex items-center justify-center p-4">
-          <div className="bg-white rounded-[2.5rem] p-8 w-full max-w-2xl border shadow-2xl space-y-6 animate-in zoom-in-95">
-            <h4 className="text-xl font-black">Import Raw Lyrics Pipeline</h4>
-            <textarea rows={10} value={pastedRawLyricsText} onChange={e => setPastedRawLyricsText(e.target.value)} placeholder="Paste plain track text format layout sections (e.g. [Verse 1] lines)..." className="w-full text-xs p-4 border bg-zinc-50/50 rounded-2xl outline-none font-mono" />
-            <div className="grid grid-cols-2 gap-3"><button type="button" onClick={() => setIsImportModalOpen(false)} className="py-3 bg-zinc-100 text-zinc-700 text-xs font-black rounded-xl">Cancel</button><button type="button" onClick={executeRawLyricsImportAction} className="py-3 bg-blue-600 text-white text-xs font-black rounded-xl shadow-sm">Parse & Import Sections</button></div>
+          <div className="bg-white rounded-xl p-5 w-full max-w-xl border shadow-2xl space-y-4 animate-in zoom-in-95">
+            <h4 className="text-base font-black">Import Plain Text Lyrics</h4>
+            <textarea rows={7} value={pastedRawLyricsText} placeholder="Paste plain track text format layout sections (e.g. [Verse 1] lines)..." className="w-full text-xs p-3 border bg-zinc-50/50 rounded-xl outline-none font-mono resize-none" onChange={e => setPastedRawLyricsText(e.target.value)} />
+            <div className="grid grid-cols-2 gap-2"><button type="button" className="py-2.5 bg-zinc-100 text-zinc-700 text-xs font-black rounded-lg" onClick={() => setIsImportModalOpen(false)}>Cancel</button><button type="button" className="py-2.5 bg-blue-600 text-white text-xs font-black rounded-lg shadow-sm" onClick={executeRawLyricsImportAction}>Parse & Import</button></div>
           </div>
         </div>
       )}
 
-      {/* ======================================================================= */}
-      {/* --- RE-ARCHITECTED SPECIFICATION KEY PICKER OVERLAY MODAL FORM -------- */}
-      {/* ======================================================================= */}
       {isKeyPopupOpen && (
-        <div className="fixed inset-0 bg-zinc-950/50 backdrop-blur-sm z-[200000] flex items-center justify-center p-4 md:p-6 animate-in fade-in duration-100 select-none">
+        <div className="fixed inset-0 bg-zinc-950/50 backdrop-blur-sm z-[200000] flex items-center justify-center p-4 animate-in fade-in duration-100 select-none">
           <form 
             onSubmit={handleSaveModalKeySelection}
-            className="bg-[#f8f9fa] border border-zinc-200 rounded-[2.5rem] shadow-2xl max-w-xl w-full p-7 px-8 space-y-6 animate-in zoom-in-95 duration-150 relative text-left"
+            className="bg-[#f8f9fa] border border-zinc-200 rounded-xl shadow-2xl max-w-md w-full p-5 space-y-4 animate-in zoom-in-95 duration-100 text-left"
           >
-            {/* Top Close Dismiss anchor */}
-            <button
-              type="button"
-              onClick={() => setIsKeyPopupOpen(false)}
-              className="absolute top-6 right-6 w-8 h-8 rounded-full bg-white hover:bg-zinc-100 border text-zinc-400 text-xs font-bold flex items-center justify-center shadow-sm cursor-pointer transition-colors"
-            >
-              ✕
-            </button>
+            <button type="button" className="absolute top-4 right-4 w-6 h-6 rounded-full bg-white border text-zinc-400 text-[10px] font-bold flex items-center justify-center shadow-sm" onClick={() => setIsKeyPopupOpen(false)}>✕</button>
 
-            {/* Header Labels context */}
-            <div className="space-y-1">
-              <h3 className="text-2xl font-black text-zinc-900 tracking-tight">Change Key</h3>
-              <p className="text-xs font-black text-blue-500">Original {formKey}</p>
+            <div className="space-y-0.5">
+              <h3 className="text-base font-black text-zinc-900 tracking-tight">Change Key</h3>
+              <p className="text-[11px] font-black text-blue-500">Original {formKey}</p>
             </div>
 
-            {/* Row 1: Base Letter Grid Array Selector (C, D, E, F, G, A, B) */}
-            <div className="grid grid-cols-7 gap-2 bg-white p-2 rounded-2xl border shadow-inner">
+            <div className="grid grid-cols-7 gap-1 bg-white p-1 rounded-xl border shadow-inner">
               {BASE_LETTER_ROOTS.map((letter) => {
                 const isSelected = modalKeyRoot === letter;
                 return (
-                  <button
-                    key={letter}
-                    type="button"
-                    onClick={() => setModalKeyRoot(letter)}
-                    className={`aspect-square rounded-xl text-center text-sm font-black transition-all flex items-center justify-center cursor-pointer ${
-                      isSelected 
-                        ? "bg-blue-600 text-white shadow-md scale-105" 
-                        : "bg-zinc-50/50 text-zinc-700 hover:bg-zinc-100"
-                    }`}
-                  >
-                    {letter}
-                  </button>
+                  <button key={letter} type="button" className={`aspect-square rounded-lg text-center text-xs font-black flex items-center justify-center cursor-pointer ${isSelected ? "bg-blue-600 text-white shadow-sm scale-105" : "bg-zinc-50/50 text-zinc-700 hover:bg-zinc-100"}`} onClick={() => setModalKeyRoot(letter)}>{letter}</button>
                 );
               })}
             </div>
 
-            {/* Row 2: Accidental Flat / Sharp Sign Modifier Grid Strip */}
-            <div className="grid grid-cols-2 divide-x bg-white rounded-2xl border overflow-hidden shadow-inner h-12">
-              <button
-                type="button"
-                onClick={() => setModalKeyAccidental(modalKeyAccidental === "b" ? "" : "b")}
-                className={`text-center text-base font-black transition-colors flex items-center justify-center h-full cursor-pointer ${
-                  modalKeyAccidental === "b" ? "bg-blue-50/80 text-blue-600 font-extrabold" : "text-zinc-600 hover:bg-zinc-50/50"
-                }`}
-              >
-                ♭
-              </button>
-              <button
-                type="button"
-                onClick={() => setModalKeyAccidental(modalKeyAccidental === "#" ? "" : "#")}
-                className={`text-center text-sm font-black transition-colors flex items-center justify-center h-full cursor-pointer ${
-                  modalKeyAccidental === "#" ? "bg-blue-50/80 text-blue-600 font-extrabold" : "text-zinc-600 hover:bg-zinc-50/50"
-                }`}
-              >
-                #
-              </button>
+            <div className="grid grid-cols-2 divide-x bg-white rounded-xl border overflow-hidden shadow-inner h-10">
+              <button type="button" className={`text-center text-sm font-black flex items-center justify-center h-full cursor-pointer ${modalKeyAccidental === "b" ? "bg-blue-50/80 text-blue-600" : "text-zinc-600 hover:bg-zinc-50/50"}`} onClick={() => setModalKeyAccidental(modalKeyAccidental === "b" ? "" : "b")}>♭</button>
+              <button type="button" className={`text-center text-xs font-black flex items-center justify-center h-full cursor-pointer ${modalKeyAccidental === "#" ? "bg-blue-50/80 text-blue-600" : "text-zinc-600 hover:bg-zinc-50/50"}`} onClick={() => setModalKeyAccidental(modalKeyAccidental === "#" ? "" : "#")}>#</button>
             </div>
 
-            {/* Bottom Form Action Switch */}
-            <div className="pt-2">
-              <button
-                type="submit"
-                className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white font-black text-sm uppercase tracking-widest rounded-2xl shadow-md transition-all active:scale-[0.99] cursor-pointer text-center"
-              >
-                Save
-              </button>
+            <div className="pt-1">
+              <button type="submit" className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-black text-xs uppercase tracking-widest rounded-xl shadow-md text-center">Save Key Change</button>
             </div>
-
           </form>
         </div>
       )}
@@ -1013,20 +1211,3 @@ export default function SongsPage() {
     </div>
   );
 }
-
-const DIATONIC_MODES_MAP: { [key: string]: { root: string; suffix: string }[] } = {
-  "C":  [{root:"C",suffix:""}, {root:"D",suffix:"m"}, {root:"E",suffix:"m"}, {root:"F",suffix:""}, {root:"G",suffix:""}, {root:"A",suffix:"m"}, {root:"B",suffix:"dim"}],
-  "Db": [{root:"Db",suffix:""},{root:"Eb",suffix:"m"},{root:"F",suffix:"m"},{root:"Gb",suffix:""},{root:"Ab",suffix:""},{root:"Bb",suffix:"m"},{root:"C",suffix:"dim"}],
-  "D":  [{root:"D",suffix:""}, {root:"E",suffix:"m"}, {root:"F#",suffix:"m"},{root:"G",suffix:""}, {root:"A",suffix:""}, {root:"B",suffix:"m"}, {root:"C#",suffix:"dim"}],
-  "Eb": [{root:"Eb",suffix:""},{root:"F",suffix:"m"}, {root:"G",suffix:"m"}, {root:"Ab",suffix:""},{root:"Bb",suffix:""},{root:"C",suffix:"m"}, {root:"D",suffix:"dim"}],
-  "E":  [{root:"E",suffix:""}, {root:"F#",suffix:"m"},{root:"G#",suffix:"m"},{root:"A",suffix:""}, {root:"B",suffix:""}, {root:"C#",suffix:"m"},{root:"D#",suffix:"dim"}],
-  "F":  [{root:"F",suffix:""}, {root:"G",suffix:"m"}, {root:"A",suffix:"m"}, {root:"Bb",suffix:""},{root:"C",suffix:""}, {root:"D",suffix:"m"}, {root:"E",suffix:"dim"}],
-  "F#": [{root:"F#",suffix:""},{root:"G#",suffix:"m"},{root:"A#",suffix:"m"},{root:"B",suffix:""}, {root:"C#",suffix:""},{root:"D#",suffix:"m"},{root:"F",suffix:"dim"}],
-  "G":  [{root:"G",suffix:""}, {root:"A",suffix:"m"}, {root:"B",suffix:"m"}, {root:"C",suffix:""}, {root:"D",suffix:""}, {root:"E",suffix:"m"}, {root:"F#",suffix:"dim"}],
-  "Ab": [{root:"Ab",suffix:""},{root:"Bb",suffix:"m"},{root:"C",suffix:"m"}, {root:"Db",suffix:""},{root:"Eb",suffix:""},{root:"F",suffix:"m"}, {root:"G",suffix:"dim"}],
-  "A":  [{root:"A",suffix:""}, {root:"B",suffix:"m"}, {root:"C#",suffix:"m"},{root:"D",suffix:""}, {root:"E",suffix:""}, {root:"F#",suffix:"m"},{root:"G#",suffix:"dim"}],
-  "Bb": [{root:"Bb",suffix:""},{root:"C",suffix:"m"}, {root:"D",suffix:"m"}, {root:"Eb",suffix:""},{root:"F",suffix:""}, {root:"G",suffix:"m"}, {root:"A",suffix:"dim"}],
-  "B":  [{root:"B",suffix:""}, {root:"C#",suffix:"m"},{root:"D#",suffix:"m"},{root:"E",suffix:""}, {root:"F#",suffix:""},{root:"G#",suffix:"m"},{root:"A#",suffix:"dim"}],
-  "Am":  [{root:"A",suffix:"m"}, {root:"B",suffix:"dim"},{root:"C",suffix:""}, {root:"D",suffix:"m"}, {root:"E",suffix:"m"}, {root:"F",suffix:""}, {root:"G",suffix:""}],
-  "Bm":  [{root:"B",suffix:"m"}, {root:"C#",suffix:"dim"},{root:"D",suffix:""}, {root:"E",suffix:"m"}, {root:"F#",suffix:"m"},{root:"G",suffix:""}, {root:"A",suffix:""}]
-};

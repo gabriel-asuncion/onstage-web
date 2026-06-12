@@ -95,13 +95,15 @@ export default function Sidebar() {
 
   return (
     <>
-      <aside className="w-20 min-h-screen bg-white border-r border-zinc-200 flex flex-col items-center py-6 justify-between shrink-0 select-none z-40 sticky top-0">
+      {/* ======================================================= */}
+      {/* 1. DESKTOP VIEWPORT SIDEBAR (Hidden on mobile panels)   */}
+      {/* ======================================================= */}
+      <aside className="w-20 min-h-screen bg-white border-r border-zinc-200 flex-col items-center py-6 justify-between shrink-0 select-none z-40 sticky top-0 hidden md:flex">
         <div className="flex flex-col items-center gap-8 w-full">
           <Link href="/dashboard" className="w-10 h-10 flex items-center justify-center transition-transform active:scale-95">
             <img src="/assets/logo.svg" className="w-9 h-9 object-contain" alt="Logo" />
           </Link>
 
-          {/* Dynamic Nav Link Stack with Fixed Hover States */}
           <div className="flex flex-col items-center gap-4 w-full px-2">
             {navItems.map((item) => {
               const isActive = pathname.startsWith(item.activePattern);
@@ -115,14 +117,13 @@ export default function Sidebar() {
                       : "bg-transparent text-zinc-400 hover:bg-zinc-50 hover:text-zinc-600 hover:scale-105"
                   }`}
                 >
-                  <img src={item.icon} className="w-5 h-5 object-contain transition-transform group-hover:scale-110" alt="" />
+                  <img src={item.icon} className="w-5 h-5 object-contain transition-transform" alt="" />
                 </Link>
               );
             })}
           </div>
         </div>
 
-        {/* BOTTOM USER PROFILE BUBBLE (Clickable triggers Account & Schedule overlay panel) */}
         <div className="w-full flex justify-center">
           <button 
             type="button"
@@ -139,6 +140,46 @@ export default function Sidebar() {
           </button>
         </div>
       </aside>
+
+      {/* ======================================================= */}
+      {/* 2. MOBILE VIEWPORT BOTTOM TRAY NAV BAR (Hidden on Desktop) */}
+      {/* ======================================================= */}
+      <nav className="fixed bottom-0 left-0 right-0 h-16 bg-white/95 backdrop-blur-md border-t border-zinc-200/80 flex items-center justify-around px-4 pb-safe shadow-lg md:hidden z-[100000] select-none">
+        {navItems.map((item) => {
+          const isActive = pathname.startsWith(item.activePattern);
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={`flex flex-col items-center justify-center flex-1 h-full transition-all duration-150 relative ${
+                isActive ? "scale-110 text-zinc-950" : "text-zinc-400 active:text-zinc-800"
+              }`}
+            >
+              {isActive && (
+                <span className="absolute top-0 w-6 h-[3px] bg-blue-600 rounded-b-full" />
+              )}
+              <img src={item.icon} className="w-5 h-5 object-contain" alt="" />
+            </Link>
+          );
+        })}
+
+        {/* PROFILE BUBBLE MERGED AS THE 4TH TRIGGER OPTION INSIDE PORTRAIT VIEWPORTS */}
+        <div className="flex-1 flex items-center justify-center h-full">
+          <button 
+            type="button"
+            onClick={() => setIsAccountModalOpen(true)}
+            className={`w-8 h-8 rounded-full bg-blue-600 text-white font-black text-[10px] flex items-center justify-center shadow-sm border transition-all active:scale-95 cursor-pointer ${
+              simulatedRole !== "none" ? "border-amber-400 ring-2 ring-amber-400/10" : "border-zinc-100"
+            }`}
+          >
+            {activeProfile?.avatar_url ? (
+              <img src={activeProfile.avatar_url} className="w-full h-full rounded-full object-cover" alt="" />
+            ) : (
+              <span>{simulatedRole === "admin" ? "A" : simulatedRole === "member" ? "M" : "U"}</span>
+            )}
+          </button>
+        </div>
+      </nav>
 
       {/* ======================================================== */}
       {/* --- UNIFIED MODAL OVERLAY: ACCOUNT & SCHEDULE PORTAL --- */}

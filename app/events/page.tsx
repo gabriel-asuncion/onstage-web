@@ -47,6 +47,7 @@ export default function EventsManagerPage() {
   const [filterEndDate, setFilterEndDate] = useState("");
   const [filterParticipantUserId, setFilterParticipantUserId] = useState("All");
   const [filterPlanStatus, setFilterPlanStatus] = useState("All"); // "All" | "Active" | "Inactive"
+  const [isFilterExpanded, setIsFilterExpanded] = useState(false); // SURGICAL ADDITION: Filter bar expansion flag state
 
   // Create Event Modal States
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
@@ -132,56 +133,73 @@ export default function EventsManagerPage() {
     loadEventsData();
   }, []);
 
+  function handleClearSpecificTokenChip(tokenPrefix: string, tokenValue: string) {
+    const targetMatchPattern = new RegExp(`${tokenPrefix}\\s*${tokenValue.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')}`, 'i');
+    setSearchQuery(prev => prev.replace(targetMatchPattern, "").trim()); // ✅ Changed to setSearchQuery
+  }
+
   // ==========================================
   // --- REAL-TIME RUNTIME FILTER PROCESSING --
   // ==========================================
-  const parsedFilteredEventsGrid = events.filter(evt => {
-    const cleanEvtDate = evt.event_date ? evt.event_date.split("T")[0] : "2026-06-12";
-    
-    // Compute chronological state automatically against the current system date anchor
-    const isPlanExpired = cleanEvtDate < TODAY_TIMELINE_ANCHOR;
-    const computedStatus = isPlanExpired ? "Inactive" : "Active";
+  const parsedFilteredEventsGrid = events
+    .filter(evt => {
+      const cleanEvtDate = evt.event_date ? evt.event_date.split("T")[0] : "2026-06-12";
+      
+      // Compute chronological state automatically against the current system date anchor
+      const isPlanExpired = cleanEvtDate < TODAY_TIMELINE_ANCHOR;
+      const computedStatus = isPlanExpired ? "Inactive" : "Active";
 
-    // 1. Text Title search filter context tracking
-    if (searchQuery && !evt.title.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+      // 1. Text Title search filter context tracking
+      if (searchQuery && !evt.title.toLowerCase().includes(searchQuery.toLowerCase())) return false;
 
-    // 2. Service type string preset categorization tracking
-    if (filterServiceType !== "All" && evt.service_type !== filterServiceType) return false;
+      // 2. Service type string preset categorization tracking
+      if (filterServiceType !== "All" && evt.service_type !== filterServiceType) return false;
 
-    // 3. Dynamic plan context validation ranges (In-Between dates calculation rules)
-    if (filterStartDate && cleanEvtDate < filterStartDate) return false;
-    if (filterEndDate && cleanEvtDate > filterEndDate) return false;
+      // 3. Dynamic plan context validation ranges (In-Between dates calculation rules)
+      if (filterStartDate && cleanEvtDate < filterStartDate) return false;
+      if (filterEndDate && cleanEvtDate > filterEndDate) return false;
 
-    // 4. Participant enrollment lookups vector cross validation
-    if (filterParticipantUserId !== "All") {
-      const isUserAssignedToThisEvent = rosterAllocations.some(
-        member => member.event_id === evt.id && member.user_id === filterParticipantUserId
-      );
-      if (!isUserAssignedToThisEvent) return false;
-    }
+      // 4. Participant enrollment lookups vector cross validation
+      if (filterParticipantUserId !== "All") {
+        const isUserAssignedToThisEvent = rosterAllocations.some(
+          member => member.event_id === evt.id && member.user_id === filterParticipantUserId
+        );
+        if (!isUserAssignedToThisEvent) return false;
+      }
 
-    // 5. Computed Status parameter selection rules
-    if (filterPlanStatus !== "All" && computedStatus !== filterPlanStatus) return false;
+      // SURGICAL REFACTOR: Smart Inactive Exclusions Rule Engine
+      const isSpecificFilterApplied = searchQuery.trim() !== "" || filterServiceType !== "All" || filterStartDate !== "" || filterEndDate !== "" || filterParticipantUserId !== "All" || filterPlanStatus !== "All";
+      
+      if (filterPlanStatus === "All") {
+        // By default, exclude inactive past plans unless a query keyword or explicit search filter parameter is applied
+        if (!isSpecificFilterApplied && computedStatus === "Inactive") return false;
+      } else if (filterPlanStatus !== computedStatus) {
+        return false;
+      }
 
-    return true;
-  });
+      return true;
+    })
+    // SURGICAL REFACTOR: Sort by upcoming dates sequentially (Nearest upcoming timeline indexes render first)
+    .sort((a, b) => new Date(a.event_date).getTime() - new Date(b.event_date).getTime())
+    // SURGICAL REFACTOR: Capped strict maximum visualization constraint layout grid rows count limits
+    .slice(0, 10);
 
   if (loading) return <div className="p-8 text-center text-xs font-bold uppercase tracking-widest animate-pulse">Loading Events Matrix Router Hub...</div>;
 
   return (
-    <div className="p-6 md:p-8 max-w-7xl w-full mx-auto space-y-6 animate-in fade-in duration-150">
+    <div className="p-4 md:p-8 max-w-7xl w-full mx-auto space-y-4 md:space-y-6 animate-in fade-in duration-150">
       
       {/* HUB MAIN HEADER CAPTION CONTROL BAR */}
-      <div className="flex justify-between items-center pb-4 border-b border-zinc-200/60">
+      <div className="bg-white border border-zinc-200 rounded-xl md:rounded-3xl p-4 md:p-6 shadow-sm flex flex-col sm:flex-row justify-between sm:items-center gap-3">
         <div>
-          <h1 className="text-3xl font-black text-zinc-950 tracking-tight">Events Block Manager</h1>
+          <h1 className="text-xl md:text-2xl font-black text-zinc-950 tracking-tight">Events Block Manager</h1>
           <p className="text-zinc-400 text-xs font-semibold mt-0.5">Instantiate, calibrate, and filter active calendar structural container block coordinates.</p>
         </div>
         
         {simulatedRole === "admin" && (
           <button 
             onClick={() => setIsCreateModalOpen(true)}
-            className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-black text-xs rounded-xl shadow-md transition-all active:scale-95 uppercase tracking-wider shrink-0"
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-black text-xs rounded-xl shadow-md transition-all active:scale-95 uppercase tracking-wider shrink-0"
           >
             ＋ Create Event
           </button>
@@ -189,101 +207,112 @@ export default function EventsManagerPage() {
       </div>
 
       {/* ======================================================== */}
-      {/* --- RE-ARCHITECTED ADVANCED MATRIX FILTER BAR PANEL ---- */}
+      {/* --- RE-ARCHITECTED COMPACT COMPACTABLE MATRIX FILTER --- */}
       {/* ======================================================== */}
-      <div className="bg-white border border-zinc-200/80 p-5 rounded-[2rem] shadow-sm grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 items-end text-xs font-bold select-none">
+      <div className="bg-white border border-zinc-200 rounded-xl md:rounded-3xl p-4 md:p-5 shadow-sm space-y-4 select-none text-xs font-bold">
         
-        {/* Input A: Text String Title query handle input */}
-        <div className="space-y-1.5">
-          <label className="text-[10px] font-black uppercase text-zinc-400 tracking-wider block">Search Title</label>
-          <input 
-            type="text" 
-            placeholder="Type index query keyword..."
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            className="w-full bg-zinc-50 border rounded-xl px-3.5 py-2.5 font-bold text-zinc-800 outline-none focus:border-blue-500 focus:bg-white transition-all shadow-inner"
-          />
-        </div>
-
-        {/* Input B: Type of Service presets dropdown matrix */}
-        <div className="space-y-1.5">
-          <label className="text-[10px] font-black uppercase text-zinc-400 tracking-wider block">Service Preset</label>
-          <select 
-            value={filterServiceType} 
-            onChange={e => setFilterServiceType(e.target.value)}
-            className="w-full bg-zinc-50 border rounded-xl px-3 py-2.5 font-bold text-zinc-700 outline-none cursor-pointer focus:border-blue-500 transition-all"
-          >
-            <option value="All">All Service Presets</option>
-            {SERVICE_TYPE_PRESETS.map(preset => <option key={preset} value={preset}>{preset}</option>)}
-          </select>
-        </div>
-
-        {/* Input C: Symmetrical execution ranges date bounds pickers */}
-        <div className="space-y-1.5 lg:col-span-1 grid grid-cols-2 gap-2">
-          <div>
-            <label className="text-[10px] font-black uppercase text-zinc-400 tracking-wider block mb-1.5">Start Date</label>
-            <input type="date" value={filterStartDate} onChange={e => setFilterStartDate(e.target.value)} className="w-full bg-zinc-50 border rounded-xl px-2 py-2 text-[11px] font-bold text-zinc-700 outline-none" />
+        {/* Main Base Filter Entry Control Bar line */}
+        <div className="flex flex-col sm:flex-row items-end gap-3 w-full">
+          <div className="flex-1 space-y-1.5 w-full">
+            <label className="text-[10px] font-black uppercase text-zinc-400 tracking-wider block">Search Title</label>
+            <input 
+              type="text" 
+              placeholder="Type index query keyword..."
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              className="w-full bg-zinc-50 border rounded-xl px-3.5 py-2.5 font-bold text-zinc-800 outline-none focus:border-blue-500 focus:bg-white transition-all shadow-inner"
+            />
           </div>
-          <div>
-            <label className="text-[10px] font-black uppercase text-zinc-400 tracking-wider block mb-1.5">End Date</label>
-            <input type="date" value={filterEndDate} onChange={e => setFilterEndDate(e.target.value)} className="w-full bg-zinc-50 border rounded-xl px-2 py-2 text-[11px] font-bold text-zinc-700 outline-none" />
-          </div>
-        </div>
-
-        {/* Input D: Lineup catalog participant roster allocation lookups field */}
-        <div className="space-y-1.5">
-          <label className="text-[10px] font-black uppercase text-zinc-400 tracking-wider block">Assigned Participant</label>
-          <select 
-            value={filterParticipantUserId} 
-            onChange={e => setFilterParticipantUserId(e.target.value)}
-            className="w-full bg-zinc-50 border rounded-xl px-3 py-2.5 font-bold text-zinc-700 outline-none cursor-pointer focus:border-blue-500 transition-all"
+          
+          <button
+            type="button"
+            onClick={() => setIsFilterExpanded(!isFilterExpanded)}
+            className="px-4 py-2.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 font-extrabold text-xs rounded-xl transition-all flex items-center gap-1.5 shrink-0 h-10 w-full sm:w-auto justify-center cursor-pointer"
           >
-            <option value="All">All Team Volunteers</option>
-            {allProfiles.map(p => <option key={p.id} value={p.id}>{p.full_name || "Worshipper Handle Node"}</option>)}
-          </select>
+            <span>{isFilterExpanded ? "🎛️ Hide Advanced Filters" : "🎛️ Show Advanced Filters"}</span>
+          </button>
         </div>
 
-        {/* Input E: Chronological Status layout switch context selector code block */}
-        <div className="space-y-1.5">
-          <label className="text-[10px] font-black uppercase text-zinc-400 tracking-wider block">Plan Allocation Status</label>
-          <div className="grid grid-cols-3 gap-1 bg-zinc-100 p-1 rounded-xl border">
-            {(["All", "Active", "Inactive"] as const).map((statusOption) => (
-              <button
-                key={statusOption}
-                type="button"
-                onClick={() => setFilterPlanStatus(statusOption)}
-                className={`py-1.5 text-center text-[10px] font-black rounded-lg uppercase tracking-tight transition-all ${
-                  filterPlanStatus === statusOption ? "bg-white text-zinc-950 border shadow-sm font-black" : "text-zinc-400 hover:text-zinc-600"
-                }`}
+        {/* Collapsible expandable content matrix grid rows container */}
+        {isFilterExpanded && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-4 border-t border-zinc-100 animate-in slide-in-from-top-2 duration-200">
+            {/* Input B: Type of Service presets dropdown matrix */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-black uppercase text-zinc-400 tracking-wider block">Service Preset</label>
+              <select 
+                value={filterServiceType} 
+                onChange={e => setFilterServiceType(e.target.value)}
+                className="w-full bg-zinc-50 border rounded-xl px-3 py-2.5 font-bold text-zinc-700 outline-none cursor-pointer focus:border-blue-500 transition-all"
               >
-                {statusOption}
-              </button>
-            ))}
+                <option value="All">All Service Presets</option>
+                {SERVICE_TYPE_PRESETS.map(preset => <option key={preset} value={preset}>{preset}</option>)}
+              </select>
+            </div>
+
+            {/* Input C: Symmetrical execution ranges date bounds pickers */}
+            <div className="space-y-1.5 grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[10px] font-black uppercase text-zinc-400 tracking-wider block mb-1.5">Start Date</label>
+                <input type="date" value={filterStartDate} onChange={e => setFilterStartDate(e.target.value)} className="w-full bg-zinc-50 border rounded-xl px-2 py-2 text-[11px] font-bold text-zinc-700 outline-none" />
+              </div>
+              <div>
+                <label className="text-[10px] font-black uppercase text-zinc-400 tracking-wider block mb-1.5">End Date</label>
+                <input type="date" value={filterEndDate} onChange={e => setFilterEndDate(e.target.value)} className="w-full bg-zinc-50 border rounded-xl px-2 py-2 text-[11px] font-bold text-zinc-700 outline-none" />
+              </div>
+            </div>
+
+            {/* Input D: Lineup catalog participant roster allocation lookups field */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-black uppercase text-zinc-400 tracking-wider block">Assigned Participant</label>
+              <select 
+                value={filterParticipantUserId} 
+                onChange={e => setFilterParticipantUserId(e.target.value)}
+                className="w-full bg-zinc-50 border rounded-xl px-3 py-2.5 font-bold text-zinc-700 outline-none cursor-pointer focus:border-blue-500 transition-all"
+              >
+                <option value="All">All Team Volunteers</option>
+                {allProfiles.map(p => <option key={p.id} value={p.id}>{p.full_name || "Worshipper Handle Node"}</option>)}
+              </select>
+            </div>
+
+            {/* Input E: Chronological Status layout switch context selector code block */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-black uppercase text-zinc-400 tracking-wider block">Plan Allocation Status</label>
+              <div className="grid grid-cols-3 gap-1 bg-zinc-100 p-1 rounded-xl border">
+                {(["All", "Active", "Inactive"] as const).map((statusOption) => (
+                  <button
+                    key={statusOption}
+                    type="button"
+                    onClick={() => setFilterPlanStatus(statusOption)}
+                    className={`py-1.5 text-center text-[10px] font-black rounded-lg uppercase tracking-tight transition-all cursor-pointer ${
+                      filterPlanStatus === statusOption ? "bg-white text-zinc-950 border shadow-sm font-black" : "text-zinc-400 hover:text-zinc-600"
+                    }`}
+                  >
+                    {statusOption}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
-        </div>
+        )}
 
       </div>
 
       {/* EVENTS DASHBOARD VISUAL CARDS GRID MATRIX */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
         {parsedFilteredEventsGrid.map((evt) => {
           const cleanEvtDate = evt.event_date ? evt.event_date.split("T")[0] : "2026-06-12";
-          
-          // CRITICAL REQUIREMENT: Automatic chronological evaluation routine triggers active states status indicators shifts
           const isPlanExpired = cleanEvtDate < TODAY_TIMELINE_ANCHOR;
 
           return (
             <div 
               key={evt.id}
               onClick={() => router.push(`/events/${evt.id}`)}
-              className={`bg-white border p-6 rounded-[2rem] hover:border-blue-500 hover:scale-[1.01] transition-all cursor-pointer shadow-sm flex flex-col justify-between min-h-[185px] group border-zinc-200/80 relative overflow-hidden ${
+              className={`bg-white border p-5 md:p-6 rounded-xl md:rounded-3xl hover:border-blue-500 hover:scale-[1.01] transition-all cursor-pointer shadow-sm flex flex-col justify-between min-h-[185px] group border-zinc-200/80 relative overflow-hidden ${
                 isPlanExpired ? "opacity-75 bg-zinc-50/20" : ""
               }`}
             >
               <div>
                 <div className="flex flex-wrap items-center gap-2 mb-3">
-                  
-                  {/* Dynamic condition tags: Swaps typography presets gracefully based on computed time evaluation values */}
                   {isPlanExpired ? (
                     <span className="bg-zinc-100 border border-zinc-200 text-zinc-500 font-black text-[9px] uppercase tracking-wider px-2.5 py-0.5 rounded-full block w-fit">
                       🚫 Inactive Plan
@@ -301,20 +330,20 @@ export default function EventsManagerPage() {
                   )}
                 </div>
                 
-                <h4 className="font-extrabold text-lg text-zinc-900 tracking-tight leading-tight group-hover:text-blue-600 transition-colors">{evt.title}</h4>
+                <h4 className="font-extrabold text-base md:text-lg text-zinc-900 tracking-tight leading-tight group-hover:text-blue-600 transition-colors">{evt.title}</h4>
                 {evt.description && <p className="text-xs font-medium text-zinc-400 mt-2 line-clamp-2 leading-relaxed">{evt.description}</p>}
               </div>
               
               <div className="pt-4 border-t border-zinc-100 flex justify-between items-center text-xs font-semibold text-zinc-400 mt-4 select-none">
                 <span className={`${isPlanExpired ? "text-zinc-400 line-through" : "text-zinc-500 font-bold"}`}>📅 {cleanEvtDate}</span>
-                <span className="text-blue-600 font-black tracking-tight group-hover:translate-x-1 transition-transform">Configure Matrix ›</span>
+                <span className="text-blue-600 font-black tracking-tight group-hover:translate-x-1 transition-transform">Edit Event</span>
               </div>
             </div>
           );
         })}
 
         {parsedFilteredEventsGrid.length === 0 && (
-          <div className="col-span-full bg-white rounded-[2rem] p-16 text-center border border-dashed border-zinc-200 text-zinc-400 w-full shadow-sm space-y-2 select-none">
+          <div className="col-span-full bg-white rounded-xl md:rounded-3xl p-12 md:p-16 text-center border border-dashed border-zinc-200 text-zinc-400 w-full shadow-sm space-y-2 select-none">
             <div className="text-3xl">🔍</div>
             <h4 className="font-extrabold text-zinc-800 text-base">No Event Coordinates Match Filters</h4>
             <p className="text-xs text-zinc-400 max-w-sm mx-auto font-medium">Try resetting your date ranges, volunteer search scopes, or category presets selectors.</p>
@@ -353,7 +382,7 @@ export default function EventsManagerPage() {
               <label className="text-[10px] font-black text-zinc-400 uppercase block">Summary Description</label>
               <textarea placeholder="Details text notes parameters..." value={eventDesc} onChange={(e) => setEventDesc(e.target.value)} className="w-full bg-zinc-50 border rounded-xl px-4 py-3 text-sm font-semibold outline-none h-20 resize-none focus:border-blue-500" />
             </div>
-            <button type="submit" disabled={isSubmitting} className="w-full bg-blue-600 text-white font-black py-3.5 rounded-xl text-xs uppercase tracking-widest shadow-md">{isSubmitting ? "Creating..." : "Instantiate Event Block"}</button>
+            <button type="submit" disabled={isSubmitting} className="w-full bg-blue-600 text-white font-black py-3.5 rounded-xl text-xs uppercase tracking-widest shadow-md cursor-pointer">{isSubmitting ? "Creating..." : "Instantiate Event Block"}</button>
           </form>
         </div>
       )}
