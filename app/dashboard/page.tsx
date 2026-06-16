@@ -50,6 +50,7 @@ const FALLBACK_VERSES = [
 ];
 
 const TODAY_TIMELINE_ANCHOR = "2026-06-08";
+const todayStr = new Date().toISOString().split("T")[0]; // Evaluates to "2026-06-16"
 
 export default function DashboardPage() {
   const supabase = createClient();
@@ -141,8 +142,10 @@ export default function DashboardPage() {
   // ==========================================
   // --- CHRONOLOGICAL DATA MATRICES SELECTION -
   // ==========================================
+  const todayStr = new Date().toISOString().split("T")[0]; // Dynamic calendar tracker
+
   const futureActiveEvents = eventsList
-    .filter(e => (e.event_date ? e.event_date.split("T")[0] : "2026-06-12") >= TODAY_TIMELINE_ANCHOR)
+    .filter(e => (e.event_date ? e.event_date.split("T")[0] : "2026-06-12") >= todayStr)
     .sort((a, b) => a.event_date.localeCompare(b.event_date));
 
   const upcomingEventsSectionData = futureActiveEvents.slice(0, 5);
@@ -165,7 +168,7 @@ export default function DashboardPage() {
       {/* ======================================================================= */}
       {/* --- MASTER HERO HEADER CONTAINER BLOCK -------------------------------- */}
       {/* ======================================================================= */}
-      <div className="bg-white border border-zinc-200 rounded-xl md:rounded-[2rem] p-4 md:p-8 shadow-sm space-y-3 md:space-y-5">
+      <div className="bg-white border border-zinc-200 rounded-2xl p-6 shadow-sm space-y-4">
         <div className="space-y-1.5">
           <h2 className="text-xl md:text-3xl font-black tracking-tight text-zinc-900">
             {currentGreeting}, {userName}! 👋
@@ -181,7 +184,7 @@ export default function DashboardPage() {
             onClick={() => { setBookmarkSearchQuery(""); setIsBookmarksModalOpen(true); }}
             className="px-5 py-2.5 bg-zinc-50 border border-zinc-200 text-zinc-800 hover:bg-blue-600 hover:text-white hover:border-blue-500 rounded-xl text-xs font-black uppercase tracking-widest transition-all shadow-sm shrink-0 cursor-pointer text-center"
           >
-            {bookmarkedSongIds.length} BOOKMARKS
+            {bookmarkedSongIds.length} SONGS BOOKMARKED
           </button>
         </div>
 
@@ -223,7 +226,7 @@ export default function DashboardPage() {
               return (
                 <div 
                   key={evt.id}
-                  className="bg-white border border-zinc-200 p-4 md:p-6 rounded-xl md:rounded-[2rem] shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4 md:gap-6 hover:border-blue-500 transition-all group"
+                  className="bg-white border border-zinc-200 p-5 rounded-2xl shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-5 hover:border-blue-500 transition-all group"
                 >
                   <div className="space-y-1">
                     <div className="flex items-center gap-1.5 flex-wrap">
@@ -258,7 +261,7 @@ export default function DashboardPage() {
             })}
 
             {userAssignedActivePlans.length === 0 && (
-              <div className="bg-white border border-dashed border-zinc-200 rounded-xl md:rounded-[2rem] p-8 md:p-12 text-center text-zinc-400 space-y-1.5 select-none shadow-sm">
+              <div className="bg-white border border-dashed border-zinc-200 rounded-2xl p-10 text-center text-zinc-400 space-y-2 select-none shadow-sm">
                 <div className="text-xl">💤</div>
                 <h4 className="font-black text-zinc-800 text-xs md:text-sm">No Active Lineup Allocations</h4>
                 <p className="text-[11px] text-zinc-400 font-medium max-w-xs mx-auto">
@@ -277,7 +280,7 @@ export default function DashboardPage() {
             </h3>
           </div>
 
-          <div className="bg-white border border-zinc-200 rounded-xl md:rounded-[2rem] p-4 md:p-5 shadow-sm divide-y divide-zinc-100/70">
+          <div className="bg-white border border-zinc-200 rounded-2xl p-4 shadow-sm divide-y divide-zinc-100/70">
             {upcomingEventsSectionData.map((evt, idx) => (
               <div 
                 key={evt.id} 

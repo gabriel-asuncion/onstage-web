@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { createClient } from "../../../utils/supabase/client";
 
@@ -10,15 +10,29 @@ interface SongRecord {
   artist: string;
   original_key: string;
   tempo: number;
-  section_timings: {
-    [sectionName: string]: { measures: number; beats: number };
-  };
 }
 
 interface ArrangementSection {
   id: string;
   section_name: string;
   content: string;
+  sequence_order: number;
+}
+
+interface ParsedWordToken {
+  chords: string[];
+  word: string;
+}
+
+interface ParsedLineToken {
+  words: ParsedWordToken[];
+  comment: string;
+}
+
+interface CompiledSectionToken {
+  id: string;
+  section_name: string;
+  lines: ParsedLineToken[];
 }
 
 const CHROMATIC_SCALE = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
@@ -50,206 +64,108 @@ const transposeSingleNote = (note: string, semitones: number): string => {
   return CHROMATIC_SCALE[(idx + semitones + 12) % 12];
 };
 
-export default function SongLiveViewPage() {
+export default function MasterSongProfilePage() {
   const supabase = createClient();
   const router = useRouter();
   const params = useParams();
   const songId = params?.id as string;
 
-  // Core Data States
   const [loading, setLoading] = useState(true);
   const [song, setSong] = useState<SongRecord | null>(null);
   const [sections, setSections] = useState<ArrangementSection[]>([]);
+  const [activeDisplayKey, setActiveDisplayKey] = useState<string>("G");
+  
+  // Custom Workspace Preferences Control States
+  const [isPrefsModalOpen, setIsPrefsModalOpen] = useState(false);
+  const [showChords, setShowChords] = useState(true);
+  const [lyricsFontSize, setLyricsFontSize] = useState<"default" | "medium" | "large" | "huge">("default");
+  const [lineSpacing, setLineSpacing] = useState<"default" | "medium" | "large">("default");
 
-  // Runtime Display Key Overrides (Does not touch database master records)
-  const [displayKey, setDisplayKey] = useState<string>("");
-
-  // Transposer Modal States
+  // Transposer Selection Modal States
   const [isTransposerOpen, setIsTransposerOpen] = useState(false);
   const [modalRoot, setModalRoot] = useState("G");
   const [modalAccidental, setModalAccidental] = useState<"" | "#" | "b">("");
 
-  // Playback Control Flags
-  const [isPlayingFlow, setIsPlayingFlow] = useState(false);
-  const [isPausedFlow, setIsPausedFlow] = useState(false);
-  
-  // High-Performance Sync States
-  const [currentSectionIndex, setCurrentSectionIndex] = useState<number>(0);
-  const [currentBeat, setCurrentBeat] = useState<number>(1);
-  const [smoothProgress, setSmoothProgress] = useState<number>(0);
-
-  // Precise Engine Tracking Refs
-  const isPlayingRef = useRef(false);
-  const currentSectionIndexRef = useRef(0);
-  const sectionStartTimeRef = useRef<number>(0);
-  const pauseOffsetMsRef = useRef<number>(0);
-  
-  const animationFrameRef = useRef<number | null>(null);
-  const sectionRefs = useRef<{ [key: string]: HTMLDivElement | null }>({});
-
-  async function loadSongLiveSheet() {
+  async function loadMasterSongProfile() {
     try {
       setLoading(true);
-      const { data: songRow, error: songErr } = await supabase
+      const { data: songData, error: songErr } = await supabase
         .from("songs")
-        .select("id, title, artist, original_key, tempo, section_timings")
+        .select("*")
         .eq("id", songId)
         .maybeSingle();
 
-      if (songErr || !songRow) {
-        console.error("Song loading exception:", songErr);
-        setLoading(false);
+      if (songErr || !songData) {
+        console.error("Song item fetch exception:", songErr);
         return;
       }
-      setSong(songRow as unknown as SongRecord);
-      
-      // Initialize the runtime display tracker with the master record key signature
-      setDisplayKey(songRow.original_key || "G");
+
+      setSong(songData as SongRecord);
+      setActiveDisplayKey(songData.original_key || "G");
 
       const { data: sectionsData } = await supabase
         .from("song_sections")
-        .select("id, section_name, content")
+        .select("*")
         .eq("song_id", songId)
         .order("sequence_order", { ascending: true });
 
-      if (sectionsData) {
-        setSections(sectionsData);
-      }
+      setSections(sectionsData || []);
     } catch (err) {
-      console.error("Failed to parse live view assets:", err);
+      console.error("Profile pipeline loading failure:", err);
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    loadSongLiveSheet();
-    return () => {
-      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-    };
+    if (songId) loadMasterSongProfile();
   }, [songId]);
 
-  // ==========================================================
-  // --- SIDEBAR-AWARE PIXEL SNAP SCROLLER --------------------
-  // ==========================================================
-  useEffect(() => {
-    if (sections.length === 0 || !sections[currentSectionIndex]) return;
+  const runtimeSemitoneDelta = useMemo(() => {
+    if (!song || !activeDisplayKey) return 0;
+    const isMinorSong = song.original_key.endsWith("m");
+    
+    const oldRootNote = isMinorSong ? song.original_key.slice(0, -1) : song.original_key;
+    const newRootNote = isMinorSong ? activeDisplayKey.slice(0, -1) : activeDisplayKey;
 
-    const targetElement = sectionRefs.current[sections[currentSectionIndex].id];
-    if (targetElement) {
-      const headerElement = document.getElementById("fixed-live-header");
-      const headerHeight = headerElement ? headerElement.offsetHeight : 180;
-      
-      const elementPosition = targetElement.getBoundingClientRect().top + window.scrollY;
-      const optimizedScrollPosition = elementPosition - headerHeight - 24; 
+    const oldChromaticIndex = CHROMATIC_SCALE.indexOf(normalizeKeyNote(oldRootNote));
+    const newChromaticIndex = CHROMATIC_SCALE.indexOf(normalizeKeyNote(newRootNote));
+    
+    if (oldChromaticIndex === -1 || newChromaticIndex === -1) return 0;
+    return (newChromaticIndex - oldChromaticIndex + 12) % 12;
+  }, [song, activeDisplayKey]);
 
-      window.scrollTo({
-        top: optimizedScrollPosition,
-        behavior: "smooth"
+  const memoizedSongAstTree = useMemo(() => {
+    return sections.map((section): CompiledSectionToken => {
+      const rawText = section.content || "";
+      if (!rawText.trim()) return { id: section.id, section_name: section.section_name, lines: [] };
+
+      const linesArray = rawText.split("\n").map((line): ParsedLineToken => {
+        let commentText = "";
+        const cleanLineText = line.replace(/\{([^\}]+)\}/g, (_, p1) => { commentText = p1.trim(); return ""; });
+        const wordsMatch = cleanLineText.match(/(?:\[[^\]]+\]|\S)+/g) || [];
+
+        const wordsTokens = wordsMatch.map((chunk): ParsedWordToken => {
+          const chordRegex = /\[([^\]]+)\]/g;
+          const chordsList: string[] = [];
+          let match;
+          while ((match = chordRegex.exec(chunk)) !== null) {
+            chordsList.push(match[1]);
+          }
+          const wordText = chunk.replace(/\[[^\]]+\]/g, "");
+          return { chords: chordsList, word: wordText };
+        });
+
+        return { words: wordsTokens, comment: commentText };
       });
-    }
-  }, [currentSectionIndex, sections]);
 
-  // ==========================================================
-  // --- HIGH-PRECISION DRIFT-FREE METRONOME ENGINE ----------
-  // ==========================================================
-  const runHighPrecisionPlaybackEngine = (timestamp: number) => {
-    if (!isPlayingRef.current || !song || sections.length === 0) return;
+      return { id: section.id, section_name: section.section_name, lines: linesArray };
+    });
+  }, [sections]);
 
-    const beatSpeedMs = (60 / (song.tempo || 75)) * 1000;
-    const activeSection = sections[currentSectionIndexRef.current];
-    
-    if (!activeSection) {
-      handleResetFlowTrigger();
-      return;
-    }
-
-    const timings = song.section_timings?.[activeSection.section_name] || { measures: 4, beats: 0 };
-    const totalBeatsInSection = (timings.measures * 4) + timings.beats || 16;
-    const totalSectionDurationMs = totalBeatsInSection * beatSpeedMs;
-
-    const elapsedMs = timestamp - sectionStartTimeRef.current;
-    const calculatedProgress = Math.min(100, (elapsedMs / totalSectionDurationMs) * 100);
-    setSmoothProgress(calculatedProgress);
-
-    const currentBeatPulse = Math.floor(elapsedMs / beatSpeedMs) % 4 + 1;
-    setCurrentBeat(currentBeatPulse);
-
-    if (elapsedMs >= totalSectionDurationMs) {
-      const nextIndex = currentSectionIndexRef.current + 1;
-
-      if (nextIndex < sections.length) {
-        const residualOverrunMs = elapsedMs - totalSectionDurationMs;
-        
-        currentSectionIndexRef.current = nextIndex;
-        setCurrentSectionIndex(nextIndex);
-        sectionStartTimeRef.current = performance.now() - residualOverrunMs;
-      } else {
-        handleResetFlowTrigger();
-        return;
-      }
-    }
-
-    animationFrameRef.current = requestAnimationFrame(runHighPrecisionPlaybackEngine);
-  };
-
-  function handleStartFlowTrigger() {
-    if (sections.length === 0 || !song) return;
-    
-    isPlayingRef.current = true;
-    setIsPlayingFlow(true);
-    setIsPausedFlow(false);
-
-    if (isPausedFlow) {
-      sectionStartTimeRef.current = performance.now() - pauseOffsetMsRef.current;
-    } else {
-      sectionStartTimeRef.current = performance.now();
-    }
-
-    animationFrameRef.current = requestAnimationFrame(runHighPrecisionPlaybackEngine);
-  }
-
-  function handlePauseFlowTrigger() {
-    isPlayingRef.current = false;
-    setIsPlayingFlow(false);
-    setIsPausedFlow(true);
-    
-    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-    pauseOffsetMsRef.current = performance.now() - sectionStartTimeRef.current;
-  }
-
-  function handleResetFlowTrigger() {
-    isPlayingRef.current = false;
-    setIsPlayingFlow(false);
-    setIsPausedFlow(false);
-    
-    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-    
-    currentSectionIndexRef.current = 0;
-    pauseOffsetMsRef.current = 0;
-    
-    setCurrentSectionIndex(0);
-    setCurrentBeat(1);
-    setSmoothProgress(0);
-  }
-
-  function handleSelectSectionDirectly(index: number) {
-    if (isPlayingFlow) return; 
-    
-    currentSectionIndexRef.current = index;
-    setCurrentSectionIndex(index);
-    pauseOffsetMsRef.current = 0;
-    setCurrentBeat(1);
-    setSmoothProgress(0);
-  }
-
-  // ==========================================================
-  // --- IN-MEMORY RUNTIME TRANSPOSITION LOGIC ----------------
-  // ==========================================================
   function handleOpenTransposerModal() {
-    if (!song || isPlayingFlow) return;
-    
-    const cleanKeyBase = displayKey.endsWith("m") ? displayKey.slice(0, -1) : displayKey;
+    if (!song) return;
+    const cleanKeyBase = activeDisplayKey.endsWith("m") ? activeDisplayKey.slice(0, -1) : activeDisplayKey;
     let baseLetter = cleanKeyBase.charAt(0);
     let accidentalSign: "" | "#" | "b" = "";
     
@@ -261,296 +177,275 @@ export default function SongLiveViewPage() {
     setIsTransposerOpen(true);
   }
 
-  function handleCommitTranspositionSave(e: React.FormEvent) {
+  function handleCommitTransposition(e: React.FormEvent) {
     e.preventDefault();
     if (!song) return;
-
     const isMinorSong = song.original_key.endsWith("m");
     const formattedNewKeyName = `${modalRoot}${modalAccidental}${isMinorSong ? "m" : ""}`;
-
-    // Update local key override state (ZERO database writes)
-    setDisplayKey(formattedNewKeyName);
+    setActiveDisplayKey(formattedNewKeyName);
     setIsTransposerOpen(false);
-    handleResetFlowTrigger();
   }
 
-  // Calculate runtime semitone distance between Master database Key and local Display Key
-  const getRuntimeSemitoneDelta = (): number => {
-    if (!song || !displayKey) return 0;
-    const isMinorSong = song.original_key.endsWith("m");
-    
-    const oldRootNote = isMinorSong ? song.original_key.slice(0, -1) : song.original_key;
-    const newRootNote = isMinorSong ? displayKey.slice(0, -1) : displayKey;
+  // Symmetrical CSS evaluation mappings for responsive view parameters
+  const activeFontSizeValue = {
+    default: "15px",
+    medium: "18px",
+    large: "22px",
+    huge: "26px"
+  }[lyricsFontSize];
 
-    const oldChromaticIndex = CHROMATIC_SCALE.indexOf(normalizeKeyNote(oldRootNote));
-    const newChromaticIndex = CHROMATIC_SCALE.indexOf(normalizeKeyNote(newRootNote));
-    
-    if (oldChromaticIndex === -1 || newChromaticIndex === -1) return 0;
-    return (newChromaticIndex - oldChromaticIndex + 12) % 12;
-  };
+  const rowSpacingStyles = {
+    default: "py-1.5 gap-4",
+    medium: "py-3 gap-5",
+    large: "py-5 gap-6"
+  }[lineSpacing];
 
-  // Inline chord parsing engine with built-in runtime memory transposer overrides
-  const renderLiveOrchestrationLyricsLine = (contentText: string) => {
-    if (!contentText.trim()) return <div className="h-4" />;
-    
-    const runtimeDelta = getRuntimeSemitoneDelta();
-
-    return contentText.split("\n").map((line, lineIdx) => {
-      let lineCommentText = "";
-      const wordsArray = line.replace(/\{([^\}]+)\}/g, (m, p1) => { lineCommentText = p1.trim(); return ""; }).match(/(?:\[[^\]]+\]|\S)+/g) || [];
-
-      return (
-        <div key={lineIdx} className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 py-1">
-          <div className="flex flex-wrap items-end gap-x-2.5 gap-y-4 py-1 leading-none flex-1">
-            {wordsArray.map((chunk, currentWordIdx) => {
-              const chordRegex = /\[([^\]]+)\]/g; 
-              const extractedChordsList: string[] = []; 
-              let matchResult;
-              
-              while ((matchResult = chordRegex.exec(chunk)) !== null) { 
-                extractedChordsList.push(matchResult[1]); 
-              }
-              const cleanWordDisplay = chunk.replace(/\[[^\]]+\]/g, "");
-
-              return (
-                <div key={currentWordIdx} className="flex flex-col items-start min-h-[38px] justify-end">
-                  {extractedChordsList.length > 0 && (
-                    <div className="text-[12px] font-mono font-black text-blue-600 tracking-tight pb-0.5 select-none">
-                      {extractedChordsList.map((ch, cIdx) => {
-                        // Transpose chords inside the view rendering context map on the fly
-                        const dynamicTransposedChord = runtimeDelta !== 0 ? transposeBracketContent(ch, runtimeDelta) : ch;
-                        return (
-                          <span key={cIdx} className="mr-1 bg-blue-50/60 px-1 rounded border border-blue-100/40">{dynamicTransposedChord}</span>
-                        );
-                      })}
-                    </div>
-                  )}
-                  <div className="text-[15px] font-sans font-bold text-zinc-800 tracking-tight">{cleanWordDisplay || " "}</div>
-                </div>
-              );
-            })}
-          </div>
-          {lineCommentText && (
-            <div style={{ fontFamily: "'Nothing You Could Do', cursive" }} className="text-[17px] text-zinc-400 tracking-wide select-none self-center whitespace-nowrap sm:pl-4">
-              {lineCommentText}
-            </div>
-          )}
-        </div>
-      );
-    });
-  };
-
-  if (loading) return <div className="p-8 text-center text-xs font-black uppercase text-zinc-400 tracking-widest animate-pulse">Syncing Live Sheet...</div>;
-  if (!song) return <div className="p-12 text-center text-sm font-bold text-zinc-500">Track data profile matrix not found.</div>;
-
-  const highlightedTargetSectionName = sections[currentSectionIndex]?.section_name || "FLOW";
+  if (loading) return <div className="p-8 text-center text-xs font-black uppercase tracking-widest text-zinc-400 animate-pulse">Syncing Master Sheet Engine...</div>;
+  if (!song) return <div className="p-12 text-center text-sm font-bold text-zinc-500">Song master record profile missing or deleted.</div>;
 
   return (
-    <div className="p-6 md:p-8 pt-36 md:pt-40 max-w-5xl w-full mx-auto space-y-6 relative">
+    <div className="absolute inset-0 flex flex-col bg-[#f8f9fa] overflow-hidden select-none">
       <style dangerouslySetInnerHTML={{__html: `@import url('https://fonts.googleapis.com/css2?family=Nothing+You+Could+Do&display=swap');`}} />
 
       {/* ======================================================================= */}
-      {/* --- SIDEBAR-AWARE VIEWPORT-FIXED CONSOLE HEADER ----------------------- */}
+      {/* --- RE-ARCHITECTED FULL-WIDTH STICKY COCKPIT HEADER ------------------ */}
       {/* ======================================================================= */}
-      <div id="fixed-live-header" className="fixed top-0 left-0 md:left-20 right-0 z-50 p-4 md:p-6 bg-[#f8f9fa]/90 backdrop-blur-md select-none border-b border-zinc-200/50">
-        <div className="max-w-5xl mx-auto bg-white border border-zinc-200 rounded-[2rem] shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-5 relative overflow-hidden p-6">
+      {/* YELLOW RE-DESIGN FIX: Removed container background card, extending directly across screen layouts */}
+      <div id="fixed-live-header" className="w-full bg-white border-b border-zinc-200 px-6 py-4 flex-shrink-0 z-50 shadow-sm select-none">
+        <div className="max-w-5xl mx-auto flex items-center justify-between gap-6 w-full relative">
           
-          {/* PROGRESS FILL OVERLAY */}
-          {(isPlayingFlow || isPausedFlow) && (
-            <div 
-              className="absolute inset-y-0 left-0 bg-blue-500/5 pointer-events-none z-0 mix-blend-multiply"
-              style={{ width: `${smoothProgress}%` }}
-            />
-          )}
-
-          {/* PROGRESS ACCENT BOTTOM FOOTPRINT BAR */}
-          {(isPlayingFlow || isPausedFlow) && (
-            <div 
-              className="absolute bottom-0 left-0 h-1 bg-blue-600 pointer-events-none z-30 transition-all duration-75"
-              style={{ width: `${smoothProgress}%` }}
-            />
-          )}
-
-          <div className="relative z-10 flex flex-col lg:flex-row lg:items-center justify-between gap-5 w-full">
-            
-            <div className="flex items-center gap-4 min-w-0">
-              <button 
-                type="button" 
-                onClick={() => router.push("/songs")} 
-                className="w-8 h-8 rounded-full bg-zinc-50 hover:bg-zinc-100 border border-zinc-200 text-zinc-500 font-bold text-xs flex items-center justify-center transition-colors cursor-pointer shrink-0 shadow-sm"
-              >
-                ‹
-              </button>
-              <div className="min-w-0 leading-tight space-y-1">
-                <div className="flex items-center gap-2">
-                  <span className="bg-zinc-950 text-white font-black text-[9px] uppercase tracking-widest px-2.5 py-0.5 rounded-md">
-                    LIVE VIEW
-                  </span>
-                  <span className="bg-blue-50 border border-blue-100 text-blue-600 font-mono font-black text-[10px] px-2 py-0.5 rounded-md shadow-inner">
-                    ⏱ {song.tempo} BPM
-                  </span>
-                </div>
-                <h1 className="text-2xl font-black tracking-tight text-zinc-950 truncate max-w-xs md:max-w-sm">
-                  {song.title}
-                </h1>
-              </div>
-            </div>
-
-            {/* 4-BEATS STEADY METRONOME VISUAL INDICATOR DECK */}
-            <div className="flex items-center gap-1.5 bg-zinc-50 p-1.5 rounded-xl border border-zinc-200 shadow-inner self-start lg:self-center">
-              {[1, 2, 3, 4].map((beatNum) => {
-                const isByBeatPulsing = isPlayingFlow && currentBeat === beatNum;
-                return (
-                  <div
-                    key={beatNum}
-                    className={`w-10 h-10 flex items-center justify-center font-mono font-black text-sm rounded-lg border transition-all duration-75 select-none ${
-                      isByBeatPulsing
-                        ? "bg-blue-600 text-white border-blue-500 shadow-md scale-105"
-                        : "bg-white text-zinc-300 border-zinc-100"
-                    }`}
-                  >
-                    {beatNum}
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="flex items-center gap-2.5 self-end lg:self-center shrink-0">
+          {/* LEFT METADATA COLUMN SEGMENT */}
+          <div className="flex items-center gap-3.5 min-w-0 flex-1">
+            <button 
+              type="button" 
+              onClick={() => router.back()} 
+              className="w-8 h-8 rounded-xl bg-zinc-50 hover:bg-zinc-100 border border-zinc-200 text-zinc-500 font-bold text-xs flex items-center justify-center shrink-0 shadow-sm"
+            >
+              ‹
+            </button>
+            <div className="min-w-0 leading-tight space-y-0.5">
               
-              {/* INTERACTIVE LOCAL TRANSPOSER MODAL LINK BUTTON */}
-              <button
-                type="button"
-                disabled={isPlayingFlow}
-                onClick={handleOpenTransposerModal}
-                className="bg-white border border-zinc-200 rounded-xl p-2 px-3.5 text-xs font-bold text-zinc-400 shadow-sm flex items-center gap-1 hover:border-blue-500 hover:text-blue-600 transition-colors cursor-pointer disabled:opacity-50"
-              >
-                KEY <span className="text-blue-600 font-black text-sm">{displayKey}</span>
-              </button>
-
-              <div className="flex items-center bg-zinc-50 border border-zinc-200 p-1 rounded-xl shadow-inner gap-1">
-                <button
-                  type="button"
-                  onClick={handleStartFlowTrigger}
-                  disabled={sections.length === 0}
-                  className={`px-4 py-2 text-xs font-black uppercase tracking-wider rounded-lg transition-all flex items-center gap-1.5 disabled:opacity-40 cursor-pointer ${
-                    isPlayingFlow 
-                      ? "bg-blue-600 text-white shadow-md font-bold" 
-                      : "bg-white border text-zinc-800 hover:bg-zinc-50"
-                  }`}
-                >
-                  ▶ START IN {highlightedTargetSectionName.toUpperCase()}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handlePauseFlowTrigger}
-                  disabled={!isPlayingFlow}
-                  className="px-3 py-2 bg-white border border-zinc-200/60 hover:bg-zinc-100 disabled:opacity-40 rounded-lg text-xs font-black uppercase text-zinc-700 cursor-pointer transition-colors"
-                >
-                  ⏸ PAUSE
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleResetFlowTrigger}
-                  disabled={!isPlayingFlow && !isPausedFlow && currentSectionIndex === 0}
-                  className="px-3 py-2 bg-white border border-zinc-200/60 hover:bg-red-50 hover:text-red-600 hover:border-red-200 disabled:opacity-40 rounded-lg text-xs font-black uppercase text-zinc-400 cursor-pointer transition-all"
-                >
-                  ⏹ RESET
-                </button>
+              {/* YELLOW RE-DESIGN FIX: Removed master catalog label, moving BPM chip up cleanly to the crown header position */}
+              <div className="flex items-center">
+                <span className="bg-blue-50 border border-blue-100 text-blue-600 font-mono font-black text-[10px] px-2 py-0.5 rounded-md shadow-inner">
+                  ⏱ {song.tempo || "--"} BPM
+                </span>
               </div>
 
-              <button 
-                type="button"
-                onClick={() => router.push("/songs")}
-                className="p-2 bg-zinc-50 hover:bg-zinc-100 border border-zinc-200 rounded-xl transition-colors cursor-pointer shadow-sm text-sm"
-              >
-                📝
-              </button>
+              <h1 className="text-xl font-black tracking-tight text-zinc-950 truncate max-w-xs md:max-w-sm">
+                {song.title}
+              </h1>
+              <p className="text-[11px] text-zinc-400 font-bold">by {song.artist || "Unknown Author"}</p>
             </div>
-
           </div>
+
+          {/* RIGHT ACTION CONTROLS SEGMENT */}
+          {/* YELLOW RE-DESIGN FIX: Combined transposer button and preferences engine controls into a single streamlined metadata block row */}
+          <div className="flex items-center gap-2 shrink-0">
+            
+            {/* REHEARSAL KEY MODIFIER TRANSPOSER */}
+            <button
+              type="button"
+              onClick={handleOpenTransposerModal}
+              className="bg-white border border-zinc-200 rounded-xl p-2.5 px-3.5 text-xs font-bold text-zinc-400 shadow-sm flex items-center gap-1 hover:border-blue-500 hover:text-blue-600 transition-colors cursor-pointer h-10"
+            >
+              KEY <span className="text-blue-600 font-black text-sm">{activeDisplayKey}</span>
+            </button>
+
+            {/* Preferences Overlay Toggle Trigger */}
+            <button
+              type="button"
+              onClick={() => setIsPrefsModalOpen(true)}
+              className="w-10 h-10 bg-white hover:bg-zinc-50 border border-zinc-200 text-zinc-700 font-bold text-sm rounded-xl shadow-sm flex items-center justify-center cursor-pointer hover:border-blue-500 hover:text-blue-600 transition-colors"
+              title="Open Console Settings Preferences"
+            >
+              🎛️
+            </button>
+          </div>
+
         </div>
       </div>
 
-      {/* ARRANGEMENT VIEW CARDS ARRANGEMENT TRAY */}
-      <div className="space-y-4">
-        {sections.map((section, idx) => {
-          const isSectionCurrentlyActive = isPlayingFlow && currentSectionIndex === idx;
-          const isStagedUnstartedTarget = !isPlayingFlow && currentSectionIndex === idx;
-          const centralizedTimingConfig = song.section_timings?.[section.section_name];
-
-          return (
+      {/* ======================================================================= */}
+      {/* --- SHEET CANVAS PANE VIEW ------------------------------------------- */}
+      {/* ======================================================================= */}
+      <div className="flex-1 overflow-y-auto p-4 md:p-6 pt-6 custom-scrollbar pb-24">
+        <div className="max-w-5xl w-full mx-auto space-y-4">
+          
+          {memoizedSongAstTree.map((section) => (
             <div
               key={section.id}
-              ref={(el) => { sectionRefs.current[section.id] = el; }}
-              onClick={() => handleSelectSectionDirectly(idx)}
-              className={`bg-white border rounded-[2rem] p-6 shadow-sm transition-all duration-300 relative ${
-                isSectionCurrentlyActive 
-                  ? "border-blue-500 ring-4 ring-blue-500/10 scale-[1.001] shadow-md z-10" 
-                  : `border-zinc-200 opacity-95 text-[#f8f9fa] cursor-pointer hover:border-blue-400 hover:bg-zinc-50/30`
-                }`}
-              style={isStagedUnstartedTarget ? { borderColor: '#fbbf24', boxShadow: '0 0 0 4px rgba(251, 191, 36, 0.1)' } : {}}
+              className="bg-white border border-zinc-200 rounded-2xl p-6 shadow-sm relative transition-all"
             >
               <div className="flex items-center justify-between border-b border-zinc-100/80 pb-2.5 mb-4 select-none">
-                <div className="flex items-center gap-2">
-                  <span className={`font-black text-[10px] uppercase tracking-wider px-3 py-1 rounded-full ${
-                    isSectionCurrentlyActive 
-                      ? "bg-blue-600 text-white shadow-sm" 
-                      : isStagedUnstartedTarget
-                      ? "bg-amber-500 text-white shadow-sm"
-                      : "bg-blue-50 text-blue-600"
-                  }`}>
-                    {section.section_name}
-                  </span>
-                  {isStagedUnstartedTarget && (
-                    <span className="text-[9px] font-black text-amber-600 uppercase tracking-widest animate-pulse"> Staged Target Point </span>
-                  )}
-                </div>
-                
-                {centralizedTimingConfig && (
-                  <span className="text-[10px] text-zinc-400 font-bold bg-zinc-50 border border-zinc-150 px-2 py-0.5 rounded-lg shadow-inner">
-                    ⏱ Duration: {centralizedTimingConfig.measures}m + {centralizedTimingConfig.beats}b
-                  </span>
+                <span className="font-black text-[10px] uppercase tracking-wider px-3 py-1 bg-blue-50 text-blue-600 rounded-full">
+                  {section.section_name}
+                </span>
+              </div>
+
+              <div className="pl-1.5 select-text selection:bg-blue-50 text-zinc-800 space-y-1">
+                {section.lines.length === 0 ? (
+                  <div className="h-4" />
+                ) : (
+                  section.lines.map((line, lIdx) => (
+                    <div key={lIdx} className={`flex flex-col sm:flex-row sm:items-center justify-between border-b border-zinc-50/20 last:border-0 ${rowSpacingStyles}`}>
+                      
+                      <div className="flex flex-wrap items-end gap-x-2.5 gap-y-4 py-1 leading-none flex-1">
+                        {line.words.map((wordObj, wIdx) => (
+                          <div key={wIdx} className="flex flex-col items-start min-h-[38px] justify-end">
+                            {showChords && wordObj.chords.length > 0 && (
+                              <div className="text-[12px] font-mono font-black text-blue-600 tracking-tight pb-0.5 select-none">
+                                {wordObj.chords.map((ch, cIdx) => {
+                                  const finalChord = runtimeSemitoneDelta !== 0 ? transposeBracketContent(ch, runtimeSemitoneDelta) : ch;
+                                  return <span key={cIdx} className="mr-1 bg-blue-50/60 px-1 rounded border border-blue-100/40">{finalChord}</span>;
+                                })}
+                              </div>
+                            )}
+                            <div 
+                              style={{ fontSize: activeFontSizeValue }}
+                              className="font-sans font-bold text-zinc-800 tracking-tight transition-all duration-100"
+                            >
+                              {wordObj.word || " "}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      
+                      {line.comment && (
+                        <div style={{ fontFamily: "'Nothing You Could Do', cursive" }} className="text-[17px] text-zinc-400 tracking-wide select-none self-center whitespace-nowrap sm:pl-4">
+                          {line.comment}
+                        </div>
+                      )}
+                    </div>
+                  ))
                 )}
               </div>
-
-              <div className="pl-1.5 select-text selection:bg-blue-50 text-zinc-800">
-                {renderLiveOrchestrationLyricsLine(section.content)}
-              </div>
             </div>
-          );
-        })}
+          ))}
 
-        {sections.length === 0 && (
-          <div className="p-16 text-center text-zinc-400 border border-dashed rounded-[2rem] bg-white space-y-2 select-none shadow-sm">
-            <div className="text-3xl">🫙</div>
-            <h4 className="font-black text-zinc-800 text-sm">Arrangement Workspace Is Empty</h4>
-            <p className="text-xs text-zinc-400 font-medium">No structural section coordinates have been allocated to this track template library yet.</p>
-          </div>
-        )}
+          {sections.length === 0 && (
+            <div className="bg-white border border-dashed text-center text-zinc-400 p-16 rounded-2xl font-bold select-none text-sm">
+              This master profile template is completely blank. Instantiation coordinates have no loaded lyrics.
+            </div>
+          )}
+        </div>
       </div>
 
       {/* ======================================================================= */}
-      {/* --- IN-MEMORY RUNTIME CHANCE KEY MODAL OVERLAY ------------------------ */}
+      {/* --- UNIFIED CONSOLE PREFERENCES INTERACTIVE OVERLAY (image_4a1fe0.png) - */}
       {/* ======================================================================= */}
-      {isTransposerOpen && (
-        <div className="fixed inset-0 bg-zinc-950/50 backdrop-blur-sm z-[200000] flex items-center justify-center p-4 md:p-6 animate-in fade-in duration-100 select-none">
-          <form 
-            onSubmit={handleCommitTranspositionSave}
-            className="bg-[#f8f9fa] border border-zinc-200 rounded-[2.5rem] shadow-2xl max-w-xl w-full p-7 px-8 space-y-6 animate-in zoom-in-95 duration-150 relative text-left"
-          >
+      {isPrefsModalOpen && (
+        <div className="fixed inset-0 bg-zinc-950/50 backdrop-blur-sm z-[200000] flex items-center justify-center p-4 select-none animate-in fade-in duration-100">
+          <div className="bg-white rounded-[2rem] border border-zinc-200 shadow-2xl max-w-md w-full p-6 space-y-6 text-left relative animate-in zoom-in-95 duration-150">
+            
             <button
               type="button"
-              onClick={() => setIsTransposerOpen(false)}
-              className="absolute top-6 right-6 w-8 h-8 rounded-full bg-white hover:bg-zinc-100 border text-zinc-400 text-xs font-bold flex items-center justify-center shadow-sm cursor-pointer transition-colors"
+              onClick={() => setIsPrefsModalOpen(false)}
+              className="absolute top-6 right-6 w-8 h-8 rounded-full bg-zinc-50 hover:bg-zinc-100 border text-zinc-400 text-xs font-bold flex items-center justify-center cursor-pointer transition-colors"
             >
               ✕
             </button>
 
             <div className="space-y-1">
-              <h3 className="text-2xl font-black text-zinc-900 tracking-tight">Change Key</h3>
-              <p className="text-xs font-black text-blue-500">Original Base {song.original_key}</p>
+              <h3 className="text-lg font-black text-zinc-900 tracking-tight">Console Preferences</h3>
+              <p className="text-xs text-zinc-400 font-bold">Tweak user accessibility and dynamic track constraints.</p>
+            </div>
+
+            {/* PREF BLOCK 1: Chord Notation Display Layout Toggle */}
+            <div className="space-y-2">
+              <label className="text-[10px] font-black uppercase text-zinc-400 tracking-wider block">Chord Notation Display</label>
+              <div className="flex bg-zinc-50 p-1 rounded-full border shadow-inner items-center relative h-[42px]">
+                <button
+                  type="button"
+                  onClick={() => setShowChords(true)}
+                  className={`flex-1 text-center text-[11px] font-serif font-black rounded-full tracking-wider uppercase h-full transition-all flex items-center justify-center gap-1 ${
+                    showChords ? "bg-[#18181b] text-white shadow-md" : "text-zinc-400 hover:text-zinc-600"
+                  }`}
+                >
+                  👁️ Show Chords
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowChords(false)}
+                  className={`flex-1 text-center text-[11px] font-serif font-black rounded-full tracking-wider uppercase h-full transition-all flex items-center justify-center gap-1 ${
+                    !showChords ? "bg-[#18181b] text-white shadow-md" : "text-zinc-400 hover:text-zinc-600"
+                  }`}
+                >
+                  🙈 Hide Chords
+                </button>
+              </div>
+            </div>
+
+            {/* PREF BLOCK 2: Re-Designed Lyrics Font Display Size Segmented Row */}
+            <div className="space-y-2">
+              <label className="text-[10px] font-black uppercase text-zinc-400 tracking-wider block">Lyrics Font Display Size</label>
+              <div className="grid grid-cols-4 bg-zinc-50 p-1 rounded-full border shadow-inner items-center h-[42px]">
+                {(["default", "medium", "large", "huge"] as const).map((opt) => (
+                  <button
+                    key={opt}
+                    type="button"
+                    onClick={() => setLyricsFontSize(opt)}
+                    className={`text-center text-[10px] font-serif font-black rounded-full uppercase tracking-tight h-full flex items-center justify-center transition-all ${
+                      lyricsFontSize === opt ? "bg-[#2563eb] text-white shadow-md" : "text-zinc-400 hover:text-zinc-600"
+                    }`}
+                  >
+                    {opt}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* PREF BLOCK 3: Line Spacing Padding Segmented Row */}
+            <div className="space-y-2">
+              <label className="text-[10px] font-black uppercase text-zinc-400 tracking-wider block">Line Spacing Padding</label>
+              <div className="grid grid-cols-3 bg-zinc-50 p-1 rounded-full border shadow-inner items-center h-[42px]">
+                {(["default", "medium", "large"] as const).map((opt) => (
+                  <button
+                    key={opt}
+                    type="button"
+                    onClick={() => setLineSpacing(opt)}
+                    className={`text-center text-[10px] font-serif font-black rounded-full uppercase tracking-tight h-full flex items-center justify-center transition-all ${
+                      lineSpacing === opt ? "bg-[#2563eb] text-white shadow-md" : "text-zinc-400 hover:text-zinc-600"
+                    }`}
+                  >
+                    {opt}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={() => setIsPrefsModalOpen(false)}
+                className="w-full py-3 bg-zinc-950 hover:bg-zinc-900 text-white font-black text-xs uppercase tracking-widest rounded-xl shadow-md transition-all active:scale-[0.99] text-center cursor-pointer"
+              >
+                Close Parameters
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* OVERLAY KEY REMODAL TRANSPOSER INTERFACE */}
+      {isTransposerOpen && (
+        <div className="fixed inset-0 bg-zinc-950/50 backdrop-blur-sm z-[200000] flex items-center justify-center p-4 md:p-6 animate-in fade-in duration-100 select-none">
+          <form 
+            onSubmit={handleCommitTransposition}
+            className="bg-[#f8f9fa] border border-zinc-200 rounded-2xl shadow-2xl max-w-xl w-full p-7 px-8 space-y-6 text-left relative animate-in zoom-in-95"
+          >
+            <button
+              type="button"
+              onClick={() => setIsTransposerOpen(false)}
+              className="absolute top-6 right-6 w-8 h-8 rounded-full bg-white hover:bg-zinc-100 border text-zinc-400 text-xs font-bold flex items-center justify-center shadow-sm cursor-pointer"
+            >
+              ✕
+            </button>
+
+            <div className="space-y-1">
+              <h3 className="text-2xl font-black text-zinc-900 tracking-tight">Rehearsal Sheet Transposer</h3>
+              <p className="text-xs font-black text-blue-500">Master Catalog Baseline Key: {song.original_key || "--"}</p>
             </div>
 
             <div className="grid grid-cols-7 gap-2 bg-white p-2 rounded-2xl border shadow-inner">
@@ -562,9 +457,7 @@ export default function SongLiveViewPage() {
                     type="button"
                     onClick={() => setModalRoot(letter)}
                     className={`aspect-square rounded-xl text-center text-sm font-black transition-all flex items-center justify-center cursor-pointer ${
-                      isSelected 
-                        ? "bg-blue-600 text-white shadow-md scale-105" 
-                        : "bg-zinc-50/50 text-zinc-700 hover:bg-zinc-100"
+                      isSelected ? "bg-blue-600 text-white shadow-md scale-105" : "bg-zinc-50/50 text-zinc-700 hover:bg-zinc-100"
                     }`}
                   >
                     {letter}
@@ -578,7 +471,7 @@ export default function SongLiveViewPage() {
                 type="button"
                 onClick={() => setModalAccidental(modalAccidental === "b" ? "" : "b")}
                 className={`text-center text-base font-black transition-colors flex items-center justify-center h-full cursor-pointer ${
-                  modalAccidental === "b" ? "bg-blue-50/80 text-blue-600 font-extrabold" : "text-zinc-600 hover:bg-zinc-50/50"
+                  modalAccidental === "b" ? "bg-blue-50/80 text-blue-600" : "text-zinc-600 hover:bg-zinc-50/50"
                 }`}
               >
                 ♭
@@ -587,7 +480,7 @@ export default function SongLiveViewPage() {
                 type="button"
                 onClick={() => setModalAccidental(modalAccidental === "#" ? "" : "#")}
                 className={`text-center text-sm font-black transition-colors flex items-center justify-center h-full cursor-pointer ${
-                  modalAccidental === "#" ? "bg-blue-50/80 text-blue-600 font-extrabold" : "text-zinc-600 hover:bg-zinc-50/50"
+                  modalAccidental === "#" ? "bg-blue-50/80 text-blue-600" : "text-zinc-600 hover:bg-zinc-50/50"
                 }`}
               >
                 #
@@ -595,14 +488,10 @@ export default function SongLiveViewPage() {
             </div>
 
             <div className="pt-2">
-              <button
-                type="submit"
-                className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white font-black text-sm uppercase tracking-widest rounded-2xl shadow-md transition-all active:scale-[0.99] cursor-pointer text-center"
-              >
-                Save
+              <button type="submit" className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white font-black text-sm uppercase tracking-widest rounded-2xl shadow-md text-center">
+                Transpose Sheet Read View
               </button>
             </div>
-
           </form>
         </div>
       )}

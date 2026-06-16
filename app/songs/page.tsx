@@ -120,6 +120,12 @@ export default function SongsPage() {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const editorContentContainerRef = useRef<HTMLDivElement | null>(null);
   
+  // Drop these near line 120-140 alongside your other editor hooks:
+  const [sectionTotalMeasures, setSectionTotalMeasures] = useState<number>(8);
+  const [sectionTotalBeats, setSectionTotalBeats] = useState<number>(0);
+  const [sectionNamePreset, setSectionNamePreset] = useState<string>("Intro");
+  const [lineOverrides, setLineOverrides] = useState<Record<string, Record<number, { measures: number; beats: number }>> | null>(null);
+
   const { simulatedRole, simulatedUserId } = useEngine();
 
   const [loading, setLoading] = useState(true);
@@ -351,46 +357,73 @@ export default function SongsPage() {
     handleSelectNewKeySignature(nextKeyComputedName);
   }
   async function handleCommitSongChangesToDB() {
-    if (!formTitle.trim()) return;
+    if (!editingSongId) return;
     setLoading(true);
-    const songPayload = {
-      title: formTitle,
-      tempo: formTempo ? parseInt(formTempo, 10) : 75, 
-      original_key: formKey, 
-      artist: formArtist.trim() || "Various Artists",
-      themes: formThemes.join(", "),
-      chordpro_content: formSections.map(s => `[${s.type}]\n${s.content}`).join("\n\n"),
-      section_timings: sectionTimings 
-    };
 
     try {
-      let targetId = editingSongId;
-      if (editingSongId) {
-        await supabase.from("songs").update(songPayload).eq('id', editingSongId);
-      } else {
-        const { data } = await supabase.from("songs").insert(songPayload).select("id").single();
-        targetId = data?.id || null;
+      // 1. Compile the nested line level overrides for the master JSON object
+      const updatedSectionTimings: Record<string, any> = {};
+
+      formSections.forEach((sec) => {
+        const metricsTuple = getCentralizedMetricsTuple(sec.type);
+        const specificRowOverrides = lineOverrides?.[sec.id] || null;
+
+        updatedSectionTimings[sec.type] = {
+          measures: metricsTuple.measures,
+          beats: metricsTuple.beats,
+          line_timings: specificRowOverrides 
+        };
+      });
+
+      // 2. Update the parent song row metadata variables
+      const { error: songUpdateError } = await supabase
+        .from("songs")
+        .update({ 
+          title: formTitle,
+          artist: formArtist,
+          tempo: parseInt(formTempo, 10) || 75,
+          original_key: formKey,
+          themes: formThemes,
+          section_timings: updatedSectionTimings 
+        })
+        .eq("id", editingSongId);
+
+      if (songUpdateError) throw songUpdateError;
+
+      // 3. >>> DATABASE HOOK: Wipe old structure sequence layout nodes for this track <<<
+      const { error: deleteError } = await supabase
+        .from("song_sections")
+        .delete()
+        .eq("song_id", editingSongId);
+
+      if (deleteError) throw deleteError;
+
+      // 4. >>> DATABASE HOOK: Re-write the updated chronology sequence matrix <<<
+      const sectionsToInsert = formSections.map((sec, index) => ({
+        song_id: editingSongId,
+        section_name: sec.type,
+        content: sec.content || "",
+        sequence_order: index // Retains your exact drag/drop list sequence position
+      }));
+
+      if (sectionsToInsert.length > 0) {
+        const { error: insertError } = await supabase
+          .from("song_sections")
+          .insert(sectionsToInsert);
+
+        if (insertError) throw insertError;
       }
 
-      if (targetId) {
-        await supabase.from("song_sections").delete().eq("song_id", targetId);
-        for (let i = 0; i < formSections.length; i++) {
-          const sec = formSections[i];
-          await supabase.from("song_sections").insert({
-            song_id: targetId,
-            section_name: sec.type,
-            content: sec.content,
-            sequence_order: i + 1
-          });
-        }
-      }
+      // 5. Clean up modal focus flags and refresh parent grid charts
       setHasUnsavedChanges(false);
-      await loadSongsData();
       setIsEditorOpen(false);
-    } catch (err) { 
-      console.error(err); 
-    } finally { 
-      setLoading(false); 
+      await loadSongsData(); 
+
+    } catch (err) {
+      console.error("Database structural update drop crash:", err);
+      alert("Failed to commit arrangement modifications to database synchronization streams.");
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -612,6 +645,26 @@ export default function SongsPage() {
     return () => window.removeEventListener("keydown", handleNashvilleNumberKeyInjections);
   }, [isAddChordsModeActive, chordTargetCoordinate, activeScaleDiatonicDeck]);
 
+  // >>> SURGICAL FIX: Match against your exact state variable 'allDatabaseSongs' <<<
+  useEffect(() => {
+    // 1. Look up the song item out of your active database state array
+    const currentSong = allDatabaseSongs?.find((s: any) => s.id === editingSongId);
+
+    if (isEditorOpen && currentSong?.section_timings && formSections.length > 0) {
+      const hydratedOverrides: Record<string, any> = {};
+
+      formSections.forEach((sec) => {
+        const savedMetricsNode = currentSong.section_timings[sec.type];
+        if (savedMetricsNode?.line_timings) {
+          hydratedOverrides[sec.id] = savedMetricsNode.line_timings;
+        }
+      });
+
+      setLineOverrides(hydratedOverrides);
+    }
+    // 2. Swapped 'songs' for 'allDatabaseSongs' to satisfy the compiler footprint
+  }, [isEditorOpen, editingSongId, formSections, allDatabaseSongs]);
+
   const handleStructureDropOverride = (e: React.DragEvent, targetIdx: number) => {
     e.preventDefault();
     if (draggedStructureIndex !== null && draggedStructureIndex !== targetIdx) {
@@ -658,8 +711,19 @@ export default function SongsPage() {
 
   const searchTokensMetrics = parseColonWrappedKeywords(songSearchQuery);
 
-  const getCentralizedMetricsTuple = (sectionType: string) => {
-    return sectionTimings[sectionType] || { measures: 0, beats: 0 };
+  // >>> SURGICAL FIX: Define the missing metrics lookup engine <<<
+  const getCentralizedMetricsTuple = (sectionType: string): { measures: number; beats: number; repeats: number } => {
+    // 1. Locate the active song record being modified inside your dashboard dataset array
+    const currentSong = allDatabaseSongs?.find((s: any) => s.id === editingSongId);
+    
+    // 2. Fetch the existing timing node for this specific section type (e.g., "Bridge 1")
+    const savedMetrics = currentSong?.section_timings?.[sectionType];
+
+    return {
+      measures: savedMetrics?.measures ?? 4, // Defaults to 4 measures if blank
+      beats: savedMetrics?.beats ?? 0,       // Defaults to 0 beats if blank
+      repeats: savedMetrics?.repeats ?? 0     // 🌟 Defaults to 0 repeats if blank
+    };
   };
 
   
@@ -807,6 +871,19 @@ export default function SongsPage() {
               <div className="flex items-center gap-2">
                 <button type="button" onClick={handleAttemptDismissal} className="w-7 h-7 rounded-lg bg-zinc-100 text-zinc-600 font-bold text-xs flex items-center justify-center">‹</button>
                 <h3 className="font-black text-sm md:text-base text-zinc-900 tracking-tight">{editingSongId ? "Modify Worship Arrangement" : "Create Studio Track Node"}</h3>
+                {/* SURGICAL FIX: Properly bound to your local 'editingSongId' and 'setIsEditorOpen' state parameters */}
+                {editingSongId && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsEditorOpen(false);
+                      router.push(`/songs/${editingSongId}`);
+                    }}
+                    className="px-4 py-2 bg-white hover:bg-zinc-50 border border-zinc-200 text-zinc-700 font-black text-xs uppercase tracking-wider rounded-xl shadow-sm transition-all active:scale-95 cursor-pointer flex items-center gap-1.5 ml-2"
+                  >
+                    View Lyrics
+                  </button>
+                )}
               </div>
               
               <div className="hidden md:flex items-center gap-2 select-none">
@@ -864,13 +941,13 @@ export default function SongsPage() {
                       )}
                     </div>
                     <div className="relative">
-                      <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Themes / Set Categories</label>
+                      <label className="text-[9px] font-black text-zinc-400 uppercase tracking-wider block mb-1">Themes / Set Categories</label>
                       <div className="w-full border rounded-xl p-1.5 bg-zinc-50/50 flex flex-wrap gap-1.5 items-center shadow-inner">
                         {formThemes.map(tag => <span key={tag} className="px-2.5 py-0.5 bg-zinc-950 text-white rounded-lg text-[10px] font-bold flex items-center gap-1">{tag}<button type="button" className="text-[9px] text-zinc-400" onClick={() => { setHasUnsavedChanges(true); setFormThemes(prev => prev.filter(t => t !== tag)); }}>✕</button></span>)}
                         <input type="text" value={themeInputSearchValue} onFocus={() => setIsThemeDropdownFocused(true)} onBlur={() => setTimeout(() => setIsThemeDropdownFocused(false), 200)} placeholder="Add themes..." className="flex-1 bg-transparent border-0 outline-none text-xs font-bold p-1 text-zinc-800" onChange={e => setThemeInputSearchValue(e.target.value)} />
                       </div>
                       {isThemeDropdownFocused && filteredThemeCatalogSuggestions.length > 0 && (
-                        <div className="absolute top-full left-0 right-0 mt-0.5 bg-white border rounded-xl max-h-36 overflow-y-auto z-[3000] shadow-xl">{filteredThemeCatalogSuggestions.map(th => <button key={th} type="button" className="w-full px-3 py-2 text-left text-xs font-extrabold block border-b" onClick={() => { setHasUnsavedChanges(true); setFormThemes([...formThemes, th]); setThemeInputSearchValue(""); }}>{th}</button>)}</div>
+                        <div className="absolute top-full left-0 right-0 mt-0.5 bg-white border rounded-xl max-h-36 overflow-y-auto z-[3000] shadow-xl">{filteredThemeCatalogSuggestions.map(th => <button key={th} type="button" className="w-full px-3 py-2 text-left text-xs font-bold block border-b" onClick={() => { setHasUnsavedChanges(true); setFormThemes([...formThemes, th]); setThemeInputSearchValue(""); }}>{th}</button>)}</div>
                       )}
                     </div>
                   </div>
@@ -883,8 +960,88 @@ export default function SongsPage() {
                     {formSections.map((sec) => {
                       const timingTuple = getCentralizedMetricsTuple(sec.type);
 
+                      // 1. Break content block down into clean text rows
+                      const linesArray = sec.content
+                        .split("\n")
+                        .map(line => line.replace(/\[[^\]]+\]/g, "").trim())
+                        .filter(line => line.length > 0);
+
+                      const totalLines = linesArray.length;
+                      
+                      // MATH UPDATE: 1 original pass + R repeats = Total passes running through the engine
+                      const sectionRepeats = timingTuple.repeats || 0;
+                      const totalPasses = sectionRepeats + 1; 
+                      const totalLineSegmentsCount = totalLines * totalPasses;
+
+                      const masterTotalAbsoluteBeats = (timingTuple.measures * 4) + timingTuple.beats;
+
+                      // 2. Compute even distributions across line segments
+                      const autoSpreadMeasures = totalLineSegmentsCount > 0 ? Math.floor(timingTuple.measures / totalLineSegmentsCount) : 0;
+                      const remainderMeasures = totalLineSegmentsCount > 0 ? timingTuple.measures % totalLineSegmentsCount : 0;
+
+                      const autoSpreadBeats = totalLineSegmentsCount > 0 ? Math.floor(timingTuple.beats / totalLineSegmentsCount) : 0;
+                      const remainderBeats = totalLineSegmentsCount > 0 ? timingTuple.beats % totalLineSegmentsCount : 0;
+
+                      // 3. Retrieve or map active metrics overrides
+                      const currentLinesMetrics = linesArray.map((_, lIdx) => {
+                        const explicitOverride = (lineOverrides as any)?.[sec.id]?.[lIdx];
+                        if (explicitOverride) return explicitOverride;
+                        return {
+                          measures: autoSpreadMeasures + (lIdx < remainderMeasures ? 1 : 0),
+                          beats: autoSpreadBeats + (lIdx < remainderBeats ? 1 : 0)
+                        };
+                      });
+
+                      // 4. Multiply line layers out by the loop passes to verify total absolute section beats matches
+                      const totalManualLineMeasures = currentLinesMetrics.reduce((sum, l) => sum + l.measures, 0) * totalPasses;
+                      const totalManualLineBeats = currentLinesMetrics.reduce((sum, l) => sum + l.beats, 0) * totalPasses;
+                      const totalManualAbsoluteBeats = (totalManualLineMeasures * 4) + totalManualLineBeats;
+
+                      const isSectionMismatched = totalLines > 0 && totalManualAbsoluteBeats !== masterTotalAbsoluteBeats;
+
+                      const handleAdjustLineMetricValue = (lineIdx: number, field: "measures" | "beats", delta: number) => {
+                        const currentVal = currentLinesMetrics[lineIdx][field];
+                        const proposedVal = Math.max(0, currentVal + delta);
+
+                        if (field === "beats" && proposedVal > 3) return;
+
+                        // Account for total passes factor inside delta steps
+                        const deltaBeats = (field === "measures" ? (delta * 4) : delta) * totalPasses;
+                        const projectedAbsoluteBeats = totalManualAbsoluteBeats + deltaBeats;
+
+                        if (projectedAbsoluteBeats > masterTotalAbsoluteBeats) return;
+
+                        setHasUnsavedChanges(true);
+                        setLineOverrides(prev => {
+                          const sectionMap = prev?.[sec.id] || {};
+                          
+                          linesArray.forEach((_, currentIdx) => {
+                            if (sectionMap[currentIdx] === undefined) {
+                              sectionMap[currentIdx] = {
+                                measures: autoSpreadMeasures + (currentIdx < remainderMeasures ? 1 : 0),
+                                beats: autoSpreadBeats + (currentIdx < remainderBeats ? 1 : 0)
+                              };
+                            }
+                          });
+
+                          sectionMap[lineIdx] = {
+                            ...sectionMap[lineIdx],
+                            [field]: proposedVal
+                          };
+
+                          return { ...(prev || {}), [sec.id]: sectionMap };
+                        });
+                      };
+
                       return (
-                        <div key={sec.id} className="bg-white border rounded-xl p-3.5 space-y-2 relative shadow-sm">
+                        <div 
+                          key={sec.id} 
+                          className={`border rounded-xl p-3.5 space-y-2 relative transition-all shadow-sm ${
+                            isRealtimePreviewActive && isSectionMismatched 
+                              ? "bg-amber-50/40 border-amber-300 ring-4 ring-amber-500/5" 
+                              : "bg-white border-zinc-200"
+                          }`}
+                        >
                           <div className="flex items-center justify-between gap-2 flex-wrap">
                             <div className="flex flex-wrap items-center gap-1.5">
                               <div className="relative">
@@ -910,12 +1067,18 @@ export default function SongsPage() {
 
                               <div className="flex items-center gap-1 bg-zinc-50 border rounded-lg px-2 py-0.5 text-[10px] font-bold text-zinc-600 shadow-inner">
                                 <span className="text-[8px] font-black uppercase text-zinc-400">M:</span>
-                                <input type="number" min={0} value={timingTuple.measures} className="w-6 bg-transparent text-center font-black text-zinc-800 outline-none" onChange={(e) => handleUpdateCentralizedMetrics(sec.type, "measures", Math.max(0, parseInt(e.target.value, 10) || 0))} />
+                                <input type="number" min={0} value={timingTuple.measures} className="w-6 bg-transparent text-center font-black text-zinc-800 outline-none" onChange={(e) => { handleUpdateCentralizedMetrics(sec.type, "measures", Math.max(0, parseInt(e.target.value, 10) || 0)); setLineOverrides(prev => { if (prev) { delete prev[sec.id]; } return { ...(prev || {}) }; }); }} />
                               </div>
 
                               <div className="flex items-center gap-1 bg-zinc-50 border rounded-lg px-2 py-0.5 text-[10px] font-bold text-zinc-600 shadow-inner">
                                 <span className="text-[8px] font-black uppercase text-zinc-400">B:</span>
-                                <input type="number" min={0} max={3} value={timingTuple.beats} className="w-5 bg-transparent text-center font-black text-zinc-800 outline-none" onChange={(e) => handleUpdateCentralizedMetrics(sec.type, "beats", Math.min(3, Math.max(0, parseInt(e.target.value, 10) || 0)))} />
+                                <input type="number" min={0} max={3} value={timingTuple.beats} className="w-5 bg-transparent text-center font-black text-zinc-800 outline-none" onChange={(e) => { handleUpdateCentralizedMetrics(sec.type, "beats", Math.min(3, Math.max(0, parseInt(e.target.value, 10) || 0))); setLineOverrides(prev => { if (prev) { delete prev[sec.id]; } return { ...(prev || {}) }; }); }} />
+                              </div>
+
+                              {/* 'R:' or 'Repeats' Counter Input Field */}
+                              <div className="flex items-center gap-1 bg-zinc-50 border rounded-lg px-2 py-0.5 text-[10px] font-bold text-zinc-600 shadow-inner">
+                                <span className="text-[8px] font-black uppercase text-zinc-400">R:</span>
+                                <input type="number" min={0} value={sectionRepeats} className="w-5 bg-transparent text-center font-black text-zinc-800 outline-none" onChange={(e) => { handleUpdateCentralizedMetrics(sec.type, "repeats", Math.max(0, parseInt(e.target.value, 10) || 0)); setLineOverrides(prev => { if (prev) { delete prev[sec.id]; } return { ...(prev || {}) }; }); }} />
                               </div>
                             </div>
 
@@ -925,8 +1088,56 @@ export default function SongsPage() {
                           </div>
 
                           {isRealtimePreviewActive ? (
-                            <div className="bg-zinc-50/50 p-2.5 rounded-xl border border-dashed border-zinc-200">
-                              {renderSymmetricalLivePreviewLine(sec.type, sec.content)}
+                            <div className="border border-dashed border-zinc-200 rounded-xl p-4 bg-zinc-50/15 space-y-4">
+                              
+                              {isSectionMismatched && (
+                                <div className="text-[10px] font-black text-amber-700 bg-amber-100/70 border border-amber-200 p-2 rounded-lg leading-snug animate-in fade-in duration-100">
+                                  ⚠️ Alignment Warning: Line values sum up to{" "}
+                                  <span className="font-mono">{Math.floor(totalManualAbsoluteBeats / 4)}m + {totalManualAbsoluteBeats % 4}b</span>. Please adjust line properties to equal the section master total of{" "}
+                                  <span className="font-mono">{timingTuple.measures}m + {timingTuple.beats}b</span> to unlock saving permissions.
+                                </div>
+                              )}
+
+                              <div className="space-y-3">
+                                {linesArray.map((lineText, lineIdx) => {
+                                  const lineMetrics = currentLinesMetrics[lineIdx];
+
+                                  return (
+                                    <div key={lineIdx} className="flex items-center justify-between gap-4 py-1 border-b border-zinc-100/40 last:border-0 group">
+                                      <p className="font-sans font-bold text-zinc-800 text-xs tracking-tight flex-1 leading-relaxed">
+                                        {lineText}
+                                      </p>
+                                      
+                                      <div className="flex items-center gap-1.5 shrink-0 select-none">
+                                        
+                                        {/* Line Measure Step Controller */}
+                                        <div className="flex items-center gap-1 bg-white border border-zinc-200 p-1 px-2.5 h-7 rounded-lg shadow-sm text-[10px] font-bold text-zinc-400 relative pr-4">
+                                          <span>M:</span>
+                                          <span className="font-black text-zinc-800 text-center min-w-[12px]">{lineMetrics.measures}</span>
+                                          <div className="absolute right-0.5 inset-y-0 flex flex-col justify-center text-[6px] scale-90 leading-[5px] text-zinc-400 font-sans">
+                                            <button type="button" onClick={() => handleAdjustLineMetricValue(lineIdx, "measures", 1)} className="hover:text-blue-600 transition-colors py-0.5">▲</button>
+                                            <button type="button" onClick={() => handleAdjustLineMetricValue(lineIdx, "measures", -1)} className="hover:text-blue-600 transition-colors py-0.5">▼</button>
+                                          </div>
+                                        </div>
+
+                                        {/* Line Beat Step Controller */}
+                                        <div className="flex items-center gap-1 bg-white border border-zinc-200 p-1 px-2.5 h-7 rounded-lg shadow-sm text-[10px] font-bold text-zinc-400 relative pr-4">
+                                          <span>B:</span>
+                                          <span className="font-black text-zinc-700 text-center min-w-[12px]">{lineMetrics.beats}</span>
+                                          <div className="absolute right-0.5 inset-y-0 flex flex-col justify-center text-[6px] scale-90 leading-[5px] text-zinc-400 font-sans">
+                                            <button type="button" onClick={() => handleAdjustLineMetricValue(lineIdx, "beats", 1)} className="hover:text-blue-600 transition-colors py-0.5">▲</button>
+                                            <button type="button" onClick={() => handleAdjustLineMetricValue(lineIdx, "beats", -1)} className="hover:text-blue-600 transition-colors py-0.5">▼</button>
+                                          </div>
+                                        </div>
+
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                                {linesArray.length === 0 && (
+                                  <div className="text-center text-xs italic text-zinc-400 py-4">This block enclosure is completely empty.</div>
+                                )}
+                              </div>
                             </div>
                           ) : (
                             <div>
@@ -1082,17 +1293,56 @@ export default function SongsPage() {
                 )}
               </div>
 
-              <div className="shrink-0">
-                {(simulatedRole === "admin" || simulatedRole === "member") && (
-                  <button 
-                    type="button" 
-                    className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-black text-[10px] uppercase tracking-wider shadow-md active:scale-95 transition-all"
-                    onClick={handleCommitSongChangesToDB} 
-                  >
-                    Save Arrangement
-                  </button>
-                )}
-              </div>
+              {/* LOCK PERMISSIONS: Validation checks accurately evaluating passes = R + 1 to keep save actions unlocked */}
+              {(() => {
+                const isAnySectionMismatchedAcrossModal = formSections.some((checkSec) => {
+                  const checkTuple = getCentralizedMetricsTuple(checkSec.type);
+                  const checkLines = checkSec.content.split("\n").map(l => l.replace(/\[[^\]]+\]/g, "").trim()).filter(l => l.length > 0);
+                  
+                  if (checkLines.length === 0) return false;
+
+                  const checkRepeats = checkTuple.repeats || 0;
+                  const totalCheckPasses = checkRepeats + 1; // 🌟 Sync formula 
+                  const totalLineSegments = checkLines.length * totalCheckPasses;
+
+                  const targetAbsoluteBeats = (checkTuple.measures * 4) + checkTuple.beats;
+                  const checkSpreadMeasures = Math.floor(checkTuple.measures / totalLineSegments);
+                  const checkRemainderMeasures = checkTuple.measures % totalLineSegments;
+
+                  const checkSpreadBeats = Math.floor(checkTuple.beats / totalLineSegments);
+                  const checkRemainderBeats = checkTuple.beats % totalLineSegments;
+
+                  const calculatedBeatsSum = checkLines.reduce((sum, _, lineIndex) => {
+                    const lineOverride = (lineOverrides as any)?.[checkSec.id]?.[lineIndex];
+                    const measures = lineOverride?.measures ?? (checkSpreadMeasures + (lineIndex < checkRemainderMeasures ? 1 : 0));
+                    const beats = lineOverride?.beats ?? (checkSpreadBeats + (lineIndex < checkRemainderBeats ? 1 : 0));
+                    return sum + (measures * 4) + beats;
+                  }, 0) * totalCheckPasses;
+
+                  return calculatedBeatsSum !== targetAbsoluteBeats;
+                });
+
+                const isSaveDisabled = isRealtimePreviewActive && isAnySectionMismatchedAcrossModal;
+
+                return (
+                  <div className="shrink-0">
+                    {(simulatedRole === "admin" || simulatedRole === "member") && (
+                      <button 
+                        type="button" 
+                        disabled={isSaveDisabled}
+                        className={`px-5 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-wider transition-all ${
+                          isSaveDisabled 
+                            ? "bg-zinc-200 text-zinc-400 border border-zinc-300 shadow-none cursor-not-allowed opacity-60" 
+                            : "bg-blue-600 hover:bg-blue-700 text-white shadow-md active:scale-95 cursor-pointer"
+                        }`}
+                        onClick={handleCommitSongChangesToDB} 
+                      >
+                        {isSaveDisabled ? "🔒 Calculations Mismatched" : "Save Arrangement"}
+                      </button>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
 
             {/* EMBEDDED MODAL CONFIRMATION DIALOG SHEET OVERLAY CONTAINER */}

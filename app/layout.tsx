@@ -21,11 +21,13 @@ export default function RootLayout({
           {/* Main Layout Wrap Container - Displays side-by-side layout */}
           <div className="flex min-h-screen w-full relative">
             
-            {/* Minimal Left Icon Sidebar Column */}
+            {/* Minimal Left Icon Sidebar Column / Bottom Nav on Mobile */}
             <Sidebar />
             
-            {/* Center Canvas Main Screen Panel Content */}
-            <main className="flex-1 overflow-x-hidden relative min-w-0">
+            {/* FIX: Added 'pb-24 md:pb-0' to insulate list items from 
+              getting blocked by the mobile global navigation panel overlay.
+            */}
+            <main className="flex-1 overflow-x-hidden relative min-w-0 pb-24 md:pb-0">
               {children}
             </main>
 

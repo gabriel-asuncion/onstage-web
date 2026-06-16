@@ -550,10 +550,26 @@ export default function EventCockpitPage() {
       <div className="bg-[#2b6eff] text-white p-6 md:p-8 rounded-xl md:rounded-3xl shadow-sm relative overflow-hidden shrink-0">
         <button onClick={() => router.push("/events")} className="text-xs font-bold text-blue-100 mb-2 hover:underline block">‹ Back to Events List</button>
         <div className="flex flex-wrap items-center gap-2 select-none">
-          <span className="bg-white/20 text-white font-black text-[9px] uppercase tracking-widest px-3 py-1 rounded-full backdrop-blur-md">Active Plan Workspace</span>
-          {activeEvent?.service_type && (
-            <span className="bg-zinc-950/40 text-blue-100 border border-blue-400/20 font-black text-[9px] uppercase tracking-widest px-3 py-1 rounded-full backdrop-blur-md">⚡ {activeEvent.service_type}</span>
-          )}
+          {/* DYNAMIC DATE CHECK: Verifies if the workspace date is current or historical */}
+    {(() => {
+      const todayStr = new Date().toISOString().split("T")[0]; // e.g., "2026-06-16"
+      const eventDateStr = activeEvent?.event_date ? activeEvent.event_date.split("T")[0] : "";
+      const isCurrentOrFuture = eventDateStr >= todayStr;
+
+      return isCurrentOrFuture ? (
+        <span className="bg-white/20 text-white font-black text-[9px] uppercase tracking-widest px-3 py-1 rounded-full backdrop-blur-md animate-in fade-in">
+          Active Plan Workspace
+        </span>
+      ) : (
+        <span className="bg-zinc-950/40 text-zinc-300 border border-zinc-700/30 font-black text-[9px] uppercase tracking-widest px-3 py-1 rounded-full backdrop-blur-md opacity-75">
+          Archived Plan Workspace
+        </span>
+      );
+    })()}
+
+    {activeEvent?.service_type && (
+      <span className="bg-zinc-950/40 text-blue-100 border border-blue-400/20 font-black text-[9px] uppercase tracking-widest px-3 py-1 rounded-full backdrop-blur-md">⚡ {activeEvent.service_type}</span>
+    )}
         </div>
         <h1 className="text-2xl md:text-4xl font-black tracking-tight mt-4 pr-32">{activeEvent?.title || "June Week#3 2026"}</h1>
         

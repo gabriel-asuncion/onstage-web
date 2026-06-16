@@ -87,6 +87,7 @@ export default function SetlistPerformanceRoomPage() {
   const router = useRouter();
   const params = useParams();
   const setlistId = params?.id as string;
+  
 
   // Consume active profile states from your context simulation layer
   const { simulatedUserId, simulatedRole } = useEngine();
@@ -116,8 +117,8 @@ export default function SetlistPerformanceRoomPage() {
   // Tracking references to eliminate stale closure blocks
   const localPresenceUserRef = useRef<any>(null);
   const isChannelSubscribedRef = useRef<boolean>(false);
-  
-  // ✅ SURGICAL ADDITION: Master clock reference anchor tracking pointer
+    
+  // ✅ SURGICAL ASSIGNMENT: Master clock reference anchor tracking pointer
   const mdSectionStartTimeRef = useRef<number | null>(null);
  
   // Floating scroll state anchors tracking fields
@@ -150,6 +151,7 @@ export default function SetlistPerformanceRoomPage() {
 
   // Interface Synchronization Control States
   const [isPlayingFlow, setIsPlayingFlow] = useState(false);
+  const [isPausedFlow, setIsPausedFlow] = useState(false); // 🌟 Check for the 'd' in "Paused"!
   const [currentSectionIndex, setCurrentSectionIndex] = useState<number>(0);
   const [currentBeat, setCurrentBeat] = useState<number>(1);
 
@@ -163,6 +165,7 @@ export default function SetlistPerformanceRoomPage() {
   const isPlayingRef = useRef(false);
   const currentSectionIndexRef = useRef(0);
   const sectionStartTimeRef = useRef<number>(0);
+  const pauseOffsetMsRef = useRef<number>(0);
   const totalBeatsRef = useRef<number>(0);
   const lastBeatRef = useRef<number>(1);
   const animationFrameRef = useRef<number | null>(null);
@@ -218,7 +221,7 @@ export default function SetlistPerformanceRoomPage() {
           initials, 
           bg: assignedBg,
           avatar: profile?.avatar_url || null,
-          isMD: false // ✅ SURGICAL ADDITION: Track MD status natively over the presence stream
+          isMD: false // ✅ SURGICAL ASSIGNMENT: Track MD status natively over the presence stream
         };
 
         localPresenceUserRef.current = identityPayload;
@@ -249,12 +252,31 @@ export default function SetlistPerformanceRoomPage() {
         const presenceState = lobbyChannel.presenceState();
         const activeUsersList = Object.values(presenceState).flat() as any[];
         setOnlineUsers(activeUsersList);
+
+        // ✅ SURGICAL FIX: Mid-set joiners sync immediately upon connection detection if the MD is currently playing
+        if (isPlayingRef.current && localPresenceUserRef.current?.isMD) {
+          lobbyChannel.send({
+            type: "broadcast",
+            event: "lobby_sync",
+            payload: {
+              action: "START",
+              trackIndex: currentTrackIndexRef.current,
+              sectionIndex: currentSectionIndexRef.current,
+              mdSectionStartTime: mdSectionStartTimeRef.current || Date.now()
+            }
+          });
+        }
       })
       .on("broadcast", { event: "lobby_sync" }, ({ payload }) => {
         // ✅ SURGICAL REFACTOR: Convert MD absolute time anchors into matching local animation timeline frames
         if (payload.action === "START") {
           const targetTrackIdx = payload.trackIndex !== undefined ? payload.trackIndex : currentTrackIndex;
           mountTargetSetlistTrackIndex(targetTrackIdx, tracksListRef.current, false, true);
+
+          // ✅ SURGICAL FIX: Ensure late joiners cache the absolute timestamp right into their state pointers
+          if (payload.mdSectionStartTime) {
+            mdSectionStartTimeRef.current = payload.mdSectionStartTime;
+          }
 
           // Phase-lock the timeline clock to match the leader's execution frame
           const networkLatencyOffset = Date.now() - (payload.mdSectionStartTime || Date.now());
@@ -270,30 +292,6 @@ export default function SetlistPerformanceRoomPage() {
           isPlayingRef.current = true;
           setIsPlayingFlow(true);
         } 
-        else if (payload.action === "STOP") {
-          executeLocalResetSequence();
-        } 
-        else if (payload.action === "JUMP") {
-          if (payload.trackIndex !== undefined && payload.trackIndex !== playingTrackIndexRef.current) {
-            mountTargetSetlistTrackIndex(payload.trackIndex, tracksListRef.current, false, true);
-          }
-
-          // Phase-lock the timeline clock to match the leader's execution frame
-          const networkLatencyOffset = Date.now() - (payload.mdSectionStartTime || Date.now());
-          sectionStartTimeRef.current = performance.now() - networkLatencyOffset;
-
-          currentSectionIndexRef.current = payload.sectionIndex;
-          setCurrentSectionIndex(payload.sectionIndex);
-          
-          lastBeatRef.current = 1;
-          setCurrentBeat(1);
-          if (backdropProgressRef.current) backdropProgressRef.current.style.transform = "scaleX(0)";
-          if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = "scaleX(0)";
-          
-          if (isPlayingRef.current) {
-            // Keep player state engaged seamlessly
-          }
-        }
         else if (payload.action === "STOP") {
           executeLocalResetSequence();
         } 
@@ -525,6 +523,10 @@ export default function SetlistPerformanceRoomPage() {
       setTimeout(() => {
         isPlayingRef.current = true;
         setIsPlayingFlow(true);
+        // ✅ SURGICAL FIX: Cache real-time anchor state coordinates instantly on track progress updates
+        if (localPresenceUserRef.current?.isMD) {
+          mdSectionStartTimeRef.current = Date.now();
+        }
       }, 120);
     } else {
       handleResetFlowTrigger();
@@ -607,13 +609,29 @@ export default function SetlistPerformanceRoomPage() {
   // --- COMPOSER ENGINE HARDWARE ANIMATION TIMELINE LOOP -----
   // ==========================================================
   useEffect(() => {
-    if (!isPlayingFlow) {
+    if (!isPlayingFlow || !activeSong || sections.length === 0) {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
       return;
     }
 
     sectionStartTimeRef.current = performance.now();
     lastBeatRef.current = 1;
+
+    // ✅ SURGICAL REFACTOR: Pull and evaluate MD state directly inside current loop execution frame
+    const isCurrentlyMD = localPresenceUser?.isMD === true;
+    const beatSpeedMs = (60 / (activeSong.tempo || 75)) * 1000;
+
+    if (pauseOffsetMsRef.current > 0) {
+      sectionStartTimeRef.current = performance.now() - pauseOffsetMsRef.current;
+    } else {
+      sectionStartTimeRef.current = performance.now();
+    }
+
+    const activeSection = sections[currentSectionIndexRef.current];
+    if (activeSection) {
+      const timings = activeSong.section_timings?.[activeSection.section_name] || { measures: 4, beats: 0 };
+      totalBeatsRef.current = (timings.measures * 4) + timings.beats || 16;
+    }
 
     const clockExecutionTick = (timestamp: number) => {
       if (!isPlayingRef.current || !activeSongRef.current || sectionsRef.current.length === 0) return;
@@ -628,10 +646,10 @@ export default function SetlistPerformanceRoomPage() {
         return;
       }
 
-      const beatSpeedMs = (60 / (song.tempo || 75)) * 1000;
+      const beatSpeedMsCurrent = (60 / (song.tempo || 75)) * 1000;
       const timings = song.section_timings?.[currentSection.section_name] || { measures: 4, beats: 0 };
       const totalBeats = (timings.measures * 4) + timings.beats || 16;
-      const totalDurationMs = totalBeats * beatSpeedMs;
+      const totalDurationMs = totalBeats * beatSpeedMsCurrent;
 
       // ✅ SURGICAL REFACTOR: Non-MD users calculate time directly from the MD's absolute epoch coordinates
       let elapsedMs = timestamp - sectionStartTimeRef.current;
@@ -643,10 +661,11 @@ export default function SetlistPerformanceRoomPage() {
       
       const progressRatio = Math.min(1, elapsedMs / totalDurationMs);
 
+      // PERFORMANCE OPTIMIZATION: Mutating GPU transforms eliminates browser reflow completely
       if (backdropProgressRef.current) backdropProgressRef.current.style.transform = `scaleX(${progressRatio})`;
       if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = `scaleX(${progressRatio})`;
 
-      const currentBeatPulse = Math.floor(elapsedMs / beatSpeedMs) % 4 + 1;
+      const currentBeatPulse = Math.floor(elapsedMs / beatSpeedMsCurrent) % 4 + 1;
       if (currentBeatPulse !== lastBeatRef.current) {
         lastBeatRef.current = currentBeatPulse;
         setCurrentBeat(currentBeatPulse);
@@ -704,6 +723,12 @@ export default function SetlistPerformanceRoomPage() {
           sectionStartTimeRef.current = performance.now() - overrun;
           lastBeatRef.current = 1;
 
+          // ✅ SURGICAL FIX: Keep absolute global state anchors updated locally during gapless loop changes
+          const calculatedNextStart = Date.now() - overrun;
+          if (isCurrentlyMD) {
+            mdSectionStartTimeRef.current = calculatedNextStart;
+          }
+
           if (realtimeChannelRef.current) {
             realtimeChannelRef.current.send({
               type: "broadcast",
@@ -712,7 +737,7 @@ export default function SetlistPerformanceRoomPage() {
                 action: "JUMP", 
                 trackIndex: nextTrackIdx,
                 sectionIndex: nextSectionIdx,
-                mdSectionStartTime: Date.now() - overrun // Sync epoch offset adjusted for overrun
+                mdSectionStartTime: calculatedNextStart // Sync epoch offset adjusted for overrun
               }
             });
           }
@@ -730,7 +755,7 @@ export default function SetlistPerformanceRoomPage() {
     return () => {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
-  }, [isPlayingFlow]);
+  }, [isPlayingFlow, currentSectionIndex, activeSong, sections, localPresenceUser]);
 
   function handleToggleFlowPlaybackState() {
     if (isPlayingFlow) {
@@ -746,6 +771,10 @@ export default function SetlistPerformanceRoomPage() {
       isPlayingRef.current = true;
       setIsPlayingFlow(true);
 
+      // ✅ SURGICAL FIX: Cache the epoch timestamp natively right on play invocation
+      const startTimestamp = Date.now();
+      mdSectionStartTimeRef.current = startTimestamp;
+
       if (realtimeChannelRef.current) {
         realtimeChannelRef.current.send({
           type: "broadcast",
@@ -754,7 +783,7 @@ export default function SetlistPerformanceRoomPage() {
             action: "START", 
             trackIndex: currentTrackIndex, 
             sectionIndex: currentSectionIndex,
-            mdSectionStartTime: Date.now() // ✅ Sync start epoch
+            mdSectionStartTime: startTimestamp // ✅ Sync start epoch
           }
         });
       }
@@ -776,6 +805,8 @@ export default function SetlistPerformanceRoomPage() {
   function handleSectionInteractiveSelection(index: number) {
     if (isReadOnlyMode) return; // 🛑 MD OVERRIDE: Read-only participants cannot trigger jumps or queues
     if (!isPlayingFlow) {
+      const jumpTime = Date.now();
+      mdSectionStartTimeRef.current = jumpTime;
       handleSelectSectionDirectlyLocally(index);
       if (realtimeChannelRef.current) {
         realtimeChannelRef.current.send({
@@ -785,7 +816,7 @@ export default function SetlistPerformanceRoomPage() {
             action: "JUMP", 
             trackIndex: currentTrackIndex, 
             sectionIndex: index,
-            mdSectionStartTime: Date.now() // ✅ Sync jump epoch
+            mdSectionStartTime: jumpTime // ✅ Sync jump epoch
           }
         });
       }
@@ -828,6 +859,8 @@ export default function SetlistPerformanceRoomPage() {
           playingSectionsRef.current = targetTrackItem.custom_structure || [];
         }
 
+        const jumpTime = Date.now();
+        mdSectionStartTimeRef.current = jumpTime;
         handleSelectSectionDirectlyLocally(index);
 
         if (realtimeChannelRef.current) {
@@ -837,7 +870,8 @@ export default function SetlistPerformanceRoomPage() {
             payload: { 
               action: "JUMP", 
               trackIndex: currentTrackIndex, // Bundled together
-              sectionIndex: index 
+              sectionIndex: index,
+              mdSectionStartTime: jumpTime
             }
           });
         }
@@ -845,7 +879,7 @@ export default function SetlistPerformanceRoomPage() {
     }
   }
 
-  // Computed memoized values driving the dynamic Next tracker button
+  // Next tracker layout utility strings computing layer
   const playbackNextButtonText = useMemo(() => {
     if (!isPlayingFlow) return "";
 
@@ -1063,7 +1097,6 @@ export default function SetlistPerformanceRoomPage() {
     });
   }, [sections]);
   
-  // ✅ Place this at the top with your other hooks (e.g., right under memoizedSongAstTree)
   const displayedOnlineUsers = useMemo(() => {
     const usersMap = new Map();
     onlineUsers.forEach((user) => { if (user.id) usersMap.set(user.id, user); });
@@ -1110,6 +1143,8 @@ export default function SetlistPerformanceRoomPage() {
 
     const updatedPresencePayload = { ...localPresenceUser, isMD: !localPresenceUser.isMD };
     setLocalPresenceUser(updatedPresencePayload);
+    // ✅ SURGICAL FIX: Cache the dynamic presence token update instantly inside the reference array closure
+    localPresenceUserRef.current = updatedPresencePayload;
 
     // Push the updated state immediately over the WebSocket connection thread
     if (realtimeChannelRef.current && isChannelSubscribedRef.current) {
