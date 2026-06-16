@@ -680,7 +680,7 @@ export default function SongsPage() {
   // paste this right below handleStructureDropOverride:
 
 
-  function handleUpdateCentralizedMetrics(sectionType: string, field: "measures" | "beats", value: number) {
+  function handleUpdateCentralizedMetrics(sectionType: string, field: "measures" | "beats" | "repeats", value: number) {
     setHasUnsavedChanges(true);
     setSectionTimings(prev => {
       const currentTuple = prev[sectionType] || { measures: 0, beats: 0 };
