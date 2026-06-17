@@ -15,7 +15,15 @@ interface SongRecord {
   original_key: string;
   tempo: number;
   section_timings: {
-    [sectionName: string]: { measures: number; beats: number };
+    [sectionName: string]: { 
+      measures: number; 
+      beats: number;
+      repeats?: number;
+      line_timings?: {
+        // ✅ Added repeats here
+        [lineIndex: string]: { measures: number; beats: number; repeats?: number }
+      };
+    };
   };
 }
 
@@ -87,7 +95,6 @@ export default function SetlistPerformanceRoomPage() {
   const router = useRouter();
   const params = useParams();
   const setlistId = params?.id as string;
-  
 
   // Consume active profile states from your context simulation layer
   const { simulatedUserId, simulatedRole } = useEngine();
@@ -110,15 +117,13 @@ export default function SetlistPerformanceRoomPage() {
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false); 
   const [lineSpacing, setLineSpacing] = useState<number>(16); 
 
-  // ✅ SURGICAL REFACTOR: Added isMD?: boolean to the state type matrices
+  // Presence State
   const [onlineUsers, setOnlineUsers] = useState<{ id: string; name: string; initials: string; bg: string; connectionId?: string; avatar?: string | null; isMD?: boolean; }[]>([]);
   const [localPresenceUser, setLocalPresenceUser] = useState<{ id: string; name: string; initials: string; bg: string; connectionId?: string; avatar?: string | null; isMD?: boolean; } | null>(null);
  
-  // Tracking references to eliminate stale closure blocks
+  // Tracking references
   const localPresenceUserRef = useRef<any>(null);
   const isChannelSubscribedRef = useRef<boolean>(false);
-    
-  // ✅ SURGICAL ASSIGNMENT: Master clock reference anchor tracking pointer
   const mdSectionStartTimeRef = useRef<number | null>(null);
  
   // Floating scroll state anchors tracking fields
@@ -151,9 +156,12 @@ export default function SetlistPerformanceRoomPage() {
 
   // Interface Synchronization Control States
   const [isPlayingFlow, setIsPlayingFlow] = useState(false);
-  const [isPausedFlow, setIsPausedFlow] = useState(false); // 🌟 Check for the 'd' in "Paused"!
   const [currentSectionIndex, setCurrentSectionIndex] = useState<number>(0);
   const [currentBeat, setCurrentBeat] = useState<number>(1);
+  
+  // ✅ SURGICAL ADDITION: Line-by-Line Tracking States
+  const [activeLineIndex, setActiveLineIndex] = useState<number>(0);
+  const activeLineIndexRef = useRef<number>(0);
 
   // Network Lobby Communication Pointer Reference
   const realtimeChannelRef = useRef<any>(null);
@@ -170,27 +178,25 @@ export default function SetlistPerformanceRoomPage() {
   const lastBeatRef = useRef<number>(1);
   const animationFrameRef = useRef<number | null>(null);
   const sectionRefs = useRef<{ [key: string]: HTMLDivElement | null }>({});
+  
+  // Need to cache AST tree so clock execution can read line counts without triggering hooks
+  const astTreeRef = useRef<CompiledSectionToken[]>([]);
 
   // Layout Container Sizing Style References
   const backdropProgressRef = useRef<HTMLDivElement | null>(null);
   const accentProgressBarRef = useRef<HTMLDivElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
-
-  // Workspace tracking references driving precision background clock rendering loops
   const currentTrackIndexRef = useRef<number>(0);
 
-  // Synchronize layout state tracking variables seamlessly
   useEffect(() => { activeSongRef.current = activeSong; }, [activeSong]);
   useEffect(() => { sectionsRef.current = sections; }, [sections]);
   useEffect(() => { tracksListRef.current = tracksList; }, [tracksList]);
   
-  // Sync background execution pointer changes
   useEffect(() => { playingTrackIndexRef.current = playingTrackIndex; }, [playingTrackIndex]);
   useEffect(() => { queuedTrackIndexRef.current = queuedTrackIndex; }, [queuedTrackIndex]);
   useEffect(() => { queuedSectionIndexRef.current = queuedSectionIndex; }, [queuedSectionIndex]);
   useEffect(() => { currentTrackIndexRef.current = currentTrackIndex; }, [currentTrackIndex]);
 
-  // Pull from profiles table matching the context user simulation coordinates
   useEffect(() => {
     async function fetchCurrentPresenceIdentity() {
       let targetUserId = simulatedUserId;
@@ -221,7 +227,7 @@ export default function SetlistPerformanceRoomPage() {
           initials, 
           bg: assignedBg,
           avatar: profile?.avatar_url || null,
-          isMD: false // ✅ SURGICAL ASSIGNMENT: Track MD status natively over the presence stream
+          isMD: false
         };
 
         localPresenceUserRef.current = identityPayload;
@@ -231,13 +237,9 @@ export default function SetlistPerformanceRoomPage() {
     fetchCurrentPresenceIdentity();
   }, [simulatedUserId]);
 
-  // ==========================================================
-  // --- REAL-TIME NETWORK BROADCAST & PRESENCE ENGINE -------
-  // ==========================================================
   useEffect(() => {
     if (!setlistId || !localPresenceUser) return; 
 
-    console.log(`Setting up Realtime Channel connection for room: setlist_lobby_${setlistId}`);
     isChannelSubscribedRef.current = false;
     
     const lobbyChannel = supabase.channel(`setlist_lobby_${setlistId}`, {
@@ -253,7 +255,6 @@ export default function SetlistPerformanceRoomPage() {
         const activeUsersList = Object.values(presenceState).flat() as any[];
         setOnlineUsers(activeUsersList);
 
-        // ✅ SURGICAL FIX: Mid-set joiners sync immediately upon connection detection if the MD is currently playing
         if (isPlayingRef.current && localPresenceUserRef.current?.isMD) {
           lobbyChannel.send({
             type: "broadcast",
@@ -268,17 +269,12 @@ export default function SetlistPerformanceRoomPage() {
         }
       })
       .on("broadcast", { event: "lobby_sync" }, ({ payload }) => {
-        // ✅ SURGICAL REFACTOR: Convert MD absolute time anchors into matching local animation timeline frames
         if (payload.action === "START") {
           const targetTrackIdx = payload.trackIndex !== undefined ? payload.trackIndex : currentTrackIndex;
           mountTargetSetlistTrackIndex(targetTrackIdx, tracksListRef.current, false, true);
 
-          // ✅ SURGICAL FIX: Ensure late joiners cache the absolute timestamp right into their state pointers
-          if (payload.mdSectionStartTime) {
-            mdSectionStartTimeRef.current = payload.mdSectionStartTime;
-          }
+          if (payload.mdSectionStartTime) mdSectionStartTimeRef.current = payload.mdSectionStartTime;
 
-          // Phase-lock the timeline clock to match the leader's execution frame
           const networkLatencyOffset = Date.now() - (payload.mdSectionStartTime || Date.now());
           sectionStartTimeRef.current = performance.now() - networkLatencyOffset;
 
@@ -286,6 +282,11 @@ export default function SetlistPerformanceRoomPage() {
           setCurrentSectionIndex(payload.sectionIndex);
           lastBeatRef.current = 1;
           setCurrentBeat(1);
+          
+          // Reset lines tracking
+          activeLineIndexRef.current = 0;
+          setActiveLineIndex(0);
+
           if (backdropProgressRef.current) backdropProgressRef.current.style.transform = "scaleX(0)";
           if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = "scaleX(0)";
 
@@ -300,21 +301,23 @@ export default function SetlistPerformanceRoomPage() {
             mountTargetSetlistTrackIndex(payload.trackIndex, tracksListRef.current, false, true);
           }
 
-          if (payload.mdSectionStartTime) {
-            mdSectionStartTimeRef.current = payload.mdSectionStartTime;
-          }
+          if (payload.mdSectionStartTime) mdSectionStartTimeRef.current = payload.mdSectionStartTime;
 
           currentSectionIndexRef.current = payload.sectionIndex;
           setCurrentSectionIndex(payload.sectionIndex);
           
-          // ✅ Force the local audio metronome and progress bars to clear to 0 instantly on transition
           lastBeatRef.current = 1;
           setCurrentBeat(1);
+          activeLineIndexRef.current = 0;
+          setActiveLineIndex(0);
+
           if (backdropProgressRef.current) backdropProgressRef.current.style.transform = "scaleX(0)";
           if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = "scaleX(0)";
           
           if (isPlayingRef.current) {
-            sectionStartTimeRef.current = performance.now();
+            // ✅ SURGICAL FIX: Apply network latency compensation so the clock isn't wiped out by transmission ping
+            const latencyOffset = Date.now() - (payload.mdSectionStartTime || Date.now());
+            sectionStartTimeRef.current = performance.now() - latencyOffset;
           }
         }
         else if (payload.action === "TRACK_CHANGE") {
@@ -326,7 +329,6 @@ export default function SetlistPerformanceRoomPage() {
         }
       })
       .subscribe((status) => {
-        console.log(`📡 WebSocket Subscription Status for Room [${setlistId}]:`, status);
         if (status === "SUBSCRIBED") {
           isChannelSubscribedRef.current = true; 
           lobbyChannel.track(localPresenceUser);
@@ -336,10 +338,7 @@ export default function SetlistPerformanceRoomPage() {
     realtimeChannelRef.current = lobbyChannel;
 
     return () => {
-      if (lobbyChannel) {
-        console.log("Cleaning up Realtime Channel connection context link thread.");
-        supabase.removeChannel(lobbyChannel);
-      }
+      if (lobbyChannel) supabase.removeChannel(lobbyChannel);
     };
   }, [setlistId, localPresenceUser]);
 
@@ -351,9 +350,11 @@ export default function SetlistPerformanceRoomPage() {
     
     currentSectionIndexRef.current = 0;
     lastBeatRef.current = 1;
+    activeLineIndexRef.current = 0;
     
     setCurrentSectionIndex(0);
     setCurrentBeat(1);
+    setActiveLineIndex(0);
     setQueuedTrackIndex(null);
     setQueuedSectionIndex(null);
 
@@ -361,9 +362,6 @@ export default function SetlistPerformanceRoomPage() {
     if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = "scaleX(0)";
   }
 
-  // ==========================================================
-  // --- BULLETPROOF INLINE ENVIRONMENT PERFORMANCE LOADER ----
-  // ==========================================================
   useEffect(() => {
     let isCurrentActiveMount = true;
 
@@ -374,25 +372,20 @@ export default function SetlistPerformanceRoomPage() {
       }
 
       try {
-        setLoadingStatus("Connecting to database and pulling room metadata...");
-        
         const { data: setlistRow, error: setlistError } = await supabase
           .from("setlists")
           .select("name")
           .eq("id", setlistId)
           .maybeSingle();
         
-        if (setlistError) console.error("Setlist metadata query warning:", setlistError);
         if (setlistRow?.name) setNewSetlistName(setlistRow.name);
 
-        setLoadingStatus("Extracting track lineup array allocations...");
         const primaryResponse = await supabase
           .from("setlist_songs")
           .select("id, sequence_order, start_time, custom_key, custom_structure, songs (*)")
           .eq("setlist_id", setlistId)
           .order("sequence_order", { ascending: true });
 
-        // Explicitly declare typing definitions to pass strict pipeline checks
         let rawQueryData: any[] | null = primaryResponse.data;
         if (primaryResponse.error) {
           const fallbackResponse = await supabase
@@ -404,8 +397,6 @@ export default function SetlistPerformanceRoomPage() {
         }
 
         if (rawQueryData && rawQueryData.length > 0) {
-          setLoadingStatus("Compiling abstract lyric chord maps and building sheet matrices...");
-          
           const formattedTracks = await Promise.all(rawQueryData.map(async (t: any) => {
             const flattenedSongNode = Array.isArray(t.songs) ? t.songs[0] : t.songs;
             if (!flattenedSongNode) return null;
@@ -434,7 +425,6 @@ export default function SetlistPerformanceRoomPage() {
           
           if (isCurrentActiveMount) {
             setTracksList(cleanTracks);
-            
             if (cleanTracks.length > 0) {
               const firstTrackItem = cleanTracks[0];
               if (firstTrackItem && firstTrackItem.songs) {
@@ -455,7 +445,6 @@ export default function SetlistPerformanceRoomPage() {
           setLoadingStatus("Handshake clean, but this setlist has no songs added to it yet.");
         }
       } catch (err: any) {
-        console.error("Lobby initialization crash:", err);
         setLoadingStatus(`Critical Crash: ${err?.message || "Check connection parameters"}`);
       }
     }
@@ -468,7 +457,6 @@ export default function SetlistPerformanceRoomPage() {
     };
   }, [setlistId]);
 
-  // ✅ Decouple display viewing from core background player loops and support gapless transitions
   async function mountTargetSetlistTrackIndex(trackIndex: number, currentTracksArray = tracksListRef.current, isLocalBrowsing = false, keepPlaying = false) {
     const targetTrackItem = currentTracksArray[trackIndex];
     if (!targetTrackItem || !targetTrackItem.songs) return;
@@ -487,7 +475,6 @@ export default function SetlistPerformanceRoomPage() {
       playingSongRef.current = targetSong;
       playingSectionsRef.current = loadedSections;
       
-      // ✅ Never drop execution threads unless explicitly asked to do so
       if (!keepPlaying) {
         executeLocalResetSequence();
       }
@@ -523,7 +510,6 @@ export default function SetlistPerformanceRoomPage() {
       setTimeout(() => {
         isPlayingRef.current = true;
         setIsPlayingFlow(true);
-        // ✅ SURGICAL FIX: Cache real-time anchor state coordinates instantly on track progress updates
         if (localPresenceUserRef.current?.isMD) {
           mdSectionStartTimeRef.current = Date.now();
         }
@@ -533,7 +519,7 @@ export default function SetlistPerformanceRoomPage() {
     }
   }
 
-  // REUSABLE DYNAMIC ALIGNMENT SNAPPING
+  // ✅ SURGICAL REFACTOR: Now anchors directly to the active *line* if playing, or the section if not playing
   const handleScrollToActiveSectionAnchor = () => {
     if (currentTrackIndex !== playingTrackIndexRef.current) {
       const activePlayingTrackItem = tracksList[playingTrackIndexRef.current];
@@ -548,17 +534,15 @@ export default function SetlistPerformanceRoomPage() {
 
     if (sections.length === 0 || !sections[currentSectionIndex] || !scrollContainerRef.current) return;
 
-    const targetElement = sectionRefs.current[sections[currentSectionIndex].id];
+    // Favor centering on the specific lyrics line if we are flowing, otherwise fallback to the section container
+    const lineElementId = `line-${currentSectionIndex}-${activeLineIndex}`;
+    const targetElement = isPlayingRef.current 
+      ? document.getElementById(lineElementId) || sectionRefs.current[sections[currentSectionIndex].id]
+      : sectionRefs.current[sections[currentSectionIndex].id];
+
     if (targetElement) {
       isAutoScrollingRef.current = true; 
-      const containerTop = scrollContainerRef.current.getBoundingClientRect().top;
-      const elementTop = targetElement.getBoundingClientRect().top;
-      const absoluteTargetScrollTop = scrollContainerRef.current.scrollTop + (elementTop - containerTop) - 24;
-
-      scrollContainerRef.current.scrollTo({
-        top: absoluteTargetScrollTop,
-        behavior: "smooth"
-      });
+      targetElement.scrollIntoView({ behavior: "smooth", block: "center" });
 
       setShowSyncBack(false); 
       setTimeout(() => {
@@ -567,12 +551,20 @@ export default function SetlistPerformanceRoomPage() {
     }
   };
 
-  // Automated layout tracker scrolling on internal node adjustments
+  // ✅ AUTO-SCROLL EFFECT FIRES WHEN LINE CHANGES
   useEffect(() => {
-    if (currentTrackIndex === playingTrackIndexRef.current) {
-      handleScrollToActiveSectionAnchor();
+    if (isPlayingFlow && !showSyncBack && !isAutoScrollingRef.current && scrollContainerRef.current) {
+      const activeLineId = `line-${currentSectionIndex}-${activeLineIndex}`;
+      const targetLine = document.getElementById(activeLineId);
+      if (targetLine) {
+        isAutoScrollingRef.current = true;
+        targetLine.scrollIntoView({ behavior: "smooth", block: "center" });
+        setTimeout(() => {
+          isAutoScrollingRef.current = false;
+        }, 550); 
+      }
     }
-  }, [currentSectionIndex]);
+  }, [activeLineIndex, currentSectionIndex, isPlayingFlow]);
 
   // Viewport listener evaluates user scroll drift
   useEffect(() => {
@@ -604,7 +596,6 @@ export default function SetlistPerformanceRoomPage() {
     return () => containerNode.removeEventListener("scroll", handleContainerScrollDetection);
   }, [isPlayingFlow, currentSectionIndex, sections, currentTrackIndex, playingTrackIndex]);
 
-
   // ==========================================================
   // --- COMPOSER ENGINE HARDWARE ANIMATION TIMELINE LOOP -----
   // ==========================================================
@@ -617,20 +608,12 @@ export default function SetlistPerformanceRoomPage() {
     sectionStartTimeRef.current = performance.now();
     lastBeatRef.current = 1;
 
-    // ✅ SURGICAL REFACTOR: Pull and evaluate MD state directly inside current loop execution frame
     const isCurrentlyMD = localPresenceUser?.isMD === true;
-    const beatSpeedMs = (60 / (activeSong.tempo || 75)) * 1000;
-
+    
     if (pauseOffsetMsRef.current > 0) {
       sectionStartTimeRef.current = performance.now() - pauseOffsetMsRef.current;
     } else {
       sectionStartTimeRef.current = performance.now();
-    }
-
-    const activeSection = sections[currentSectionIndexRef.current];
-    if (activeSection) {
-      const timings = activeSong.section_timings?.[activeSection.section_name] || { measures: 4, beats: 0 };
-      totalBeatsRef.current = (timings.measures * 4) + timings.beats || 16;
     }
 
     const clockExecutionTick = (timestamp: number) => {
@@ -646,13 +629,48 @@ export default function SetlistPerformanceRoomPage() {
         return;
       }
 
+      // ==========================================
+      // 1. CALCULATE TRUE SECTION & LOOP TIMINGS
+      // ==========================================
       const beatSpeedMsCurrent = (60 / (song.tempo || 75)) * 1000;
-      const timings = song.section_timings?.[currentSection.section_name] || { measures: 4, beats: 0 };
-      const totalBeats = (timings.measures * 4) + timings.beats || 16;
-      const totalDurationMs = totalBeats * beatSpeedMsCurrent;
+      const timings = song.section_timings?.[currentSection.section_name] || { measures: 4, beats: 0, repeats: 0 };
+      
+      const sectionMultiplier = (timings.repeats || 0) + 1; // e.g., repeats: 4 means play 5 times total
 
-      // ✅ SURGICAL REFACTOR: Non-MD users calculate time directly from the MD's absolute epoch coordinates
+      // Start by assuming the provided top-level measures/beats is the TOTAL duration
+      let totalBeats = (timings.measures * 4) + (timings.beats || 0);
+      
+      // ✅ SURGICAL FIX: The length of ONE loop is the Total divided by how many times it plays
+      let loopBeats = totalBeats / sectionMultiplier;
+
+      const lineTimingsObj = timings.line_timings;
+      const parsedLinesCount = astTreeRef.current[idx]?.lines.length || 1;
+
+      // Check if we have specific custom line timings mapped out
+      let calculatedLoopBeats = 0;
+      const lineBeatsArray: number[] = [];
+      
+      if (lineTimingsObj && Object.keys(lineTimingsObj).length > 0) {
+        for (let i = 0; i < parsedLinesCount; i++) {
+          const t = lineTimingsObj[String(i)] || { measures: 0, beats: 0 };
+          const base = (t.measures * 4) + (t.beats || 0); // Base length of this specific line
+          lineBeatsArray.push(base);
+          calculatedLoopBeats += base;
+        }
+        if (calculatedLoopBeats > 0) {
+          loopBeats = calculatedLoopBeats;
+          // Override total beats to strictly match our exact line math multiplied out
+          totalBeats = loopBeats * sectionMultiplier; 
+        }
+      }
+
+      const totalDurationMs = totalBeats * beatSpeedMsCurrent;
+      
+      // ==========================================
+      // 2. ABSOLUTE CLOCK ELAPSED MATH
+      // ==========================================
       let elapsedMs = timestamp - sectionStartTimeRef.current;
+      
       if (isCurrentlyMD || mdSectionStartTimeRef.current === null) {
         elapsedMs = timestamp - sectionStartTimeRef.current;
       } else {
@@ -661,7 +679,6 @@ export default function SetlistPerformanceRoomPage() {
       
       const progressRatio = Math.min(1, elapsedMs / totalDurationMs);
 
-      // PERFORMANCE OPTIMIZATION: Mutating GPU transforms eliminates browser reflow completely
       if (backdropProgressRef.current) backdropProgressRef.current.style.transform = `scaleX(${progressRatio})`;
       if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = `scaleX(${progressRatio})`;
 
@@ -671,9 +688,42 @@ export default function SetlistPerformanceRoomPage() {
         setCurrentBeat(currentBeatPulse);
       }
 
+      // ==========================================
+      // 3. WRAP-AROUND TELEPROMPTER CURSOR
+      // ==========================================
+      const sectionAbsoluteBeat = Math.floor(elapsedMs / beatSpeedMsCurrent);
+      let targetLineIdx = 0;
+
+      if (calculatedLoopBeats > 0) {
+        // Modulo math snaps the beat cursor back to 0 whenever a loop finishes
+        const beatWithinCurrentLoop = sectionAbsoluteBeat % loopBeats;
+        
+        let beatAccumulator = 0;
+        for (let i = 0; i < parsedLinesCount; i++) {
+          beatAccumulator += lineBeatsArray[i];
+          if (beatWithinCurrentLoop < beatAccumulator) {
+            targetLineIdx = i;
+            break;
+          }
+          targetLineIdx = i; // Fallback so it holds on the last line
+        }
+      } else {
+        // ✅ SURGICAL FIX: Fallback equally split logic based on the LOOP length, not total length
+        const beatsPerLine = loopBeats / parsedLinesCount;
+        const beatWithinCurrentLoop = sectionAbsoluteBeat % loopBeats;
+        targetLineIdx = Math.floor(beatWithinCurrentLoop / beatsPerLine);
+        if (targetLineIdx >= parsedLinesCount) targetLineIdx = parsedLinesCount - 1;
+      }
+
+      if (activeLineIndexRef.current !== targetLineIdx) {
+        activeLineIndexRef.current = targetLineIdx;
+        setActiveLineIndex(targetLineIdx);
+      }
+
+      // ==========================================
+      // 4. NEXT SECTION TRANSITION HANDLING
+      // ==========================================
       if (elapsedMs >= totalDurationMs) {
-        // ✅ Buffer layout states smoothly on read-only screens if they finish a section early
-        // Holds at 100% capacity and stops auto-advancing until the MD pushes a network update
         if (!isCurrentlyMD) {
           if (backdropProgressRef.current) backdropProgressRef.current.style.transform = "scaleX(1)";
           if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = "scaleX(1)";
@@ -720,10 +770,13 @@ export default function SetlistPerformanceRoomPage() {
           const overrun = elapsedMs - totalDurationMs;
           currentSectionIndexRef.current = nextSectionIdx;
           setCurrentSectionIndex(nextSectionIdx);
+          
+          activeLineIndexRef.current = 0;
+          setActiveLineIndex(0);
+
           sectionStartTimeRef.current = performance.now() - overrun;
           lastBeatRef.current = 1;
 
-          // ✅ SURGICAL FIX: Keep absolute global state anchors updated locally during gapless loop changes
           const calculatedNextStart = Date.now() - overrun;
           if (isCurrentlyMD) {
             mdSectionStartTimeRef.current = calculatedNextStart;
@@ -737,7 +790,7 @@ export default function SetlistPerformanceRoomPage() {
                 action: "JUMP", 
                 trackIndex: nextTrackIdx,
                 sectionIndex: nextSectionIdx,
-                mdSectionStartTime: calculatedNextStart // Sync epoch offset adjusted for overrun
+                mdSectionStartTime: calculatedNextStart
               }
             });
           }
@@ -771,7 +824,6 @@ export default function SetlistPerformanceRoomPage() {
       isPlayingRef.current = true;
       setIsPlayingFlow(true);
 
-      // ✅ SURGICAL FIX: Cache the epoch timestamp natively right on play invocation
       const startTimestamp = Date.now();
       mdSectionStartTimeRef.current = startTimestamp;
 
@@ -783,7 +835,7 @@ export default function SetlistPerformanceRoomPage() {
             action: "START", 
             trackIndex: currentTrackIndex, 
             sectionIndex: currentSectionIndex,
-            mdSectionStartTime: startTimestamp // ✅ Sync start epoch
+            mdSectionStartTime: startTimestamp 
           }
         });
       }
@@ -801,9 +853,8 @@ export default function SetlistPerformanceRoomPage() {
     }
   }
 
-  // Implemented debounced cross-song queuing handler
   function handleSectionInteractiveSelection(index: number) {
-    if (isReadOnlyMode) return; // 🛑 MD OVERRIDE: Read-only participants cannot trigger jumps or queues
+    if (isReadOnlyMode) return; 
     if (!isPlayingFlow) {
       const jumpTime = Date.now();
       mdSectionStartTimeRef.current = jumpTime;
@@ -816,7 +867,7 @@ export default function SetlistPerformanceRoomPage() {
             action: "JUMP", 
             trackIndex: currentTrackIndex, 
             sectionIndex: index,
-            mdSectionStartTime: jumpTime // ✅ Sync jump epoch
+            mdSectionStartTime: jumpTime 
           }
         });
       }
@@ -846,11 +897,9 @@ export default function SetlistPerformanceRoomPage() {
         });
       }
     } else {
-      // FIRST TAP WINDOW: Set single click timeout fallback
       clickTimeoutRef.current = setTimeout(() => {
         clickTimeoutRef.current = null;
         
-        // ✅ SURGICAL REFACTOR: Consolidated into one atomic JUMP network payload to kill desync
         playingTrackIndexRef.current = currentTrackIndex;
         setPlayingTrackIndex(currentTrackIndex);
         const targetTrackItem = tracksListRef.current[currentTrackIndex];
@@ -869,7 +918,7 @@ export default function SetlistPerformanceRoomPage() {
             event: "lobby_sync",
             payload: { 
               action: "JUMP", 
-              trackIndex: currentTrackIndex, // Bundled together
+              trackIndex: currentTrackIndex, 
               sectionIndex: index,
               mdSectionStartTime: jumpTime
             }
@@ -879,7 +928,6 @@ export default function SetlistPerformanceRoomPage() {
     }
   }
 
-  // Next tracker layout utility strings computing layer
   const playbackNextButtonText = useMemo(() => {
     if (!isPlayingFlow) return "";
 
@@ -911,8 +959,12 @@ export default function SetlistPerformanceRoomPage() {
   function handleSelectSectionDirectlyLocally(index: number) {
     currentSectionIndexRef.current = index;
     setCurrentSectionIndex(index);
+    
     lastBeatRef.current = 1;
     setCurrentBeat(1);
+    
+    activeLineIndexRef.current = 0;
+    setActiveLineIndex(0);
 
     if (isPlayingRef.current && activeSong) {
       sectionStartTimeRef.current = performance.now();
@@ -946,9 +998,6 @@ export default function SetlistPerformanceRoomPage() {
       .eq("id", activeSong.id);
   }
 
-  // ==========================================================
-  // --- TRANSPOSER MODAL ACTIONS ----------------------------
-  // ==========================================================
   function handleOpenTransposerModal() {
     if (!activeSong || isPlayingRef.current) return;
     
@@ -986,9 +1035,6 @@ export default function SetlistPerformanceRoomPage() {
     handleResetFlowTrigger();
   }
 
-  // ==========================================================
-  // --- MODAL SEQUENCE REORDER OVERRIDES ACTIONS ------------
-  // ==========================================================
   async function saveMutatedStructurePayload(updatedBlocks: ArrangementSection[]) {
     if (!activeSong) return;
     setIsSavingStructure(true);
@@ -1052,9 +1098,6 @@ export default function SetlistPerformanceRoomPage() {
     handleResetFlowTrigger();
   }
 
-  // ==========================================================
-  // --- MEMOIZED PARSED AST TOKENS COMPILER TREES ------------
-  // ==========================================================
   const runtimeSemitoneDelta = useMemo(() => {
     if (!activeSong || !activeDisplayKey) return 0;
     const isMinorSong = activeSong.original_key.endsWith("m");
@@ -1097,13 +1140,17 @@ export default function SetlistPerformanceRoomPage() {
     });
   }, [sections]);
   
+  // ✅ Update AST cache dependency
+  useEffect(() => {
+    astTreeRef.current = memoizedSongAstTree;
+  }, [memoizedSongAstTree]);
+
   const displayedOnlineUsers = useMemo(() => {
     const usersMap = new Map();
     onlineUsers.forEach((user) => { if (user.id) usersMap.set(user.id, user); });
     if (localPresenceUser) { usersMap.set(localPresenceUser.id, localPresenceUser); }
     return Array.from(usersMap.values());
   }, [onlineUsers, localPresenceUser]);
-
 
   if (loading) {
     return (
@@ -1119,14 +1166,10 @@ export default function SetlistPerformanceRoomPage() {
       </div>
     );
   }
-  
-  
 
-  // Leave ONLY plain variables down here right above the return statement:
   const highlightedTargetSectionName = sections[currentSectionIndex]?.section_name || "FLOW";
   const upcomingTrackItem = tracksList[currentTrackIndex + 1] || null;
 
-  // ✅ SURGICAL ADDITION: Compute live Music Director locks across the room
   const activeMDConnection = onlineUsers.find(u => u.isMD);
   const isReadOnlyMode = activeMDConnection !== undefined && activeMDConnection.id !== localPresenceUser?.id;
   const isCurrentlyMD = localPresenceUser?.isMD === true;
@@ -1134,7 +1177,6 @@ export default function SetlistPerformanceRoomPage() {
   const handleToggleMusicDirectorMode = () => {
     if (!localPresenceUser) return;
 
-    // Guard against multiple users becoming MD simultaneously
     const alternateMD = onlineUsers.find(u => u.isMD && u.id !== localPresenceUser.id);
     if (alternateMD && !localPresenceUser.isMD) {
       alert(`Access Denied: ${alternateMD.name} is currently driving this setlist as the Music Director.`);
@@ -1143,10 +1185,8 @@ export default function SetlistPerformanceRoomPage() {
 
     const updatedPresencePayload = { ...localPresenceUser, isMD: !localPresenceUser.isMD };
     setLocalPresenceUser(updatedPresencePayload);
-    // ✅ SURGICAL FIX: Cache the dynamic presence token update instantly inside the reference array closure
     localPresenceUserRef.current = updatedPresencePayload;
 
-    // Push the updated state immediately over the WebSocket connection thread
     if (realtimeChannelRef.current && isChannelSubscribedRef.current) {
       realtimeChannelRef.current.track(updatedPresencePayload);
     }
@@ -1158,8 +1198,6 @@ export default function SetlistPerformanceRoomPage() {
 
       {/* FULL-WIDTH CONSOLE NAVBAR HEADER */}
       <div id="fixed-live-header" className="w-full bg-white border-b border-zinc-200 flex-shrink-0 z-50 shadow-sm px-4 md:px-8 py-3.5 relative overflow-hidden">
-        
-        {/* ✅ Progress bar structures isolated from static JSX property object constraints to prevent alignment drops */}
         <div 
           ref={backdropProgressRef}
           className="absolute inset-y-0 left-0 bg-blue-500/5 pointer-events-none z-0 origin-left w-full"
@@ -1170,10 +1208,7 @@ export default function SetlistPerformanceRoomPage() {
         />
 
         <div className="max-w-5xl mx-auto flex flex-col gap-2.5 relative">
-
-          {/* ROW 1: CONTROLS & ATTENDANCE TRACK */}
           <div className="relative z-10 flex items-center justify-between gap-2 w-full">
-            
             <div className="flex items-center gap-3 min-w-0 flex-1">
               <button 
                 type="button" 
@@ -1200,7 +1235,6 @@ export default function SetlistPerformanceRoomPage() {
                     {activeSong?.title || "Loading..."}
                   </h1>
 
-                  {/* Presence indicator avatars track */}
                   <div className="flex items-center gap-1">
                     <div className="flex -space-x-1.5 overflow-hidden py-0.5">
                       {displayedOnlineUsers.map((user, idx) => (
@@ -1225,7 +1259,6 @@ export default function SetlistPerformanceRoomPage() {
               </div>
             </div>
 
-            {/* METRONOME SYSTEM */}
             <div className="flex items-center gap-1 bg-zinc-50 p-1 rounded-lg border border-zinc-200 shadow-inner shrink-0">
               {[1, 2, 3, 4].map((beatNum) => {
                 const isByBeatPulsing = isPlayingFlow && currentBeat === beatNum;
@@ -1246,7 +1279,6 @@ export default function SetlistPerformanceRoomPage() {
               })}
             </div>
 
-            {/* ACTION CONFIGURATION CONTROLLERS */}
             <div className="flex items-center gap-1.5 shrink-0 ml-1">
               <button
                 type="button"
@@ -1258,7 +1290,7 @@ export default function SetlistPerformanceRoomPage() {
 
               <button
                 type="button"
-                disabled={isReadOnlyMode} // ✅ Prevents read-only users from stopping/starting the deck
+                disabled={isReadOnlyMode} 
                 onClick={handleToggleFlowPlaybackState}
                 className={`h-8 px-3 rounded-lg border text-[9px] font-black uppercase tracking-wider transition-all cursor-pointer flex items-center gap-1 ${
                   isPlayingFlow 
@@ -1269,10 +1301,8 @@ export default function SetlistPerformanceRoomPage() {
                 {isPlayingFlow ? playbackNextButtonText : `▶ ${highlightedTargetSectionName}`}
               </button>
             </div>
-
           </div>
 
-          {/* ROW 2: TRACKS BAR NAVIGATION */}
           <div className="w-full border-t border-zinc-100 pt-2 flex items-center overflow-x-auto overflow-y-hidden flex-nowrap gap-1.5 scrollbar-none relative z-10 select-none pb-0.5 scroll-smooth">
             {tracksList.map((track, trackIdx) => (
               <button
@@ -1290,14 +1320,12 @@ export default function SetlistPerformanceRoomPage() {
               </button>
             ))}
           </div>
-
         </div>
       </div>
 
-      {/* SCROLLABLE LYRIC CANVAS CANVAS */}
       <div 
         ref={scrollContainerRef}
-        className="flex-1 overflow-y-auto p-4 md:p-8 pt-4 custom-scrollbar pb-24"
+        className="flex-1 overflow-y-auto p-4 md:p-8 pt-4 custom-scrollbar pb-64" // ✅ Increased pb-64 to let the last line scroll all the way to the center of the screen
       >
         <div className="max-w-5xl w-full mx-auto space-y-4 md:space-y-6">
           
@@ -1314,7 +1342,7 @@ export default function SetlistPerformanceRoomPage() {
                 onClick={() => handleSectionInteractiveSelection(idx)}
                 className={`bg-white border rounded-xl md:rounded-3xl p-5 md:p-6 shadow-sm transition-all duration-300 relative ${
                   isThisSectionActivePlayback 
-                    ? "border-blue-500 ring-4 ring-blue-500/10 scale-[1.001] shadow-md z-10 cursor-pointer" 
+                    ? "border-blue-500 ring-4 ring-blue-500/10 shadow-md z-10 cursor-pointer" 
                     : isThisSectionQueuedNext
                     ? "border-purple-500 ring-4 ring-purple-500/10 scale-[1.001] shadow-md z-10 cursor-pointer" 
                     : `border-zinc-200 opacity-95 cursor-pointer hover:border-blue-400 hover:bg-zinc-50/30`
@@ -1342,7 +1370,7 @@ export default function SetlistPerformanceRoomPage() {
                       <input 
                         type="number" 
                         min={0}
-                        disabled={isReadOnlyMode} // ✅ Lock adjustments if read-only
+                        disabled={isReadOnlyMode}
                         value={centralizedTimingConfig.measures} 
                         onChange={e => commitSectionTimingUpdate(section.section_name, "measures", Math.max(0, parseInt(e.target.value, 10) || 0))}
                         className="w-9 bg-transparent text-center font-black text-zinc-700 outline-none"
@@ -1354,7 +1382,7 @@ export default function SetlistPerformanceRoomPage() {
                         type="number" 
                         min={0}
                         max={3}
-                        disabled={isReadOnlyMode} // ✅ Lock adjustments if read-only
+                        disabled={isReadOnlyMode}
                         value={centralizedTimingConfig.beats} 
                         onChange={e => commitSectionTimingUpdate(section.section_name, "beats", Math.min(3, Math.max(0, parseInt(e.target.value, 10) || 0)))}
                         className="w-9 bg-transparent text-center font-black text-zinc-700 outline-none"
@@ -1364,39 +1392,50 @@ export default function SetlistPerformanceRoomPage() {
                 </div>
 
                 <div className="pl-0.5 select-text selection:bg-blue-50 text-zinc-800 space-y-2">
-                  {section.lines.length === 0 ? <div className="h-4" /> : section.lines.map((line: ParsedLineToken, lIdx: number) => (
-                    <div 
-                      key={lIdx} 
-                      style={{ paddingBottom: `${lineSpacing}px` }} 
-                      className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 border-b border-zinc-100/50 last:border-0"
-                    >
-                      <div className="flex flex-wrap items-end gap-x-2 gap-y-3.5 py-0.5 leading-none flex-1">
-                        {line.words.map((wordObj, wIdx) => (
-                          <div key={wIdx} className="flex flex-col items-start min-h-[36px] justify-end">
-                            {showChords && wordObj.chords.length > 0 && (
-                              <div className="text-[11px] font-mono font-black text-blue-600 tracking-tight pb-0.5 select-none">
-                                {wordObj.chords.map((ch, cIdx) => {
-                                  const finalChord = runtimeSemitoneDelta !== 0 ? transposeBracketContent(ch, runtimeSemitoneDelta) : ch;
-                                  return <span key={cIdx} className="mr-0.5 bg-blue-50/60 px-0.5 rounded border border-blue-100/40">{finalChord}</span>;
-                                })}
+                  {section.lines.length === 0 ? <div className="h-4" /> : section.lines.map((line: ParsedLineToken, lIdx: number) => {
+                    // Compute specific line highlight logic
+                    const isCurrentlyPlayingLine = isThisSectionActivePlayback && activeLineIndex === lIdx;
+                    
+                    return (
+                      <div 
+                        key={lIdx} 
+                        id={`line-${idx}-${lIdx}`} // ID assignment for the auto-scroller anchor
+                        style={{ paddingBottom: `${lineSpacing}px` }} 
+                        className={`flex flex-col sm:flex-row sm:items-start justify-between gap-2 border-b border-zinc-100/50 last:border-0 p-3 -mx-3 rounded-2xl transition-all duration-300 ${
+                          isCurrentlyPlayingLine 
+                            ? "bg-zinc-100 shadow-sm scale-[1.005] border-transparent z-20" // ✅ SURGICAL ALTERATION: Changed to light gray styling block
+                            : ""
+                        }`}
+                      >
+                        <div className="flex flex-wrap items-end gap-x-2 gap-y-3.5 py-0.5 leading-none flex-1">
+                          {line.words.map((wordObj, wIdx) => (
+                            <div key={wIdx} className="flex flex-col items-start min-h-[36px] justify-end">
+                              {showChords && wordObj.chords.length > 0 && (
+                                // ✅ Retained core text color parameters so text stays readable over the soft gray background
+                                <div className="text-[11px] font-mono font-black tracking-tight pb-0.5 select-none text-blue-600">
+                                  {wordObj.chords.map((ch, cIdx) => {
+                                    const finalChord = runtimeSemitoneDelta !== 0 ? transposeBracketContent(ch, runtimeSemitoneDelta) : ch;
+                                    return <span key={cIdx} className="mr-0.5 px-0.5 rounded border bg-blue-50/60 border-blue-100/40">{finalChord}</span>;
+                                  })}
+                                </div>
+                              )}
+                              <div 
+                                style={{ fontSize: `${lyricsFontSize}px` }}
+                                className="font-sans font-bold tracking-tight transition-all duration-100 uppercase text-zinc-950"
+                              >
+                                {wordObj.word || " "}
                               </div>
-                            )}
-                            <div 
-                              style={{ fontSize: `${lyricsFontSize}px` }}
-                              className="font-sans font-bold text-zinc-950 tracking-tight transition-all duration-100 uppercase"
-                            >
-                              {wordObj.word || " "}
                             </div>
-                          </div>
-                        ))}
-                      </div>
-                      {line.comment && (
-                        <div style={{ fontFamily: "'Nothing You Could Do', cursive" }} className="text-[14px] text-zinc-400 tracking-wide select-none whitespace-nowrap sm:pl-4 self-end">
-                          {line.comment}
+                          ))}
                         </div>
-                      )}
-                    </div>
-                  ))}
+                        {line.comment && (
+                          <div style={{ fontFamily: "'Nothing You Could Do', cursive" }} className="text-[14px] tracking-wide select-none whitespace-nowrap sm:pl-4 self-end text-zinc-400">
+                            {line.comment}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             );
@@ -1418,7 +1457,6 @@ export default function SetlistPerformanceRoomPage() {
         </div>
       </div>
 
-      {/* FLOATING CENTERED SYNC BACK CONTROLLER */}
       {showSyncBack && (
         <button
           type="button"
@@ -1429,7 +1467,6 @@ export default function SetlistPerformanceRoomPage() {
         </button>
       )}
 
-      {/* DYNAMIC ACCESS PREFERENCES MODAL CONSOLE */}
       {isSettingsModalOpen && (
         <div className="fixed inset-0 bg-zinc-950/50 backdrop-blur-sm z-[150000] flex items-center justify-center p-4 select-none animate-in fade-in duration-100">
           <div className="bg-[#f8f9fa] border border-zinc-200 rounded-[2.5rem] shadow-2xl p-6 max-w-sm w-full space-y-5 animate-in zoom-in-95 duration-100 text-left relative">
@@ -1445,7 +1482,7 @@ export default function SetlistPerformanceRoomPage() {
               <h3 className="text-lg font-black text-zinc-900 tracking-tight">Console Preferences</h3>
               <p className="text-[11px] font-bold text-zinc-400">Tweak user accessibility and dynamic track constraints.</p>
             </div>
-            {/* Preferences Option 0: Music Director Master Control Switch */}
+            
             <div className="space-y-2">
               <label className="text-[10px] font-black text-zinc-400 uppercase tracking-wider block">Performance Authorization</label>
               <button
@@ -1567,7 +1604,6 @@ export default function SetlistPerformanceRoomPage() {
         </div>
       )}
 
-      {/* COMPONENT DRAG-AND-DROP ARRANGEMENTS INTERFACE OVERLAY */}
       {isStructureModalOpen && (
         <div className="fixed inset-0 bg-zinc-950/50 backdrop-blur-sm z-[250000] flex items-center justify-center p-4 md:p-6 animate-in fade-in duration-100 select-none">
           <div className="bg-white border border-zinc-200 rounded-[2.5rem] shadow-2xl max-w-3xl w-full max-h-[80vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-150 relative text-left">
@@ -1642,7 +1678,6 @@ export default function SetlistPerformanceRoomPage() {
         </div>
       )}
 
-      {/* REHEARSAL KEY TRANSPOSER MODAL BLOCK */}
       {isTransposerOpen && (
         <div className="fixed inset-0 bg-zinc-950/50 backdrop-blur-sm z-[200000] flex items-center justify-center p-4 md:p-6 animate-in fade-in duration-100 select-none">
           <form onSubmit={handleCommitTranspositionSave} className="bg-[#f8f9fa] border border-zinc-200 rounded-[2.5rem] shadow-2xl max-w-xl w-full p-7 px-8 space-y-6 animate-in zoom-in-95 duration-150 relative text-left">
