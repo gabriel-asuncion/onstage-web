@@ -49,15 +49,12 @@ const FALLBACK_VERSES = [
   { text: "But seek first the kingdom of God and His righteousness, and all these things shall be added to you.", reference: "Matthew 6:33" }
 ];
 
-const TODAY_TIMELINE_ANCHOR = "2026-06-08";
-const todayStr = new Date().toISOString().split("T")[0]; // Evaluates to "2026-06-16"
-
 export default function DashboardPage() {
   const supabase = createClient();
   const router = useRouter();
   
-  // Link directly to our global simulation state parameters
-  const { simulatedRole, simulatedUserId } = useEngine();
+  // ✅ SURGICAL FIX: Extract userTeamId and activeRole from the Engine
+  const { simulatedRole, simulatedUserId, userTeamId, activeRole } = useEngine();
 
   const [loading, setLoading] = useState(true);
   const [eventsList, setEventsList] = useState<EventItem[]>([]);
@@ -76,13 +73,12 @@ export default function DashboardPage() {
 
   async function loadDashboardMetrics() {
     try {
-      // 1. Calculate Greeting Locally (100% unlinked from DB)
-      // Dividing by 86,400,000 increments the index by 1 exactly when a new day rolls over.
+      // 1. Calculate Greeting Locally
       const dayOfYearHash = Math.floor(Date.now() / 86400000);
       const greetingIndex = dayOfYearHash % GLOBAL_GREETINGS_DICTIONARY.length;
       setCurrentGreeting(GLOBAL_GREETINGS_DICTIONARY[greetingIndex]);
 
-      // 2. Fetch Daily Verse from Database (Greeting column dropped)
+      // 2. Fetch Daily Verse
       const todayString = new Date().toISOString().split("T")[0];
       const { data: inspirationData } = await supabase
         .from("daily_inspiration")
@@ -100,19 +96,25 @@ export default function DashboardPage() {
         setDailyVerse(FALLBACK_VERSES[verseIndex]);
       }
 
-      // 3. Fetch all events across the workspace
-      const { data: eventsData, error: eventsErr } = await supabase
-        .from("events")
-        .select("*");
-      if (!eventsErr && eventsData) setEventsList(eventsData);
+      // ✅ 3. PHASE 3 FILTER: Fetch events strictly bound to the active user's Team ID
+      if (userTeamId) {
+        const { data: eventsData, error: eventsErr } = await supabase
+          .from("events")
+          .select("*")
+          .eq("team_id", userTeamId); // 🎯 THE MULTI-TENANCY LOCK
+          
+        if (!eventsErr && eventsData) setEventsList(eventsData);
+      } else {
+        setEventsList([]); // Clear if no team exists to prevent data leaks
+      }
 
-      // 4. Fetch roster assignments to compute user permissions scopes
+      // 4. Fetch roster assignments
       const { data: rosterData, error: rosterErr } = await supabase
         .from("team_members")
         .select("*");
       if (!rosterErr && rosterData) setAllocationsList(rosterData);
 
-      // 5. Fetch name details and bookmark profiles for the active user identifier
+      // 5. Fetch name details and bookmark profiles
       if (simulatedUserId && simulatedUserId !== "00000000-0000-0000-0000-000000000000") {
         const { data: profileData } = await supabase
           .from("profiles")
@@ -124,7 +126,7 @@ export default function DashboardPage() {
         setBookmarkedSongIds(profileData?.bookmarked_songs || []);
       }
 
-      // 6. Fetch the master song index for the search lookups
+      // 6. Fetch master song index
       const { data: songsData } = await supabase.from("songs").select("*");
       setAllSongs(songsData || []);
 
@@ -135,14 +137,15 @@ export default function DashboardPage() {
     }
   }
 
+  // ✅ Trigger refresh if team context changes
   useEffect(() => {
     loadDashboardMetrics();
-  }, [simulatedUserId, simulatedRole]);
+  }, [simulatedUserId, simulatedRole, userTeamId]); 
 
   // ==========================================
   // --- CHRONOLOGICAL DATA MATRICES SELECTION -
   // ==========================================
-  const todayStr = new Date().toISOString().split("T")[0]; // Dynamic calendar tracker
+  const todayStr = new Date().toISOString().split("T")[0];
 
   const futureActiveEvents = eventsList
     .filter(e => (e.event_date ? e.event_date.split("T")[0] : "2026-06-12") >= todayStr)
@@ -165,9 +168,7 @@ export default function DashboardPage() {
   return (
     <div className="p-4 md:p-8 max-w-7xl w-full mx-auto space-y-4 md:space-y-8 animate-in fade-in duration-150">
       
-      {/* ======================================================================= */}
-      {/* --- MASTER HERO HEADER CONTAINER BLOCK -------------------------------- */}
-      {/* ======================================================================= */}
+      {/* MASTER HERO HEADER CONTAINER BLOCK */}
       <div className="bg-white border border-zinc-200 rounded-2xl p-6 shadow-sm space-y-4">
         <div className="space-y-1.5">
           <h2 className="text-xl md:text-3xl font-black tracking-tight text-zinc-900">
@@ -201,9 +202,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* ======================================================================= */}
-      {/* --- MULTI-COLUMN WORKSPACE CANVAS ------------------------------------- */}
-      {/* ======================================================================= */}
+      {/* MULTI-COLUMN WORKSPACE CANVAS */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-8 items-start">
         
         {/* COLUMN LAYOUT 1 & 2: MY ACTIVE PLANS */}
@@ -316,9 +315,7 @@ export default function DashboardPage() {
 
       </div>
 
-      {/* ======================================================== */}
-      {/* --- BOOKMARKS INTERACTIVE OVERLAY MODAL PANEL ---------- */}
-      {/* ======================================================== */}
+      {/* BOOKMARKS INTERACTIVE OVERLAY MODAL PANEL */}
       {isBookmarksModalOpen && (
         <div className="fixed inset-0 bg-zinc-950/60 backdrop-blur-sm z-[250000] flex items-center justify-center p-4 animate-in fade-in duration-105">
           <div className="bg-white rounded-xl md:rounded-[2.5rem] shadow-2xl border w-full max-w-lg p-4 md:p-6 flex flex-col space-y-3 md:space-y-4 max-h-[80vh] overflow-hidden animate-in zoom-in-95 duration-150">

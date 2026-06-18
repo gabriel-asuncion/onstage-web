@@ -26,7 +26,10 @@ export default function ClientLayoutWrapper({ children }: { children: React.Reac
     <div className="flex min-h-screen w-full relative">
       <Sidebar />
       <main className="flex-1 overflow-x-hidden relative min-w-0 pb-24 md:pb-0">
-        {children}
+        <div className="w-full max-w-7xl md:p-8">
+          {children}
+        </div>
+        {/* {children} */}
       </main>
       {/* ✅ 3. Conditionally render */}
       {isSuperAdmin && <DevFab />}

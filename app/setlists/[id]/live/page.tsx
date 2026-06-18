@@ -116,6 +116,7 @@ export default function SetlistPerformanceRoomPage() {
   const [showChords, setShowChords] = useState<boolean>(true); 
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false); 
   const [lineSpacing, setLineSpacing] = useState<number>(16); 
+  const [isMdLockModalOpen, setIsMdLockModalOpen] = useState<boolean>(false); // ✅ SURGICAL FIX: Added modal state
 
   // Presence State
   const [onlineUsers, setOnlineUsers] = useState<{ id: string; name: string; initials: string; bg: string; connectionId?: string; avatar?: string | null; isMD?: boolean; }[]>([]);
@@ -532,9 +533,9 @@ export default function SetlistPerformanceRoomPage() {
       return;
     }
 
-    if (sections.length === 0 || !sections[currentSectionIndex] || !scrollContainerRef.current) return;
+    if (sections.length === 0 || !sections[currentSectionIndex]) return;
 
-    // Favor centering on the specific lyrics line if we are flowing, otherwise fallback to the section container
+    // Target the specific lyrics line if playing, otherwise fallback to the section container
     const lineElementId = `line-${currentSectionIndex}-${activeLineIndex}`;
     const targetElement = isPlayingRef.current 
       ? document.getElementById(lineElementId) || sectionRefs.current[sections[currentSectionIndex].id]
@@ -542,6 +543,8 @@ export default function SetlistPerformanceRoomPage() {
 
     if (targetElement) {
       isAutoScrollingRef.current = true; 
+      
+      // ✅ Lock the element directly to the center of the screen
       targetElement.scrollIntoView({ behavior: "smooth", block: "center" });
 
       setShowSyncBack(false); 
@@ -553,13 +556,18 @@ export default function SetlistPerformanceRoomPage() {
 
   // ✅ AUTO-SCROLL EFFECT FIRES WHEN LINE CHANGES
   useEffect(() => {
-    if (isPlayingFlow && !showSyncBack && !isAutoScrollingRef.current && scrollContainerRef.current) {
+    if (isPlayingFlow && !showSyncBack) {
       const activeLineId = `line-${currentSectionIndex}-${activeLineIndex}`;
       const targetLine = document.getElementById(activeLineId);
+      
       if (targetLine) {
+        // ✅ SURGICAL FIX: Clear pending scroll locks so rapid section transitions are never ignored!
+        if ((window as any)._autoScrollTimeout) clearTimeout((window as any)._autoScrollTimeout);
         isAutoScrollingRef.current = true;
+        
         targetLine.scrollIntoView({ behavior: "smooth", block: "center" });
-        setTimeout(() => {
+        
+        (window as any)._autoScrollTimeout = setTimeout(() => {
           isAutoScrollingRef.current = false;
         }, 550); 
       }
@@ -579,22 +587,27 @@ export default function SetlistPerformanceRoomPage() {
         return;
       }
 
-      const activeSectionNode = sections[currentSectionIndex];
-      if (!activeSectionNode) return;
-
-      const targetElement = sectionRefs.current[activeSectionNode.id];
+      // ✅ SURGICAL FIX: Target the specific active line instead of the massive section block
+      const activeLineId = `line-${currentSectionIndex}-${activeLineIndexRef.current}`;
+      const targetElement = document.getElementById(activeLineId);
+      
       if (!targetElement) return;
 
       const containerRect = containerNode.getBoundingClientRect();
       const elementRect = targetElement.getBoundingClientRect();
 
-      const isOutOfViewBounds = (elementRect.bottom < containerRect.top + 20) || (elementRect.top > containerRect.bottom - 20);
+      // ✅ High Sensitivity: Trigger free-scroll if the active line drifts out of the middle 60% of the screen
+      const topBoundary = containerRect.top + (containerRect.height * 0.2);
+      const bottomBoundary = containerRect.bottom - (containerRect.height * 0.2);
+
+      const isOutOfViewBounds = (elementRect.top < topBoundary) || (elementRect.bottom > bottomBoundary);
+      
       setShowSyncBack(isOutOfViewBounds);
     };
 
     containerNode.addEventListener("scroll", handleContainerScrollDetection);
     return () => containerNode.removeEventListener("scroll", handleContainerScrollDetection);
-  }, [isPlayingFlow, currentSectionIndex, sections, currentTrackIndex, playingTrackIndex]);
+  }, [isPlayingFlow, currentSectionIndex, currentTrackIndex, playingTrackIndex]);
 
   // ==========================================================
   // --- COMPOSER ENGINE HARDWARE ANIMATION TIMELINE LOOP -----
@@ -691,7 +704,9 @@ export default function SetlistPerformanceRoomPage() {
       // ==========================================
       // 3. WRAP-AROUND TELEPROMPTER CURSOR
       // ==========================================
-      const sectionAbsoluteBeat = Math.floor(elapsedMs / beatSpeedMsCurrent);
+      const safeDuration = Math.max(1, totalDurationMs);
+      const cappedElapsedMs = Math.max(0, Math.min(elapsedMs, safeDuration - 1));
+      const sectionAbsoluteBeat = Math.floor(cappedElapsedMs / beatSpeedMsCurrent);
       let targetLineIdx = 0;
 
       if (calculatedLoopBeats > 0) {
@@ -811,6 +826,10 @@ export default function SetlistPerformanceRoomPage() {
   }, [isPlayingFlow, currentSectionIndex, activeSong, sections, localPresenceUser]);
 
   function handleToggleFlowPlaybackState() {
+    if (!localPresenceUser?.isMD) {
+      setIsMdLockModalOpen(true);
+      return;
+    }
     if (isPlayingFlow) {
       handleResetFlowTrigger();
     } else {
@@ -1285,20 +1304,30 @@ export default function SetlistPerformanceRoomPage() {
                 onClick={() => setIsSettingsModalOpen(true)}
                 className="h-8 w-8 rounded-lg bg-zinc-50 border border-zinc-200 text-zinc-600 font-extrabold text-xs flex items-center justify-center shadow-sm cursor-pointer hover:bg-zinc-100"
               >
-                ⚙️
+                <img src="/assets/settings.svg" alt="Locked" className="w-3 h-3 opacity-60" /> 
               </button>
 
               <button
                 type="button"
-                disabled={isReadOnlyMode} 
                 onClick={handleToggleFlowPlaybackState}
-                className={`h-8 px-3 rounded-lg border text-[9px] font-black uppercase tracking-wider transition-all cursor-pointer flex items-center gap-1 ${
-                  isPlayingFlow 
-                    ? "bg-purple-600 border-purple-500 text-white ring-2 ring-purple-500/10" 
-                    : "bg-blue-600 border-blue-500 text-white shadow-sm"
+                className={`h-8 px-3 rounded-lg border text-[9px] font-black uppercase tracking-wider transition-all flex items-center gap-1.5 ${
+                  !localPresenceUser?.isMD
+                    ? "bg-zinc-100 border-zinc-200 text-zinc-500 cursor-pointer shadow-inner"
+                    : isPlayingFlow 
+                      ? "bg-purple-600 border-purple-500 text-white ring-2 ring-purple-500/10 cursor-pointer" 
+                      : "bg-blue-600 border-blue-500 text-white shadow-sm cursor-pointer"
                 }`}
               >
-                {isPlayingFlow ? playbackNextButtonText : `▶ ${highlightedTargetSectionName}`}
+                {!localPresenceUser?.isMD ? (
+                  <>
+                    <img src="/assets/lock.svg" alt="Locked" className="w-3 h-3 opacity-60" /> 
+                    <span>Play Locked</span>
+                  </>
+                ) : isPlayingFlow ? (
+                  playbackNextButtonText 
+                ) : (
+                  `▶ ${highlightedTargetSectionName}`
+                )}
               </button>
             </div>
           </div>
@@ -1690,6 +1719,59 @@ export default function SetlistPerformanceRoomPage() {
         </div>
       )}
 
+      {isMdLockModalOpen && (
+        <div className="fixed inset-0 bg-zinc-950/50 backdrop-blur-sm z-[300000] flex items-center justify-center p-4 select-none animate-in fade-in duration-100">
+          <div className="bg-white border border-zinc-200 rounded-[1rem] shadow-2xl p-6 md:p-8 max-w-sm w-full space-y-6 animate-in zoom-in-95 duration-100 text-center relative">
+            <div className="w-16 h-16 bg-red-50 text-red-500 rounded-full flex items-center justify-center mx-auto mt-2 mb-4 shadow-inner">
+              <span className="text-3xl">🔒</span>
+            </div>
+            
+            <div className="space-y-1.5">
+              <h3 className="text-xl font-black text-zinc-900 tracking-tight">Playback Locked</h3>
+              <p className="text-xs font-bold text-zinc-400">Only the Music Director can start the setlist.</p>
+            </div>
+
+            {activeMDConnection ? (
+              <div className="bg-zinc-50 border border-zinc-200 rounded-2xl p-4 text-left shadow-inner">
+                 <p className="text-[10px] font-black text-zinc-400 uppercase tracking-wider mb-2.5">Current Music Director:</p>
+                 <div className="flex items-center gap-3">
+                   <div className="w-10 h-10 rounded-full shadow-sm shrink-0 flex items-center justify-center overflow-hidden bg-zinc-200 relative">
+                     {activeMDConnection.avatar ? (
+                       <img src={activeMDConnection.avatar} alt="" className="w-full h-full object-cover" />
+                     ) : (
+                       <div className={`w-full h-full ${activeMDConnection.bg || 'bg-blue-600'} text-white font-mono font-black text-sm flex items-center justify-center`}>
+                         {activeMDConnection.initials}
+                       </div>
+                     )}
+                   </div>
+                   <div className="flex flex-col min-w-0">
+                     <span className="text-sm font-black text-zinc-900 truncate">{activeMDConnection.name}</span>
+                     <span className="text-[10px] font-bold text-green-600 flex items-center gap-1">
+                       <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span> Has Control
+                     </span>
+                   </div>
+                 </div>
+              </div>
+            ) : (
+              <div className="bg-zinc-50 border border-zinc-200 rounded-2xl p-4 shadow-inner">
+                <p className="text-[11px] font-bold text-zinc-500 leading-relaxed">
+                  No one is currently driving. Click the <strong className="text-zinc-800">settings gear (⚙️)</strong> in the top header and select <strong className="text-zinc-800">"Take Music Director Control"</strong> to unlock playback.
+                </p>
+              </div>
+            )}
+
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={() => setIsMdLockModalOpen(false)}
+                className="w-full py-3.5 bg-zinc-950 hover:bg-zinc-800 text-white font-black text-xs uppercase tracking-widest rounded-xl text-center shadow-md cursor-pointer transition-colors"
+              >
+                Understood
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

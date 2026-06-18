@@ -6,11 +6,13 @@ import { createClient } from "../utils/supabase/client";
 
 interface DBProfileRow {
   id: string;
+  team_id?: string; // ✅ ADD THIS
   full_name: string;
   email: string;
   avatar_url?: string;
   ministries: string[];
   unavailable_dates: string[];
+  secondary_team_ids: string[]; // ✅ ADDED
 }
 
 const AVAILABLE_MINISTRY_POSITIONS = ["VAST", "Pastor", "Dancer", "Musician", "Backup", "Music Leader"];
@@ -28,6 +30,7 @@ export default function DevFab() {
   // Master Global User Directory Management Modals
   const [isGlobalModalOpen, setIsGlobalModalOpen] = useState(false);
   const [globalProfiles, setGlobalProfiles] = useState<DBProfileRow[]>([]);
+  const [availableTeams, setAvailableTeams] = useState<any[]>([]); // ✅ ADDED
   const [loadingProfiles, setLoadingProfiles] = useState(false);
   
   // Active editing profile focus nodes
@@ -35,10 +38,10 @@ export default function DevFab() {
   const [formName, setFormName] = useState("");
   const [formMinistries, setFormMinistries] = useState<string[]>([]);
   const [formDates, setFormDates] = useState<string[]>([]);
+  const [formSecondaryTeams, setFormSecondaryTeams] = useState<string[]>([]); // ✅ ADDED
   const [stagedNewBlockoutDate, setStagedNewBlockoutDate] = useState("2026-06-14");
   const [isSavingData, setIsSavingData] = useState(false);
 
-  // Sync structural boundaries upon view mount
   useEffect(() => {
     if (typeof window !== "undefined") {
       setDimensions({ width: window.innerWidth, height: window.innerHeight });
@@ -48,14 +51,21 @@ export default function DevFab() {
 
   async function syncGlobalDatabaseProfiles() {
     setLoadingProfiles(true);
-    const { data, error } = await supabase
+    
+    // ✅ Fetch Profiles WITH secondary teams
+    const { data: profilesData } = await supabase
       .from("profiles")
-      .select("id, full_name, email, avatar_url, ministries, unavailable_dates")
+      .select("id, team_id, full_name, email, avatar_url, ministries, unavailable_dates, secondary_team_ids")
       .order("full_name", { ascending: true });
     
-    if (!error && data) {
-      setGlobalProfiles(data as DBProfileRow[]);
-    }
+    // ✅ Fetch all teams to populate the multi-select dropdown
+    const { data: teamsData } = await supabase
+      .from("teams")
+      .select("id, name");
+      
+    if (profilesData) setGlobalProfiles(profilesData as DBProfileRow[]);
+    if (teamsData) setAvailableTeams(teamsData);
+    
     setLoadingProfiles(false);
   }
 
@@ -79,7 +89,6 @@ export default function DevFab() {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  // Universal pointer-events tracker (Prevents click/drag conflicts)
   const handlePointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
     e.preventDefault();
     const startX = e.clientX;
@@ -121,18 +130,21 @@ export default function DevFab() {
     document.addEventListener("pointerup", handlePointerUp);
   };
 
-  // Profile Form Context Switcher Actions
   function handleTriggerTargetedEditMode(profile: DBProfileRow) {
     setEditingProfileId(profile.id);
     setFormName(profile.full_name || "");
     setFormMinistries(profile.ministries || []);
     setFormDates(profile.unavailable_dates || []);
+    setFormSecondaryTeams(profile.secondary_team_ids || []); // ✅ Hydrate array
   }
 
   function handleToggleFormMinistrySelection(tag: string) {
-    setFormMinistries(prev => 
-      prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]
-    );
+    setFormMinistries(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
+  }
+  
+  // ✅ ADDED: Toggle Teams Array
+  function handleToggleFormTeamSelection(teamId: string) {
+    setFormSecondaryTeams(prev => prev.includes(teamId) ? prev.filter(t => t !== teamId) : [...prev, teamId]);
   }
 
   function handleAppendFormBlockoutDate() {
@@ -154,14 +166,15 @@ export default function DevFab() {
       .update({
         full_name: formName.trim(),
         ministries: formMinistries,
-        unavailable_dates: formDates
+        unavailable_dates: formDates,
+        secondary_team_ids: formSecondaryTeams // ✅ Save the Array
       })
       .eq("id", editingProfileId);
 
     if (!error) {
       setGlobalProfiles(prev => 
         prev.map(p => p.id === editingProfileId 
-          ? { ...p, full_name: formName.trim(), ministries: formMinistries, unavailable_dates: formDates } 
+          ? { ...p, full_name: formName.trim(), ministries: formMinistries, unavailable_dates: formDates, secondary_team_ids: formSecondaryTeams } 
           : p
         )
       );
@@ -174,7 +187,6 @@ export default function DevFab() {
 
   if (position.x === 0 && position.y === 0) return null;
 
-  // Anti-clipping floating window boundaries calculator
   const popupWidth = 250;
   const popupHeight = 155;
   const computedLeft = Math.min(dimensions.width - popupWidth - 24, Math.max(16, position.x - 95));
@@ -183,9 +195,6 @@ export default function DevFab() {
 
   return (
     <>
-      {/* ======================================================== */}
-      {/* --- SMALL FLOATING QUICK PERMISSIONS CONTROLS CONSOLE --- */}
-      {/* ======================================================== */}
       {isOpen && !isGlobalModalOpen && (
         <div 
           style={{ left: `${computedLeft}px`, top: `${computedTop}px`, width: `${popupWidth}px` }}
@@ -211,7 +220,6 @@ export default function DevFab() {
             </select>
           </div>
 
-          {/* Core Redirect Action Trigger to open the wide manager view */}
           <button
             type="button"
             onClick={() => { setIsGlobalModalOpen(true); setIsOpen(false); }}
@@ -222,14 +230,10 @@ export default function DevFab() {
         </div>
       )}
 
-      {/* ======================================================== */}
-      {/* --- COMPLETE MASTER PROFILES DIRECTORY OVERLAY MODAL --- */}
-      {/* ======================================================== */}
       {isGlobalModalOpen && (
         <div className="fixed inset-0 bg-zinc-950/60 backdrop-blur-sm z-[250000] flex items-center justify-center p-4 md:p-6 select-none animate-in fade-in duration-150">
           <div className="bg-[#f8f9fa] rounded-[2.5rem] shadow-2xl border w-full max-w-4xl h-[80vh] flex flex-col overflow-hidden relative animate-in zoom-in-95 duration-150">
             
-            {/* Modal Top Bar Layout Cap */}
             <div className="bg-white border-b border-zinc-200 px-8 py-5 flex items-center justify-between flex-shrink-0">
               <div className="space-y-0.5">
                 <h3 className="font-black text-xl text-zinc-900 tracking-tight flex items-center gap-2">
@@ -246,7 +250,6 @@ export default function DevFab() {
               </button>
             </div>
 
-            {/* Core Scrollable Users Display Layout Canvas */}
             <div className="flex-1 overflow-y-auto p-8 custom-scrollbar space-y-4">
               {loadingProfiles ? (
                 <div className="text-center py-20 text-xs font-black uppercase text-zinc-400 tracking-widest animate-pulse">Querying Database User Registries Matrix...</div>
@@ -263,12 +266,8 @@ export default function DevFab() {
                         }`}
                       >
                         {isRowEditingActive ? (
-                          // ==========================================
-                          // --- COMPILER SUB-FORM MODIFICATION MODULE -
-                          // ==========================================
                           <form onSubmit={handleCommitProfileEditsToDB} className="space-y-4 animate-in fade-in duration-100">
                             
-                            {/* Input Node 1: Full Name signature tracking */}
                             <div className="space-y-1">
                               <label className="text-[10px] font-black text-zinc-400 uppercase tracking-wider block">Modify Full Name Signature</label>
                               <input 
@@ -280,7 +279,6 @@ export default function DevFab() {
                               />
                             </div>
 
-                            {/* Input Node 2: Checkboxes matrices for Skill Position Deployments */}
                             <div className="space-y-1.5">
                               <label className="text-[10px] font-black text-zinc-400 uppercase tracking-wider block">Assigned Workspace Positions</label>
                               <div className="flex flex-wrap gap-1.5">
@@ -304,10 +302,42 @@ export default function DevFab() {
                               </div>
                             </div>
 
-                            {/* Input Node 3: Calendar Blockout Schedule Arrays Pipeline */}
-                            <div className="space-y-2 pt-1">
-                              <label className="text-[10px] font-black text-zinc-400 uppercase tracking-wider block">Date Blocked Roster Schedule Manager</label>
-                              
+                            {/* ✅ SURGICAL ADDITION: Multi-Campus UI Controller (With Primary Lock) */}
+                            <div className="space-y-1.5 pt-1 border-t border-zinc-100 mt-2">
+                              <label className="text-[10px] font-black text-purple-600 uppercase tracking-wider block">Multi-Campus Access Permissions</label>
+                              <div className="flex flex-col gap-1 max-h-32 overflow-y-auto custom-scrollbar border rounded-xl p-2 bg-zinc-50">
+                                {availableTeams.map(team => {
+                                  // ✅ Check if this is their primary home base
+                                  const isPrimary = profile.team_id === team.id;
+                                  // ✅ It is checked if it is primary, OR if it's in their secondary teams array
+                                  const isChecked = isPrimary || formSecondaryTeams.includes(team.id);
+                                  
+                                  return (
+                                    <div 
+                                      key={team.id} 
+                                      onClick={() => {
+                                        if (!isPrimary) handleToggleFormTeamSelection(team.id);
+                                      }}
+                                      className={`flex items-center gap-2 p-2 rounded-lg border transition-colors ${
+                                        isPrimary ? "bg-purple-50/50 border-purple-200 cursor-not-allowed opacity-90" : 
+                                        isChecked ? "bg-white border-purple-200 shadow-sm cursor-pointer" : 
+                                        "border-transparent hover:bg-white hover:border-zinc-200 cursor-pointer"
+                                      }`}
+                                    >
+                                      <input type="checkbox" checked={isChecked} readOnly className={`pointer-events-none ${isPrimary ? "accent-purple-400" : "accent-purple-600"}`} />
+                                      <span className={`text-[11px] font-bold ${isChecked ? "text-zinc-900" : "text-zinc-500"}`}>
+                                        {team.name} 
+                                        {isPrimary && <span className="text-[9px] font-black uppercase text-purple-600 ml-1.5 tracking-widest">(Primary)</span>}
+                                      </span>
+                                    </div>
+                                  )
+                                })}
+                                {availableTeams.length === 0 && <span className="text-[10px] text-zinc-400 italic">No teams available in database.</span>}
+                              </div>
+                            </div>
+
+                            <div className="space-y-2 pt-1 border-t border-zinc-100 mt-2">
+                              <label className="text-[10px] font-black text-zinc-400 uppercase tracking-wider block mt-2">Date Blocked Roster Schedule Manager</label>
                               <div className="flex flex-wrap gap-1.5 bg-zinc-50 p-2.5 rounded-xl border max-h-24 overflow-y-auto custom-scrollbar">
                                 {formDates.map(dStr => (
                                   <span key={dStr} className="inline-flex items-center gap-1 bg-white border border-zinc-200 px-2 py-0.5 rounded-lg text-[10px] font-bold text-zinc-700 shadow-sm">
@@ -329,7 +359,6 @@ export default function DevFab() {
                               </div>
                             </div>
 
-                            {/* Actions layout rows */}
                             <div className="flex gap-2 pt-3 border-t border-zinc-100">
                               <button type="button" onClick={() => setEditingProfileId(null)} className="flex-1 py-2 bg-zinc-100 hover:bg-zinc-200 text-zinc-500 text-xs font-bold rounded-xl">Cancel</button>
                               <button type="submit" disabled={isSavingData} className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-black uppercase tracking-wider rounded-xl shadow-sm">{isSavingData ? "Syncing..." : "Save Edits"}</button>
@@ -337,9 +366,6 @@ export default function DevFab() {
 
                           </form>
                         ) : (
-                          // ==========================================
-                          // --- STATIC DIRECTORY LOOKUP DISCOVERY ROW -
-                          // ==========================================
                           <div className="space-y-4 flex flex-col justify-between h-full min-h-[160px]">
                             <div className="space-y-3.5">
                               <div className="flex items-center gap-3">
@@ -361,6 +387,13 @@ export default function DevFab() {
                                   ))}
                                   {(!profile.ministries || profile.ministries.length === 0) && <span className="text-[10px] text-zinc-400 italic font-medium">No position groups assigned.</span>}
                                 </div>
+
+                                {/* ✅ Display Secondary Teams in UI */}
+                                {profile.secondary_team_ids && profile.secondary_team_ids.length > 0 && (
+                                  <div className="text-[9px] font-black uppercase tracking-widest text-purple-600 bg-purple-50 px-2 py-1 rounded border border-purple-100 inline-block">
+                                    {profile.secondary_team_ids.length} Extra Workspace{profile.secondary_team_ids.length > 1 ? "s" : ""}
+                                  </div>
+                                )}
 
                                 <div className="text-[11px] font-bold text-zinc-400 flex items-center gap-1.5 truncate max-w-full">
                                   <span>🚫 Blocked:</span>
@@ -393,9 +426,6 @@ export default function DevFab() {
         </div>
       )}
 
-      {/* ======================================================== */}
-      {/* --- BULLETPROOF MOVABLE DRAGGABLE CIRCULAR FAB --------- */}
-      {/* ======================================================== */}
       <button
         type="button"
         onPointerDown={handlePointerDown}

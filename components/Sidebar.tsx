@@ -18,13 +18,18 @@ interface UserProfile {
 export default function Sidebar() {
   const supabase = createClient();
   const pathname = usePathname();
-  const { simulatedRole, simulatedUserId } = useEngine();
+  
+  // ✅ SURGICAL ADDITION: Pulling workspace variables from Engine Context
+  const { simulatedRole, simulatedUserId, userTeamId, primaryTeamId, secondaryTeamIds, switchWorkspace } = useEngine();
 
   // Modal Layout States
   const [isAccountModalOpen, setIsAccountModalOpen] = useState(false);
   const [activeProfile, setActiveProfile] = useState<UserProfile | null>(null);
   const [newBlockoutDate, setNewBlockoutDate] = useState("2026-06-21");
   const [isSavingSchedule, setIsSavingSchedule] = useState(false);
+  
+  // ✅ Local state to populate team names in the dropdown
+  const [teamNamesMap, setTeamNamesMap] = useState<Record<string, string>>({});
 
   // Sync profile metrics instantly when switching developer identities
   async function fetchActiveProfileContext() {
@@ -41,6 +46,23 @@ export default function Sidebar() {
         ministries: data.ministries || [],
         unavailable_dates: data.unavailable_dates || []
       });
+      
+      // ✅ Fetch the names of all teams the user belongs to
+      if (data.team_id || (data.secondary_team_ids && data.secondary_team_ids.length > 0)) {
+        const teamIdsToFetch = [data.team_id, ...(data.secondary_team_ids || [])].filter(Boolean);
+        if (teamIdsToFetch.length > 0) {
+          const { data: teamsData } = await supabase
+            .from("teams")
+            .select("id, name")
+            .in("id", teamIdsToFetch);
+            
+          if (teamsData) {
+            const map: Record<string, string> = {};
+            teamsData.forEach(t => { map[t.id] = t.name; });
+            setTeamNamesMap(map);
+          }
+        }
+      }
     }
   }
 
@@ -98,8 +120,9 @@ export default function Sidebar() {
       {/* ======================================================= */}
       {/* 1. DESKTOP VIEWPORT SIDEBAR (Hidden on mobile panels)   */}
       {/* ======================================================= */}
-      <aside className="w-20 min-h-screen bg-white border-r border-zinc-200 flex-col items-center py-6 justify-between shrink-0 select-none z-40 sticky top-0 hidden md:flex">
-        <div className="flex flex-col items-center gap-8 w-full">
+      <aside className="w-20 min-h-screen bg-white border-r border-zinc-200 flex-col items-center justify-between shrink-0 select-none z-40 sticky top-0 hidden md:flex">
+        {/* We added py-6 specifically to the top logo container so it breathes, but doesn't affect the bottom profile */}
+        <div className="flex flex-col items-center gap-8 w-full pt-6">
           <Link href="/dashboard" className="w-10 h-10 flex items-center justify-center transition-transform active:scale-95">
             <img src="/assets/logo.svg" className="w-9 h-9 object-contain" alt="Logo" />
           </Link>
@@ -124,7 +147,8 @@ export default function Sidebar() {
           </div>
         </div>
 
-        <div className="w-full flex justify-center">
+        {/* And we added pb-6 specifically to the profile bubble container */}
+        <div className="w-full flex justify-center pb-6">
           <button 
             type="button"
             onClick={() => setIsAccountModalOpen(true)}
@@ -156,7 +180,7 @@ export default function Sidebar() {
               }`}
             >
               {isActive && (
-                <span className="absolute top-0 w-6 h-[3px] bg-blue-600 rounded-b-full" />
+                <span className="absolute top-1 w-12 h-[3px] bg-blue-600 rounded-b-full" />
               )}
               <img src={item.icon} className="w-5 h-5 object-contain" alt="" />
             </Link>
@@ -196,32 +220,60 @@ export default function Sidebar() {
             </button>
 
             {/* Panel Column 1: Account Info Profile Core Details */}
-            <div className="space-y-5 border-b md:border-b-0 md:border-r pb-6 md:pb-0 md:pr-6 border-zinc-100">
-              <div className="flex items-center gap-4">
-                {activeProfile.avatar_url ? (
-                  <img src={activeProfile.avatar_url} className="w-16 h-16 rounded-2xl object-cover border" alt="" />
-                ) : (
-                  <div className="w-16 h-16 rounded-2xl bg-blue-600 text-white text-xl font-black flex items-center justify-center shadow-md">
-                    {activeProfile.full_name?.charAt(0)}
+            <div className="space-y-5 border-b md:border-b-0 md:border-r pb-6 md:pb-0 md:pr-6 border-zinc-100 flex flex-col justify-between">
+              <div>
+                <div className="flex items-center gap-4">
+                  {activeProfile.avatar_url ? (
+                    <img src={activeProfile.avatar_url} className="w-16 h-16 rounded-2xl object-cover border" alt="" />
+                  ) : (
+                    <div className="w-16 h-16 rounded-2xl bg-blue-600 text-white text-xl font-black flex items-center justify-center shadow-md">
+                      {activeProfile.full_name?.charAt(0)}
+                    </div>
+                  )}
+                  <div>
+                    <h3 className="text-xl font-black text-zinc-900 tracking-tight flex items-center gap-1.5">
+                      {activeProfile.full_name}
+                      {simulatedRole !== "none" && <span className="bg-amber-100 border border-amber-200 text-amber-800 text-[8px] font-black px-1.5 py-0.5 rounded">SIM</span>}
+                    </h3>
+                    <p className="text-xs text-zinc-400 font-bold mt-0.5">{activeProfile.email}</p>
                   </div>
-                )}
-                <div>
-                  <h3 className="text-xl font-black text-zinc-900 tracking-tight flex items-center gap-1.5">
-                    {activeProfile.full_name}
-                    {simulatedRole !== "none" && <span className="bg-amber-100 border border-amber-200 text-amber-800 text-[8px] font-black px-1.5 py-0.5 rounded">SIM</span>}
-                  </h3>
-                  <p className="text-xs text-zinc-400 font-bold mt-0.5">{activeProfile.email}</p>
+                </div>
+
+                <div className="space-y-1.5 pt-6">
+                  <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block">Qualified Skill Teams</label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {activeProfile.ministries.map(m => (
+                      <span key={m} className="px-3 py-1 bg-zinc-50 border font-extrabold text-[11px] text-zinc-600 rounded-full">{m}</span>
+                    ))}
+                    {activeProfile.ministries.length === 0 && <span className="text-xs italic text-zinc-400">No special teams mapped.</span>}
+                  </div>
                 </div>
               </div>
 
-              <div className="space-y-1.5 pt-2">
-                <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block">Qualified Skill Teams</label>
-                <div className="flex flex-wrap gap-1.5">
-                  {activeProfile.ministries.map(m => (
-                    <span key={m} className="px-3 py-1 bg-zinc-50 border font-extrabold text-[11px] text-zinc-600 rounded-full">{m}</span>
-                  ))}
-                  {activeProfile.ministries.length === 0 && <span className="text-xs italic text-zinc-400">No special teams mapped.</span>}
-                </div>
+              {/* ✅ SURGICAL ADDITION: Workspace Indicator (Always visible, dropdown only if multi-campus) */}
+              <div className="space-y-2 pt-4 border-t border-zinc-100 mt-auto">
+                <label className="text-[10px] font-black text-blue-600 uppercase tracking-widest block flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse"></span>
+                  Current Branch
+                </label>
+                
+                {secondaryTeamIds && secondaryTeamIds.length > 0 ? (
+                  <select 
+                    value={userTeamId || ""}
+                    onChange={(e) => switchWorkspace(e.target.value)}
+                    className="w-full bg-blue-50/50 border border-blue-100 rounded-xl px-3 py-2 text-xs font-black text-blue-800 outline-none focus:border-blue-500 cursor-pointer shadow-sm transition-all hover:bg-blue-50"
+                  >
+                    <option value={primaryTeamId || ""}>👑 Primary ({teamNamesMap[primaryTeamId || ""] || "Mother Church"})</option>
+                    {secondaryTeamIds.map(id => (
+                      <option key={id} value={id}>🌐 {teamNamesMap[id] || `Campus: ${id.substring(0, 8)}...`}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2 text-xs font-black text-zinc-500 shadow-sm cursor-not-allowed flex items-center gap-2">
+                    <span className="opacity-75">👑</span> 
+                    <span className="truncate">Primary: ({teamNamesMap[primaryTeamId || ""] || "Mother Church"})</span>
+                  </div>
+                )}
               </div>
             </div>
 

@@ -55,7 +55,7 @@ export default function EventCockpitPage() {
   const router = useRouter();
   const params = useParams();
   const eventId = params?.id as string; 
-  const { simulatedRole } = useEngine();
+  const { activeRole } = useEngine();
 
   const [hasMounted, setHasMounted] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -112,6 +112,7 @@ export default function EventCockpitPage() {
   const [selectedMinute, setSelectedMinute] = useState("00");
   const [selectedPeriod, setSelectedPeriod] = useState("AM");
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
 
   // ==========================================
   // --- DATA PIPELINE INTEGRATION ------------
@@ -259,7 +260,7 @@ export default function EventCockpitPage() {
   }
 
   function handleLocalAddOrMove(userId: string, targetRole: string, sourceRole: string | null = null) {
-    if (simulatedRole !== "admin") return;
+    if (activeRole !== "admin") return;
     if (stagedRoster.some(r => r.user_id === userId && r.role === targetRole)) return; 
     let newRoster = [...stagedRoster];
     if (sourceRole && sourceRole !== targetRole) newRoster = newRoster.filter(r => !(r.user_id === userId && r.role === sourceRole));
@@ -269,10 +270,10 @@ export default function EventCockpitPage() {
   }
   
   function handleDropdownSubmit(e: React.FormEvent) { e.preventDefault(); if (selectedUserId && focusedRole) { handleLocalAddOrMove(selectedUserId, focusedRole); setSelectedUserId(""); setFocusedRole(null); } }
-  function handleOriginalLocalRemove(rowId: string) { if (simulatedRole !== "admin") return; setStagedRoster(prev => prev.filter(r => r.id !== rowId)); setHasChanges(true); }
+  function handleOriginalLocalRemove(rowId: string) { if (activeRole !== "admin") return; setStagedRoster(prev => prev.filter(r => r.id !== rowId)); setHasChanges(true); }
   
   async function saveLineupChanges() { 
-    if (simulatedRole !== "admin") return;
+    if (activeRole !== "admin") return;
     setIsDeploying(true); 
     
     try {
@@ -309,7 +310,7 @@ export default function EventCockpitPage() {
 
       await syncRosterUI(eventId, profiles); 
       setHasChanges(false);
-      alert("🎉 Lineup successfully synchronized and saved to the database!");
+      setShowSuccessModal(true); // Shows the custom modal instead!
     } catch (err: any) {
       alert(`Runtime Exception: ${err.message || err}`);
     } finally {
@@ -357,7 +358,7 @@ export default function EventCockpitPage() {
   }
 
   async function handleAddSongSubmit() {
-    if (simulatedRole !== "admin") return;
+    if (activeRole !== "admin") return;
     if (!selectedNewSongId) return;
     const songToAdd = allDatabaseSongs.find(s => s.id === selectedNewSongId);
     if (!songToAdd) return;
@@ -367,7 +368,7 @@ export default function EventCockpitPage() {
   }
 
   async function saveSetlistChanges() {
-    if (simulatedRole !== "admin") return;
+    if (activeRole !== "admin") return;
     setIsDeploying(true);
     let hasErrors = false;
     const removedIds = setlistSongs.filter(s => !stagedSetlistSongs.some(st => st.id === s.id)).map(r => r.id);
@@ -400,13 +401,13 @@ export default function EventCockpitPage() {
 
   // Drag and drop sequencing
   function handleDragStart(index: number) {
-    if (simulatedRole !== "admin") return;
+    if (activeRole !== "admin") return;
     setDraggedSongIndex(index);
   }
 
   function handleDragOver(e: React.DragEvent, targetIndex: number) {
     e.preventDefault();
-    if (draggedSongIndex === null || draggedSongIndex === targetIndex || simulatedRole !== "admin") return;
+    if (draggedSongIndex === null || draggedSongIndex === targetIndex || activeRole !== "admin") return;
     
     const reorderedSongs = [...stagedSetlistSongs];
     const [removed] = reorderedSongs.splice(draggedSongIndex, 1);
@@ -423,7 +424,7 @@ export default function EventCockpitPage() {
   }
 
   function applyGroupTransformation() {
-    if (selectedForGroup.length === 0 || simulatedRole !== "admin") return;
+    if (selectedForGroup.length === 0 || activeRole !== "admin") return;
     const finalGroupName = customGroupName.trim() || null;
     
     const updatedSongs = stagedSetlistSongs.map(song => {
@@ -480,18 +481,18 @@ export default function EventCockpitPage() {
       const renderTrackRow = (item: SetlistSongItem, globalIndex: number) => (
         <div 
           key={item.id} 
-          draggable={simulatedRole === "admin"}
+          draggable={activeRole === "admin"}
           onDragStart={() => handleDragStart(globalIndex)}
           onDragOver={(e) => handleDragOver(e, globalIndex)}
           onDragEnd={() => setDraggedSongIndex(null)}
           onClick={() => { if (item.songs?.id) router.push(`/songs/${item.songs.id}`); }}
-          className={`flex items-center justify-between rounded-2xl p-4 bg-white border shadow-sm min-h-[72px] transition-all duration-150 ${
+          className={`flex items-center justify-between rounded-2xl p-3 md:p-4 bg-white border shadow-sm min-h-[64px] transition-all duration-150 ${
             draggedSongIndex === globalIndex ? "opacity-40 scale-95 border-blue-400 border-dashed" : "hover:bg-zinc-50/50 cursor-grab active:cursor-grabbing"
           }`}
         >
-          <div className="flex items-center gap-4 flex-1">
-            <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
-              {simulatedRole === "admin" && (
+          <div className="flex items-center gap-3 md:gap-4 flex-1 min-w-0">
+            <div className="flex items-center gap-2 shrink-0" onClick={e => e.stopPropagation()}>
+              {activeRole === "admin" && (
                 <input 
                   type="checkbox" 
                   className="w-4 h-4 rounded border-zinc-300 checked:bg-blue-600 cursor-pointer" 
@@ -499,36 +500,29 @@ export default function EventCockpitPage() {
                   onChange={() => handleToggleCheckboxSelect(item.id)}
                 />
               )}
-              {simulatedRole === "admin" && <div className="text-zinc-300 text-lg font-bold select-none">☰</div>}
+              {activeRole === "admin" && <div className="text-zinc-300 text-lg font-bold select-none cursor-grab px-1">☰</div>}
             </div>
-            <span className="text-[14px] font-bold text-zinc-400 w-6">{item.sequence_order}</span>
-            <div className="w-20 text-[14px] font-extrabold text-zinc-500" onClick={e => e.stopPropagation()}>
-              {simulatedRole === "admin" ? (
-                <button onClick={() => setTimePickerTargetItemId(item.id)} className="text-[12px] font-black text-blue-600 bg-blue-50 px-2 py-1 rounded-md border text-center shadow-inner">{formatTo12Hour(item.start_time)}</button>
-              ) : ( <span className="text-zinc-500 font-bold">{formatTo12Hour(item.start_time)}</span> )}
-            </div>
-            <div className="flex flex-col flex-1 pl-2 select-none">
-              <div className="flex items-center gap-1.5 mb-1">
-                <span className="w-5 h-5 rounded-full bg-zinc-100 text-zinc-500 flex items-center justify-center text-[10px] font-black uppercase tracking-tight">{item.songs?.key_signature || "G"}</span>
-                <span className="bg-zinc-100/80 text-zinc-500 px-2 py-0.5 rounded-full text-[10px] font-black tracking-tight">{item.songs?.tempo || "70"} BPM</span>
+            
+            <div className="flex flex-col flex-1 min-w-0 select-none pl-1 md:pl-2">
+              <div className="flex items-center gap-1.5 mb-1 shrink-0">
+                <span className="w-5 h-5 rounded-full bg-zinc-100 text-zinc-500 flex items-center justify-center text-[9px] md:text-[10px] font-black uppercase tracking-tight">{item.songs?.key_signature || "G"}</span>
+                <span className="bg-zinc-100/80 text-zinc-500 px-2 py-0.5 rounded-full text-[9px] md:text-[10px] font-black tracking-tight whitespace-nowrap">{item.songs?.tempo || "70"} BPM</span>
               </div>
-              <h4 className="font-bold text-[16px] text-zinc-900 leading-none">{item.songs?.title}</h4>
+              <h4 className="font-bold text-[15px] md:text-[16px] text-zinc-900 leading-tight truncate">{item.songs?.title}</h4>
             </div>
           </div>
-          <div className="ml-4 flex items-center" onClick={e => e.stopPropagation()}>
-            {simulatedRole === "admin" && (
-              <button onClick={() => setStagedSetlistSongs(prev => prev.filter(s => s.id !== item.id)) } className="w-8 h-8 rounded-full bg-red-50 text-red-500 hover:bg-red-100 flex items-center justify-center">✕</button>
+          
+          <div className="ml-3 flex items-center shrink-0" onClick={e => e.stopPropagation()}>
+            {activeRole === "admin" && (
+              <button onClick={() => setStagedSetlistSongs(prev => prev.filter(s => s.id !== item.id)) } className="w-8 h-8 rounded-full bg-red-50 text-red-500 hover:bg-red-100 flex items-center justify-center transition-colors">✕</button>
             )}
           </div>
         </div>
       );
 
       if (parentBlock.parentGroup) {
-        // 🔴 SURGICAL ADDITION: Add this exact palette lookup line right here
-        const parentPalette = COLOR_PALETTES.find((c: any) => c.id === parentBlock.parentColor) || COLOR_PALETTES[0];
-
         return (
-          <div key={`parent-${pIdx}`} className={`border-2 ${parentPalette.border} ${parentPalette.bg} rounded-3xl p-5 space-y-4 mb-4 shadow-sm`}>
+          <div key={`parent-${pIdx}`} className={`border-2 border-zinc-200 bg-zinc-50/40 rounded-3xl p-5 space-y-4 mb-4 shadow-sm`}>
             <h4 className="text-[17px] font-extrabold text-zinc-900 px-1">{parentBlock.parentGroup}</h4>
             <div className="space-y-4">{parentBlock.groups.map((group: any, gIdx: number) => renderGroupBlock(group, gIdx))}</div>
           </div>
@@ -544,65 +538,53 @@ export default function EventCockpitPage() {
   if (loading) return <div className="p-12 text-center text-xs font-bold animate-pulse">Loading Cockpit Content...</div>;
 
   return (
-    <div className="p-4 md:p-8 max-w-7xl w-full mx-auto space-y-4 md:space-y-6 animate-in fade-in duration-200">
+    <div className="p-6 md:p-8 w-full max-w-7xl mx-auto space-y-6 animate-in fade-in duration-200">
       
-      {/* HERO BANNER FRAME */}
-      <div className="bg-[#2b6eff] text-white p-6 md:p-8 rounded-xl md:rounded-3xl shadow-sm relative overflow-hidden shrink-0">
-        <button onClick={() => router.push("/events")} className="text-xs font-bold text-blue-100 mb-2 hover:underline block">‹ Back to Events List</button>
-        <div className="flex flex-wrap items-center gap-2 select-none">
-          {/* DYNAMIC DATE CHECK: Verifies if the workspace date is current or historical */}
-    {(() => {
-      const todayStr = new Date().toISOString().split("T")[0]; // e.g., "2026-06-16"
-      const eventDateStr = activeEvent?.event_date ? activeEvent.event_date.split("T")[0] : "";
-      const isCurrentOrFuture = eventDateStr >= todayStr;
-
-      return isCurrentOrFuture ? (
-        <span className="bg-white/20 text-white font-black text-[9px] uppercase tracking-widest px-3 py-1 rounded-full backdrop-blur-md animate-in fade-in">
-          Active Plan Workspace
-        </span>
-      ) : (
-        <span className="bg-zinc-950/40 text-zinc-300 border border-zinc-700/30 font-black text-[9px] uppercase tracking-widest px-3 py-1 rounded-full backdrop-blur-md opacity-75">
-          Archived Plan Workspace
-        </span>
-      );
-    })()}
-
-    {activeEvent?.service_type && (
-      <span className="bg-zinc-950/40 text-blue-100 border border-blue-400/20 font-black text-[9px] uppercase tracking-widest px-3 py-1 rounded-full backdrop-blur-md">⚡ {activeEvent.service_type}</span>
-    )}
+      {/* 🔴 RESPONSIVE FLEX LAYOUT HERO BANNER 🔴 */}
+      <div className="bg-[#2b6eff] text-white p-4 md:p-8 rounded-2xl shadow-sm overflow-hidden shrink-0">
+        <div className="flex justify-between items-start gap-2">
+          <div className="space-y-3">
+            <button onClick={() => router.push("/events")} className="text-xs font-bold text-blue-100 hover:underline block">‹ Back to Events List</button>
+            <div className="flex flex-wrap items-center gap-2 select-none">
+              <span className="bg-white/20 text-white font-black text-[9px] uppercase tracking-widest px-3 py-1 rounded-full backdrop-blur-md">Active Plan Workspace</span>
+              {activeEvent?.service_type && (
+                <span className="bg-zinc-950/40 text-blue-100 border border-blue-400/20 font-black text-[9px] uppercase tracking-widest px-3 py-1 rounded-full backdrop-blur-md">⚡ {activeEvent.service_type}</span>
+              )}
+            </div>
+          </div>
+          
+          {activeRole === "admin" && (
+            <button 
+              onClick={handleOpenEditEventModal}
+              className="px-3 md:px-4 py-2 bg-white/10 border border-white/20 hover:bg-white/20 text-white font-black text-xs rounded-xl shadow-md backdrop-blur-md transition-all active:scale-95 uppercase tracking-wider flex items-center gap-2 shrink-0"
+            >
+              <span>✏️</span> <span className="hidden sm:inline">Edit Event</span>
+            </button>
+          )}
         </div>
-        <h1 className="text-2xl md:text-4xl font-black tracking-tight mt-4 pr-32">{activeEvent?.title || "June Week#3 2026"}</h1>
-        
-        {simulatedRole === "admin" && (
-          <button 
-            onClick={handleOpenEditEventModal}
-            className="absolute top-6 md:top-8 right-6 md:right-8 px-3 md:px-4 py-2 bg-white/10 border border-white/20 hover:bg-white/20 text-white font-black text-xs rounded-xl shadow-md backdrop-blur-md transition-all active:scale-95 uppercase tracking-wider"
-          >
-            ✏️ Edit Event
-          </button>
-        )}
+        <h1 className="text-3xl md:text-4xl font-black tracking-tight mt-4 leading-tight">{activeEvent?.title || "June Week#3 2026"}</h1>
       </div>
 
       {/* VIEW PANEL SELECTION TABS */}
-      <div className="bg-white p-2 rounded-xl md:rounded-2xl border grid grid-cols-3 gap-2 md:gap-3 text-center text-[10px] md:text-xs font-black uppercase tracking-wider shadow-sm">
-        <button onClick={() => setViewSubScreen("matrix")} className={`py-3 md:py-3.5 rounded-xl border flex items-center justify-center gap-1.5 md:gap-2 transition-all ${viewSubScreen === "matrix" ? "bg-zinc-100 text-zinc-950 border-zinc-300 font-black shadow-inner" : "bg-white text-zinc-400 border-transparent"}`}>
-          <img src="/assets/participants.svg" className="w-3.5 h-3.5 md:w-4 md:h-4 object-contain" alt="" />
-          Positions Lineup
+      <div className="bg-white p-1 rounded-2xl border grid grid-cols-3 gap-1 text-center text-xs font-black uppercase tracking-wider shadow-sm">
+        <button onClick={() => setViewSubScreen("matrix")} className={`py-3.5 rounded-xl border flex items-center justify-center gap-2 transition-all ${viewSubScreen === "matrix" ? "bg-zinc-100 text-zinc-950 border-zinc-300 font-black shadow-inner" : "bg-white text-zinc-400 border-transparent"}`}>
+          <img src="/assets/participants.svg" className="w-4 h-4 object-contain" alt="" />
+          Positions
         </button>
-        <button onClick={() => setViewSubScreen("setlists_list")} className={`py-3 md:py-3.5 rounded-xl border flex items-center justify-center gap-1.5 md:gap-2 transition-all ${viewSubScreen === "setlists_list" ? "bg-zinc-100 text-zinc-950 border-zinc-300 font-black shadow-inner" : "bg-white text-zinc-400 border-transparent"}`}>
-          <img src="/assets/setlist.svg" className="w-3.5 h-3.5 md:w-4 md:h-4 object-contain" alt="" />
-          Choose Setlist
+        <button onClick={() => setViewSubScreen("setlists_list")} className={`py-3.5 rounded-xl border flex items-center justify-center gap-2 transition-all ${viewSubScreen === "setlists_list" ? "bg-zinc-100 text-zinc-950 border-zinc-300 font-black shadow-inner" : "bg-white text-zinc-400 border-transparent"}`}>
+          <img src="/assets/setlist.svg" className="w-4 h-4 object-contain" alt="" />
+          Setlist
         </button>
-        <button onClick={() => setViewSubScreen("songs_view")} className={`py-3 md:py-3.5 rounded-xl border flex items-center justify-center gap-1.5 md:gap-2 transition-all ${viewSubScreen === "songs_view" ? "bg-zinc-100 text-zinc-950 border-zinc-300 font-black shadow-inner" : "bg-white text-zinc-400 border-transparent"}`} disabled={!selectedSetlistId}>
-          <img src="/assets/music.svg" className="w-3.5 h-3.5 md:w-4 md:h-4 object-contain" alt="" />
-          See Tracks ({stagedSetlistSongs.length})
+        <button onClick={() => setViewSubScreen("songs_view")} className={`py-3.5 rounded-xl border flex items-center justify-center gap-2 transition-all ${viewSubScreen === "songs_view" ? "bg-zinc-100 text-zinc-950 border-zinc-300 font-black shadow-inner" : "bg-white text-zinc-400 border-transparent"}`} disabled={!selectedSetlistId}>
+          <img src="/assets/music.svg" className="w-4 h-4 object-contain" alt="" />
+          Tracks ({stagedSetlistSongs.length})
         </button>
       </div>
 
       {/* FIXED POSITION BAR: Persistent Inserter Engine */}
-      {viewSubScreen === "songs_view" && simulatedRole === "admin" && (
-        <div className="bg-white p-4 md:p-6 rounded-xl md:rounded-3xl border shadow-sm space-y-3 animate-in slide-in-from-top duration-200">
-          <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block">Choose Database Song Node</label>
+      {viewSubScreen === "songs_view" && activeRole === "admin" && (
+        <div className="bg-white p-3 rounded-2xl border shadow-sm space-y-3 animate-in slide-in-from-top duration-200">
+          <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block">Song Database</label>
           <div className="flex gap-3 relative overflow-visible">
             <div className="relative flex-1 overflow-visible">
               <input 
@@ -621,15 +603,15 @@ export default function EventCockpitPage() {
                 </div>
               )}
             </div>
-            <button type="button" onClick={handleAddSongSubmit} disabled={!selectedNewSongId} className="bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white font-black text-xs px-5 md:px-8 rounded-2xl uppercase tracking-widest transition-all shadow-md">Add to Setlist</button>
+            <button type="button" onClick={handleAddSongSubmit} disabled={!selectedNewSongId} className="bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white font-black text-xs px-8 rounded-2xl uppercase tracking-widest transition-all shadow-md">Add to Setlist</button>
           </div>
         </div>
       )}
 
       {/* VIEW SCENARIOS RENDERING NODES */}
       {viewSubScreen === "matrix" && (
-        <div className="space-y-4 md:space-y-6">
-          <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 gap-3 md:gap-6 content-start">
+        <div className="space-y-6">
+          <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 gap-3 content-start">
             {GRID_CARDS.map((cardRole) => {
               const list = stagedRoster.filter(m => m.role === cardRole);
               const active = focusedRole === cardRole;
@@ -640,34 +622,34 @@ export default function EventCockpitPage() {
               );
 
               return (
-                <div key={cardRole} className="bg-white p-3.5 md:p-6 rounded-2xl md:rounded-[2rem] border shadow-sm flex flex-col justify-between min-h-[140px] md:min-h-[170px] hover:border-zinc-300 transition-all">
+                <div key={cardRole} className="bg-white p-3 rounded-[1rem] border shadow-sm flex flex-col justify-between min-h-[170px] hover:border-zinc-300 transition-all">
                   <div className="flex items-start justify-between relative">
-                    <div className="min-w-0 flex-1">
-                      <h5 className="font-extrabold text-sm md:text-base text-zinc-900 tracking-tight truncate">{cardRole}</h5>
-                      <p className="text-[10px] md:text-[11px] font-bold text-zinc-400 mt-0.5">{list.length} Assigned</p>
+                    <div>
+                      <h5 className="font-extrabold text-base text-zinc-900 tracking-tight">{cardRole}</h5>
+                      <p className="text-[11px] font-bold text-zinc-400 mt-0.5">{list.length} Assigned</p>
                     </div>
-                    {simulatedRole === "admin" && ( 
-                      <button type="button" onClick={() => setFocusedRole(active ? null : cardRole)} className="w-6 h-6 md:w-7 md:h-7 rounded-full flex items-center justify-center text-xs md:text-sm font-bold border hover:bg-zinc-50 shrink-0 ml-1">＋</button> 
+                    {activeRole === "admin" && ( 
+                      <button type="button" onClick={() => setFocusedRole(active ? null : cardRole)} className="w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold border hover:bg-zinc-50">＋</button> 
                     )}
                   </div>
-                  <div className="flex-1 mt-3 md:mt-4">
-                    {active && simulatedRole === "admin" ? (
+                  <div className="flex-1 mt-4">
+                    {active && activeRole === "admin" ? (
                       <form onSubmit={handleDropdownSubmit} className="space-y-2">
-                        <select required value={selectedUserId} onChange={(e) => setSelectedUserId(e.target.value)} className="w-full bg-zinc-50 border rounded-xl px-2 py-1.5 text-[11px] font-bold outline-none cursor-pointer">
-                          <option value="">-- Assign --</option>
+                        <select required value={selectedUserId} onChange={(e) => setSelectedUserId(e.target.value)} className="w-full bg-zinc-50 border rounded-xl px-3 py-2 text-xs font-bold outline-none cursor-pointer">
+                          <option value="">-- Assign Member --</option>
                           {eligible.map(p => <option key={p.id} value={p.id}>{p.full_name || "Unknown Volunteer"}</option>)}
                         </select>
-                        <button type="submit" className="w-full bg-zinc-950 text-white font-black text-[9px] md:text-[10px] py-2 rounded-xl uppercase tracking-wider">Commit</button>
+                        <button type="submit" className="w-full bg-zinc-950 text-white font-black text-[10px] py-2.5 rounded-xl uppercase tracking-wider">Commit Assignment</button>
                       </form>
                     ) : (
-                      <div className="space-y-1.5 md:space-y-2">
+                      <div className="space-y-2">
                         {list.map(m => (
-                          <div key={m.id} className="flex items-center justify-between group p-1 md:p-1.5 rounded-xl hover:bg-zinc-50/50">
-                            <div className="flex items-center gap-2 min-w-0">
-                              {m.profiles?.avatar_url ? <img src={m.profiles.avatar_url} alt="" className="w-6 h-6 md:w-7 md:h-7 rounded-full object-cover border shrink-0" /> : <div className="w-6 h-6 md:w-7 md:h-7 rounded-full bg-blue-600 text-white text-[10px] md:text-xs font-black flex items-center justify-center shrink-0">{m.profiles?.full_name?.charAt(0) || "U"}</div>}
-                              <span className="text-xs md:text-[14px] font-bold text-zinc-800 tracking-tight truncate">{m.profiles?.full_name || "Active Hand"}</span>
+                          <div key={m.id} className="flex items-center justify-between group p-1.5 rounded-xl hover:bg-zinc-50/50">
+                            <div className="flex items-center gap-2.5">
+                              {m.profiles?.avatar_url ? <img src={m.profiles.avatar_url} alt="" className="w-7 h-7 rounded-full object-cover border" /> : <div className="w-7 h-7 rounded-full bg-blue-600 text-white text-xs font-black flex items-center justify-center">{m.profiles?.full_name?.charAt(0) || "U"}</div>}
+                              <span className="text-[14px] font-bold text-zinc-800 tracking-tight">{m.profiles?.full_name || "Active Row Hand"}</span>
                             </div>
-                            {simulatedRole === "admin" && ( <button type="button" onClick={() => handleOriginalLocalRemove(m.id)} className="text-[10px] text-zinc-400 hover:text-red-500 opacity-0 group-hover:opacity-100 p-1 shrink-0">✕</button> )}
+                            {activeRole === "admin" && ( <button type="button" onClick={() => handleOriginalLocalRemove(m.id)} className="text-[10px] text-zinc-400 hover:text-red-500 opacity-0 group-hover:opacity-100 p-1">✕</button> )}
                           </div>
                         ))}
                       </div>
@@ -679,15 +661,15 @@ export default function EventCockpitPage() {
           </div>
 
           {/* POOLS GRIDS PANEL LAYOUTS */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6 pt-2">
-            <div className="bg-white border p-4 md:p-6 rounded-2xl md:rounded-[2rem] shadow-sm flex flex-col justify-between min-h-[140px] md:min-h-[160px]">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
+            <div className="bg-white border p-6 rounded-[1rem] shadow-sm flex flex-col justify-between min-h-[160px]">
               <div>
-                <h5 className="font-black text-emerald-700 text-xs md:text-sm flex items-center gap-1.5 uppercase tracking-wider">Available Matrix <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span></h5>
-                <p className="text-[10px] md:text-[11px] font-bold text-zinc-400 mt-0.5">{availablePool.length}/{profiles.length} Volunteers Ready to Serve</p>
+                <h5 className="font-black text-emerald-700 text-sm flex items-center gap-1.5 uppercase tracking-wider">Available Matrix <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span></h5>
+                <p className="text-[11px] font-bold text-zinc-400 mt-0.5">{availablePool.length}/{profiles.length} Volunteers Ready to Serve</p>
               </div>
-              <div className="mt-3 md:mt-4 flex -space-x-2 overflow-hidden pt-3 md:pt-4 border-t border-zinc-100">
+              <div className="mt-4 flex -space-x-2 overflow-hidden pt-4 border-t border-zinc-100">
                 {availablePool.map((p) => (
-                  <div key={p.id} className="inline-flex w-8 h-8 md:w-10 md:h-10 rounded-full ring-4 ring-white relative items-center justify-center bg-blue-600 text-white font-bold text-xs shadow-sm" title={p.full_name || "Active Hand"}>
+                  <div key={p.id} className="inline-flex w-10 h-10 rounded-full ring-4 ring-white relative items-center justify-center bg-blue-600 text-white font-bold text-xs shadow-sm" title={p.full_name || "Active Hand"}>
                     {p.avatar_url ? <img src={p.avatar_url} alt="" className="w-full h-full rounded-full object-cover" /> : <span>{p.full_name?.charAt(0) || "U"}</span>}
                   </div>
                 ))}
@@ -695,14 +677,14 @@ export default function EventCockpitPage() {
               </div>
             </div>
 
-            <div className="bg-white border p-4 md:p-6 rounded-2xl md:rounded-[2rem] shadow-sm flex flex-col justify-between min-h-[140px] md:min-h-[160px]">
+            <div className="bg-white border p-6 rounded-[2rem] shadow-sm flex flex-col justify-between min-h-[160px]">
               <div>
-                <h5 className="font-black text-red-600 text-xs md:text-sm flex items-center gap-1.5 uppercase tracking-wider">Unavailable Blockouts <span className="w-2 h-2 rounded-full bg-red-500"></span></h5>
-                <p className="text-[10px] md:text-[11px] font-bold text-zinc-400 mt-0.5">{unavailablePool.length} Row Node Flags Accounted For</p>
+                <h5 className="font-black text-red-600 text-sm flex items-center gap-1.5 uppercase tracking-wider">Unavailable Blockouts <span className="w-2 h-2 rounded-full bg-red-500"></span></h5>
+                <p className="text-[11px] font-bold text-zinc-400 mt-0.5">{unavailablePool.length} Row Node Flags Accounted For</p>
               </div>
-              <div className="mt-3 md:mt-4 flex -space-x-2 overflow-hidden pt-3 md:pt-4 border-t border-zinc-100">
+              <div className="mt-4 flex -space-x-2 overflow-hidden pt-4 border-t border-zinc-100">
                 {unavailablePool.map((p) => (
-                  <div key={p.id} className="inline-flex w-8 h-8 md:w-10 md:h-10 rounded-full ring-4 ring-white relative items-center justify-center bg-zinc-200 border text-zinc-600 font-bold text-xs shadow-sm" title={`${p.full_name || "User"} (Blocked Out)`}>
+                  <div key={p.id} className="inline-flex w-10 h-10 rounded-full ring-4 ring-white relative items-center justify-center bg-zinc-200 border text-zinc-600 font-bold text-xs shadow-sm" title={`${p.full_name || "User"} (Blocked Out)`}>
                     {p.avatar_url ? <img src={p.avatar_url} alt="" className="w-full h-full rounded-full object-cover grayscale opacity-60" /> : <span>{p.full_name?.charAt(0) || "🚫"}</span>}
                   </div>
                 ))}
@@ -711,35 +693,36 @@ export default function EventCockpitPage() {
             </div>
           </div>
 
-          <div className={`fixed bottom-6 left-6 md:left-32 right-6 bg-zinc-950 text-white border p-4 md:p-5 px-6 flex items-center justify-between rounded-2xl shadow-2xl transition-all duration-300 z-50 ${hasChanges && simulatedRole === "admin" ? 'translate-y-0 opacity-100' : 'translate-y-16 opacity-0 pointer-events-none'}`}>
-            <p className="text-xs md:text-sm font-extrabold">Unsaved Lineup changes staged locally</p>
-            <div className="flex items-center gap-2 md:gap-3">
-              <button type="button" onClick={() => { setStagedRoster(roster); setHasChanges(false); }} className="px-3 py-1.5 text-xs font-bold text-zinc-400 hover:text-white">Discard</button>
-              <button type="button" onClick={saveLineupChanges} disabled={isDeploying} className="px-4 py-2 text-xs font-black text-white bg-blue-600 hover:bg-blue-700 rounded-xl shadow-md">{isDeploying ? 'Deploying...' : 'Save Lineup'}</button>
+          {/* MOBILE RESPONSIVE CONFIRMATION POPUP */}
+          <div className={`fixed bottom-24 md:bottom-8 left-4 right-4 md:left-32 md:right-8 bg-zinc-950 text-white border border-zinc-800 p-4 md:p-5 flex flex-col md:flex-row items-center justify-between gap-4 md:gap-0 rounded-2xl shadow-2xl transition-all duration-300 z-[10000] ${hasChanges && activeRole === "admin" ? 'translate-y-0 opacity-100' : 'translate-y-16 opacity-0 pointer-events-none'}`}>
+            <p className="text-sm font-extrabold text-center md:text-left">Unsaved Lineup changes staged locally</p>
+            <div className="flex items-center gap-2 md:gap-3 w-full md:w-auto">
+              <button type="button" onClick={() => { setStagedRoster(roster); setHasChanges(false); }} className="flex-1 md:flex-none px-4 py-2.5 text-xs font-bold text-zinc-400 hover:text-white bg-zinc-900 md:bg-transparent rounded-xl md:rounded-none transition-colors">Discard</button>
+              <button type="button" onClick={saveLineupChanges} disabled={isDeploying} className="flex-[2] md:flex-none px-5 py-2.5 text-xs font-black text-white bg-blue-600 hover:bg-blue-700 rounded-xl shadow-md transition-all active:scale-95">{isDeploying ? 'Deploying...' : 'Save Lineup'}</button>
             </div>
           </div>
         </div>
       )}
 
       {viewSubScreen === "setlists_list" && (
-        <div className="bg-white p-4 md:p-6 rounded-xl md:rounded-3xl border shadow-sm space-y-4 md:space-y-6">
+        <div className="bg-white p-3 rounded-[1rem] border shadow-sm space-y-6">
           <div className="flex justify-between items-center border-b pb-3">
-            <h4 className="text-[10px] md:text-xs font-black text-zinc-400 uppercase tracking-wider">Setlists Registered under this operational frame</h4>
+            <h4 className="text-xs font-black text-zinc-400 uppercase tracking-wider">Setlists Registered under this operational frame</h4>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 md:gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {eventSetlists.map((sl) => {
               const isTarget = selectedSetlistId === sl.id;
               return (
-                <div key={sl.id} onClick={async () => { setSelectedSetlistId(sl.id); await fetchLiveSetlistTracks(sl.id); setViewSubScreen("songs_view"); }} className={`p-4 md:p-6 rounded-2xl md:rounded-[1.75rem] border-2 transition-all cursor-pointer flex flex-col justify-between min-h-[110px] md:min-h-[120px] group ${isTarget ? "border-blue-600 bg-blue-50/20 shadow-md" : "border-zinc-100 bg-zinc-50/40 hover:border-zinc-300 shadow-sm"}`}>
-                  <h5 className="font-extrabold text-base md:text-lg text-zinc-900 tracking-tight leading-tight group-hover:text-blue-600 transition-colors">{sl.name}</h5>
+                <div key={sl.id} onClick={async () => { setSelectedSetlistId(sl.id); await fetchLiveSetlistTracks(sl.id); setViewSubScreen("songs_view"); }} className={`p-3 rounded-[1rem] border-2 transition-all cursor-pointer flex flex-col justify-between min-h-[120px] group ${isTarget ? "border-blue-600 bg-blue-50/20 shadow-md" : "border-zinc-100 bg-zinc-50/40 hover:border-zinc-300 shadow-sm"}`}>
+                  <h5 className="font-extrabold text-lg text-zinc-900 tracking-tight leading-tight group-hover:text-blue-600 transition-colors">{sl.name}</h5>
                   <span className="text-xs font-black text-blue-600 self-end">View Tracks Array ›</span>
                 </div>
               );
             })}
-            {simulatedRole === "admin" && (
+            {activeRole === "admin" && (
               <div 
                 onClick={() => setIsCreateSetlistOpen(true)}
-                className="p-4 md:p-6 rounded-2xl md:rounded-[1.75rem] border-2 border-dashed border-zinc-200 hover:border-blue-500 hover:bg-blue-50/10 text-blue-600 font-extrabold text-xs uppercase tracking-widest flex items-center justify-center min-h-[110px] md:min-h-[120px] transition-all cursor-pointer shadow-sm select-none"
+                className="p-3 rounded-[1rem] border-2 border-dashed border-zinc-200 hover:border-blue-500 hover:bg-blue-50/10 text-blue-600 font-extrabold text-xs uppercase tracking-widest flex items-center justify-center min-h-[120px] transition-all cursor-pointer shadow-sm select-none"
               >
                 ＋ Add Setlist Block
               </div>
@@ -751,50 +734,50 @@ export default function EventCockpitPage() {
       {viewSubScreen === "songs_view" && (
         <div className="space-y-4">
           
-          {selectedForGroup.length > 0 && simulatedRole === "admin" && (
-            <div className="bg-zinc-900 text-white p-4 md:p-5 rounded-xl md:rounded-3xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 border shadow-2xl animate-in zoom-in-95 duration-150">
+          {selectedForGroup.length > 0 && activeRole === "admin" && (
+            <div className="bg-zinc-900 text-white p-5 rounded-3xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 border shadow-2xl animate-in zoom-in-95 duration-150">
               <div className="space-y-1">
                 <h5 className="text-xs font-black uppercase tracking-widest text-zinc-400">Section Grouping Controller</h5>
-                <p className="text-xs md:text-sm font-bold text-white">{selectedForGroup.length} song segments checked across staging view matrix.</p>
+                <p className="text-sm font-bold text-white">{selectedForGroup.length} song segments checked across staging view matrix.</p>
               </div>
               <div className="flex flex-wrap items-center gap-3">
                 <input 
                   type="text" 
-                  placeholder="e.g., Fast Praise Set, Worship Block..." 
+                  placeholder="e.g., Fast Praise Praise Set, Worship Block..." 
                   value={customGroupName}
                   onChange={e => setCustomGroupName(e.target.value)}
-                  className="bg-zinc-800 border border-zinc-700 rounded-xl px-3.5 py-2 text-xs text-white placeholder-zinc-500 font-bold outline-none focus:border-blue-500"
+                  className="bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-2.5 text-xs text-white placeholder-zinc-500 font-bold outline-none focus:border-blue-500"
                 />
                 <select 
                   value={selectedGroupColor} 
                   onChange={e => setSelectedGroupColor(e.target.value)}
-                  className="bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2 text-xs font-bold text-white outline-none"
+                  className="bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-2.5 text-xs font-bold text-white outline-none"
                 >
                   {COLOR_PALETTES.map(p => <option key={p.id} value={p.id}>{p.id.toUpperCase()}</option>)}
                 </select>
-                <button type="button" onClick={applyGroupTransformation} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-black text-xs rounded-xl shadow-md uppercase tracking-wider">Bundle Group</button>
+                <button type="button" onClick={applyGroupTransformation} className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-black text-xs rounded-xl shadow-md uppercase tracking-wider">Bundle Group</button>
               </div>
             </div>
           )}
 
-          <div className="bg-white border rounded-xl md:rounded-3xl shadow-sm overflow-hidden flex flex-col">
-            <div className="px-4 md:px-6 py-3.5 md:py-4 flex items-center justify-between border-b bg-white z-20 relative">
+          <div className="bg-white border rounded-[1rem] shadow-sm overflow-hidden flex flex-col">
+            <div className="px-3 py-3 flex items-center justify-between border-b bg-white z-20 relative">
               <div className="space-y-0.5">
-                <h3 className="font-extrabold text-zinc-950 text-base md:text-lg tracking-tight">{eventSetlists.find(s => s.id === selectedSetlistId)?.name}</h3>
-                <p className="text-[11px] md:text-xs font-semibold text-zinc-400">Drag handle corridors or skills lists to modify execution structures.</p>
+                <h3 className="font-extrabold text-zinc-950 text-lg tracking-tight">{eventSetlists.find(s => s.id === selectedSetlistId)?.name}</h3>
+                <p className="text-xs font-semibold text-zinc-400">Drag handle corridors or skills lists to modify execution structures.</p>
               </div>
-              <button type="button" onClick={handleStartRehearsal} disabled={stagedSetlistSongs.length === 0} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 font-black text-white text-xs uppercase tracking-widest shadow-md rounded-xl disabled:opacity-40">🚀 Start Rehearsal</button>
+              <button type="button" onClick={handleStartRehearsal} disabled={stagedSetlistSongs.length === 0} className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 font-black text-white text-xs uppercase tracking-widest shadow-md rounded-xl disabled:opacity-40">🚀 Start Rehearsal</button>
             </div>
             
-            <div className="p-4 md:p-6 bg-zinc-50/50 space-y-3 md:space-y-4 max-h-[50vh] overflow-y-auto custom-scrollbar">
+            <div className="p-6 bg-zinc-50/50 space-y-4 max-h-[50vh] overflow-y-auto custom-scrollbar">
               {parentBlockRowsRenderer(treeBlocks, isEditingSetlist)}
             </div>
 
-            <div className={`bg-white border-t p-4 px-6 flex items-center justify-between transition-all duration-300 ${hasSetlistChanges && simulatedRole === "admin" ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none'}`}>
+            <div className={`bg-white border-t p-4 px-6 flex items-center justify-between transition-all duration-300 ${hasSetlistChanges && activeRole === "admin" ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none'}`}>
               <p className="text-xs font-bold text-zinc-500">Setlist track variations changes staged</p>
               <div className="flex items-center gap-2">
-                <button type="button" onClick={() => { fetchLiveSetlistTracks(selectedSetlistId); setHasSetlistChanges(false); setSelectedForGroup([]); }} className="px-3 py-1.5 text-xs font-bold text-zinc-400">Discard</button>
-                <button type="button" onClick={saveSetlistChanges} disabled={isDeploying} className="px-4 py-2 text-xs font-black text-white bg-blue-600 rounded-xl shadow-md">Save Layout</button>
+                <button type="button" onClick={() => { fetchLiveSetlistTracks(selectedSetlistId); setHasSetlistChanges(false); setSelectedForGroup([]); }} className="px-4 py-2 text-xs font-bold text-zinc-400">Discard</button>
+                <button type="button" onClick={saveSetlistChanges} disabled={isDeploying} className="px-5 py-2 text-xs font-black text-white bg-blue-600 rounded-xl shadow-md">Save Layout</button>
               </div>
             </div>
           </div>
@@ -867,6 +850,27 @@ export default function EventCockpitPage() {
               <button type="button" onClick={() => setIsTimePickerOpen(false)} className="flex-1 py-2 bg-zinc-100 rounded-xl text-xs font-bold text-zinc-500">Cancel</button>
               <button type="button" onClick={handleSaveTimeSelection} className="flex-1 py-2 bg-blue-600 rounded-xl text-xs font-black text-white">Apply</button>
             </div>
+          </div>
+        </div>
+      )}
+      {/* SUCCESS CONFIRMATION MODAL */}
+      {showSuccessModal && (
+        <div className="fixed inset-0 bg-zinc-950/60 backdrop-blur-sm z-[150000] flex items-center justify-center p-4">
+          <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-sm p-6 text-center space-y-4 animate-in zoom-in-95 duration-150">
+            <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto text-2xl shadow-inner border border-emerald-200">
+              🎉
+            </div>
+            <div>
+              <h3 className="text-xl font-black text-zinc-900 tracking-tight">Success!</h3>
+              <p className="text-[13px] font-bold text-zinc-500 mt-1.5">Lineup successfully synchronized and saved to the database.</p>
+            </div>
+            <button 
+              type="button" 
+              onClick={() => setShowSuccessModal(false)} 
+              className="w-full bg-zinc-950 hover:bg-zinc-800 text-white font-black py-3.5 rounded-xl text-xs uppercase tracking-widest shadow-md transition-all active:scale-95 mt-4"
+            >
+              Continue
+            </button>
           </div>
         </div>
       )}

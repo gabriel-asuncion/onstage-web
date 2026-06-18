@@ -240,7 +240,7 @@ export default function SongsListPage() {
     {/* 2. SCROLLING GRID CONTENT                 */}
     {/* ========================================= */}
     <main className="flex-1 overflow-y-auto p-4 md:p-8 custom-scrollbar pb-24 w-full">
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5 content-start w-full">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 content-start w-full">
         {filteredSongs.map(song => {
           const isBookmarked = bookmarkedSongIds.includes(song.id);
           return (
@@ -294,15 +294,6 @@ export default function SongsListPage() {
         )}
       </div>
     </main>
-
-    {/* FLOATING ACTION SERVICE DOCK ANCHOR BUTTON */}
-    <div className="fixed bottom-6 right-6 z-[999]">
-      <button className="w-12 h-12 rounded-full bg-[#1e293b] text-white flex items-center justify-center shadow-lg hover:bg-slate-800 transition-transform active:scale-95 cursor-pointer">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M11.42 15.17L17.25 21A2.652 2.652 0 0021 17.25l-5.83-5.83m0 0a8.974 8.974 0 01-5.32 5.32m5.32-5.32a9.015 9.015 0 00-5.32-5.32m0 0l-5.83-5.83A2.652 2.652 0 102.25 6.75l5.83 5.83m0 0a8.974 8.974 0 015.32-5.32m-5.32 5.32a9.015 9.015 0 005.32 5.32m0 0l5.83 5.83A2.652 2.652 0 0021 11.42l-5.83-5.83" />
-        </svg>
-      </button>
-    </div>
 
   </div>
 );
