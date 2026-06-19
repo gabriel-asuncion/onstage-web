@@ -55,12 +55,13 @@ export default function DynamicCockpitPage() {
   const router = useRouter();
   const params = useParams();
   const sessionId = params?.id as string; 
-  const { simulatedRole } = useEngine();
+  const { activeRole, userTeamId } = useEngine();
 
   const [hasMounted, setHasMounted] = useState(false);
   const [loading, setLoading] = useState(true);
   
   const [profiles, setProfiles] = useState<DBProfile[]>([]);
+  const [team, setTeam] = useState<any>(null);
   
   const [roster, setRoster] = useState<MemberRow[]>([]);
   const [stagedRoster, setStagedRoster] = useState<MemberRow[]>([]);
@@ -83,6 +84,11 @@ export default function DynamicCockpitPage() {
   const [isSongDropdownOpen, setIsSongDropdownOpen] = useState(false);
   const [songSearchQuery, setSongSearchQuery] = useState("");
 
+  const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
+  // ✅ SURGICAL FIX: Added missing states for the Assign Modal
+  const [assignTargetItemId, setAssignTargetItemId] = useState<string | null>(null);
+  const [stagedAssignedUserIds, setStagedAssignedUserIds] = useState<string[]>([]);
+
   const [focusedRole, setFocusedRole] = useState<string | null>(null);
   const [selectedUserId, setSelectedUserId] = useState("");
   const [isDeploying, setIsDeploying] = useState(false);
@@ -97,13 +103,24 @@ export default function DynamicCockpitPage() {
   const [selectedPeriod, setSelectedPeriod] = useState("AM");
   const [previewModal, setPreviewModal] = useState<{isOpen: boolean, song: any, lyrics: any[]}>({isOpen: false, song: null, lyrics: [] });
 
-  async function syncRosterUI(currentTeamId: string, allProfilesData: DBProfile[]) {
-    const { data: rawRoster, error } = await supabase.from("team_members").select("id, role, user_id");
+  // ✅ SURGICAL FIX: We need the eventId to know which roster to pull!
+  async function syncRosterUI(eventId: string, currentTeamId: string, allProfilesData: DBProfile[]) {
+    
+    // 1. Lock the query down to THIS specific event ONLY!
+    const { data: rawRoster, error } = await supabase
+      .from("team_members")
+      .select("id, role, user_id")
+      .eq("event_id", eventId); // 👈 THIS WAS MISSING!
+      
     if (error) return;
+
+    // 2. Double-lock the mapping to ensure cross-team members NEVER sneak into the matrix
     const mappedRoster = (rawRoster || []).map(row => {
+      // Only attach the profile if they exist in our secure, team-scoped allProfilesData
       const p = allProfilesData.find(profile => profile.id === row.user_id);
       return { ...row, profiles: p || null };
     });
+
     setRoster(mappedRoster as MemberRow[]);
     setStagedRoster(mappedRoster as MemberRow[]); 
     setHasChanges(false);
@@ -159,31 +176,58 @@ export default function DynamicCockpitPage() {
 
   async function loadData() {
     try {
-      const dbProfiles = await getAllProfiles();
-      const uniqueProfilesMap = new Map<string, DBProfile>();
-      (dbProfiles as DBProfile[]).forEach(p => { if (!uniqueProfilesMap.has(p.id)) uniqueProfilesMap.set(p.id, p); });
-      const combinedProfiles = Array.from(uniqueProfilesMap.values());
+      // 1. Fetch Event Info FIRST to determine the correct workspace bounds
+      const { data: eventData } = await supabase.from("events").select("*").eq("id", sessionId).maybeSingle();
+      
+      // ✅ SURGICAL FIX: Strictly use the Event's native team, OR fallback to the user's active sidebar workspace
+      const activeWorkspaceId = eventData?.team_id || userTeamId;
+      
+      // Keep local team state happy for your other functions (like saving setlists)
+      setTeam({ id: activeWorkspaceId });
+
+      // 2. ✅ SURGICAL FIX: Securely fetch ONLY profiles mapped to this specific workspace!
+      let combinedProfiles: DBProfile[] = [];
+      
+      if (activeWorkspaceId) {
+        const { data: dbProfiles } = await supabase
+          .from("profiles")
+          .select("*")
+          .or(`team_id.eq.${activeWorkspaceId},secondary_team_ids.cs.{${activeWorkspaceId}}`);
+
+        const uniqueProfilesMap = new Map<string, DBProfile>();
+        (dbProfiles as DBProfile[] || []).forEach(p => { if (!uniqueProfilesMap.has(p.id)) uniqueProfilesMap.set(p.id, p); });
+        combinedProfiles = Array.from(uniqueProfilesMap.values());
+      }
+      
       setProfiles(combinedProfiles);
 
-      const userTeam = await getUserTeam();
-      const targetTeam = userTeam || { id: "00000000-0000-0000-0000-000000000000", name: "OnPraise Ministry Team" };
-
-      const { data: eventData } = await supabase.from("events").select("*").eq("id", sessionId).maybeSingle();
+      // 3. Mount Event Data
       if (eventData) {
-        setActiveEvent({ id: eventData.id, title: eventData.title, date: eventData.date, description: eventData.description });
+        setActiveEvent({ 
+          id: eventData.id, 
+          title: eventData.title, 
+          date: eventData.event_date || eventData.date, 
+          event_date: eventData.event_date || eventData.date, 
+          service_type: eventData.service_type, 
+          description: eventData.description,
+          team_id: eventData.team_id
+        } as any);
       } else {
-        setActiveEvent({ id: sessionId, title: "June - week#1", date: "2026-06-12", description: "Worship session planning container stack." });
+        setActiveEvent({ id: sessionId, title: "June Week#3 2026", date: "2026-06-12", service_type: "Divine Service", description: "Operational block frame details." } as any);
       }
 
       await fetchEventSetlists(sessionId);
-      await syncRosterUI(targetTeam.id, combinedProfiles);
+      
+      // 4. Sync roster securely locked to this exact workspace
+      await syncRosterUI(sessionId, activeWorkspaceId, combinedProfiles);
+      
       setAllDatabaseSongs(await getAllSongs());
     } catch (e) { console.error(e); }
     setLoading(false);
   }
 
   function handleLocalAddOrMove(userId: string, targetRole: string, sourceRole: string | null = null) {
-    if (simulatedRole !== "admin") return;
+    if (activeRole !== "admin") return;
     if (stagedRoster.some(r => r.user_id === userId && r.role === targetRole)) return; 
     let newRoster = [...stagedRoster];
     if (sourceRole && sourceRole !== targetRole) newRoster = newRoster.filter(r => !(r.user_id === userId && r.role === sourceRole));
@@ -193,22 +237,22 @@ export default function DynamicCockpitPage() {
   }
   
   function handleDropdownSubmit(e: React.FormEvent) { e.preventDefault(); if (selectedUserId && focusedRole) { handleLocalAddOrMove(selectedUserId, focusedRole); setSelectedUserId(""); setFocusedRole(null); } }
-  function handleOriginalLocalRemove(rowId: string) { if (simulatedRole !== "admin") return; setStagedRoster(prev => prev.filter(r => r.id !== rowId)); setHasChanges(true); }
+  function handleOriginalLocalRemove(rowId: string) { if (activeRole !== "admin") return; setStagedRoster(prev => prev.filter(r => r.id !== rowId)); setHasChanges(true); }
   
   async function saveLineupChanges() { 
-    if (simulatedRole !== "admin") return;
+    if (activeRole !== "admin") return;
     setIsDeploying(true); 
     const removedIds = roster.filter(r => !stagedRoster.some(sr => sr.id === r.id)).map(r => r.id); 
     for (const id of removedIds) await removeTeamMember(id); 
     const addedRows = stagedRoster.filter(sr => sr.isNew); 
     for (const row of addedRows) await addTeamMember(sessionId, row.user_id, row.role); 
-    await syncRosterUI(sessionId, profiles); 
+    await syncRosterUI(sessionId, team?.id, profiles);
     setHasChanges(false);
     setIsDeploying(false); 
   }
 
   function handleToggleSelect(id: string) {
-    if (simulatedRole !== "admin") return;
+    if (activeRole !== "admin") return;
     setSelectedForGroup(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   }
 
@@ -232,7 +276,7 @@ export default function DynamicCockpitPage() {
   }
 
   async function handleAddSongSubmit() {
-    if (simulatedRole !== "admin") return;
+    if (activeRole !== "admin") return;
     if (!selectedNewSongId) return;
     const songToAdd = allDatabaseSongs.find(s => s.id === selectedNewSongId);
     if (!songToAdd) return;
@@ -241,8 +285,33 @@ export default function DynamicCockpitPage() {
     setHasSetlistChanges(true); setSelectedNewSongId(""); setIsSongDropdownOpen(false);
   }
 
+  // ✅ SURGICAL FIX: Handlers for Setlist Song Row Actions
+  function handleOpenTimePicker(item: SetlistSongItem) {
+    setTimePickerTargetItemId(item.id);
+    if (item.start_time) {
+      const [hr, min] = item.start_time.split(":");
+      let h = parseInt(hr, 10);
+      setSelectedPeriod(h >= 12 ? "PM" : "AM");
+      setSelectedHour(String(h % 12 || 12).padStart(2, "0"));
+      setSelectedMinute(min);
+    }
+    setIsTimePickerOpen(true);
+  }
+
+  function handleOpenAssignModal(item: SetlistSongItem) {
+    setAssignTargetItemId(item.id);
+    setStagedAssignedUserIds(item.assigned_user_ids || []);
+    setIsAssignModalOpen(true);
+  }
+
+  function handleDeleteSetlistSong(itemId: string) {
+    if (activeRole !== "admin") return;
+    setStagedSetlistSongs(prev => prev.filter(s => s.id !== itemId));
+    setHasSetlistChanges(true);
+  }
+
   async function saveSetlistChanges() {
-    if (simulatedRole !== "admin") return;
+    if (activeRole !== "admin") return;
     setIsDeploying(true);
     let hasErrors = false;
     const removedIds = setlistSongs.filter(s => !stagedSetlistSongs.some(st => st.id === s.id)).map(r => r.id);
@@ -263,11 +332,13 @@ export default function DynamicCockpitPage() {
     setIsDeploying(false);
   }
 
-  function handleOpenAssignModal(item: SetlistSongItem) {
-    if (simulatedRole !== "admin") return;
-    setAssignTargetItemId(item.id);
-    setStagedAssignedUserIds(item.assigned_user_ids || []);
-    setIsAssignModalOpen(true);
+  // ✅ SURGICAL FIX: Missing function for lyrics preview
+  function handlePreviewLyrics(song: any) {
+    if (!song?.id) return;
+    
+    // If you have a lyrics modal, toggle its state here! 
+    // Otherwise, safely route them to the song's detail page:
+    router.push(`/songs/${song.id}`);
   }
 
   function handleStartRehearsal() {
@@ -314,14 +385,14 @@ export default function DynamicCockpitPage() {
         <div key={item.id} className="flex items-center justify-between rounded-2xl p-4 bg-white hover:bg-zinc-50/50 cursor-pointer border shadow-sm min-h-[72px]" onClick={() => { if (item.songs) handlePreviewLyrics(item.songs); }}>
           <div className="flex items-center gap-4 flex-1">
             <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
-              {isEditingSetlist && simulatedRole === "admin" && (
+              {isEditingSetlist && activeRole === "admin" && (
                 <input type="checkbox" className="w-4 h-4 rounded border-zinc-300 checked:bg-blue-600" checked={selectedForGroup.includes(item.id)} onChange={() => handleToggleSelect(item.id)} />
               )}
-              {simulatedRole === "admin" && <div className="text-zinc-300 cursor-grab text-lg font-bold select-none">☰</div>}
+              {activeRole === "admin" && <div className="text-zinc-300 cursor-grab text-lg font-bold select-none">☰</div>}
             </div>
             <span className="text-[14px] font-bold text-zinc-400 w-6">{item.sequence_order}</span>
             <div className="w-20 text-[14px] font-extrabold text-zinc-500" onClick={e => e.stopPropagation()}>
-              {isEditingSetlist && simulatedRole === "admin" ? (
+              {isEditingSetlist && activeRole === "admin" ? (
                 <button onClick={() => handleOpenTimePicker(item)} className="text-[12px] font-black text-blue-600 bg-blue-50 px-2 py-1 rounded-md border text-center shadow-inner">{formatTo12Hour(item.start_time)}</button>
               ) : ( <span className="text-zinc-500 font-bold">{formatTo12Hour(item.start_time)}</span> )}
             </div>
@@ -334,7 +405,7 @@ export default function DynamicCockpitPage() {
             </div>
           </div>
           <div className="ml-4 flex items-center" onClick={e => e.stopPropagation()}>
-            {simulatedRole === "admin" && (
+            {activeRole === "admin" && (
               isEditingSetlist ? ( <button onClick={() => handleDeleteSetlistSong(item.id)} className="w-8 h-8 rounded-full bg-red-50 text-red-500 hover:bg-red-100 flex items-center justify-center">✕</button> ) 
               : ( <button onClick={() => handleOpenAssignModal(item)} className="w-8 h-8 rounded-xl bg-zinc-100 text-zinc-500 font-bold text-sm">👤+</button> )
             )}
@@ -352,7 +423,7 @@ export default function DynamicCockpitPage() {
           <div key={`g-${gIdx}`} className={`border-2 ${groupPalette.border} ${groupPalette.bg} rounded-[1.5rem] p-4 space-y-3 shadow-sm`}>
             <div className="flex justify-between items-center pb-2 border-b border-zinc-200/40">
               <div className="flex items-center gap-2">
-                {isEditingSetlist && simulatedRole === "admin" && (
+                {isEditingSetlist && activeRole === "admin" && (
                   <input type="checkbox" className="w-4 h-4 rounded border-zinc-300" checked={selectedForGroup.includes(subgroupStringToken)} onChange={() => handleToggleSelect(subgroupStringToken)} />
                 )}
                 <h5 className={`font-black text-[12px] uppercase tracking-widest ${groupPalette.text}`}>{group.groupName || "UNGROUPED SECTION"}</h5>
@@ -368,7 +439,7 @@ export default function DynamicCockpitPage() {
           <div key={`parent-${pIdx}`} className={`border-2 ${parentPalette.border} ${parentPalette.bg} rounded-3xl p-5 space-y-4 mb-4 shadow-sm`}>
             <div className="flex justify-between items-center px-1">
               <div className="flex items-center gap-2">
-                {isEditingSetlist && simulatedRole === "admin" && (
+                {isEditingSetlist && activeRole === "admin" && (
                   <input type="checkbox" className="w-4 h-4 rounded border-zinc-300" checked={selectedForGroup.includes(parentGroupIdString)} onChange={() => handleToggleSelect(parentGroupIdString)} />
                 )}
                 <h4 className="text-[17px] font-extrabold text-zinc-900">{parentBlock.parentGroup}</h4>
@@ -378,7 +449,7 @@ export default function DynamicCockpitPage() {
           </div>
         );
       }
-      return <div key={`flat-parent-${pIdx}`} className="space-y-4 mb-4">{parentBlock.groups.map((group: any, gIdx: number) => renderTrackRow(item, globalIndex))}</div>;
+      return <div key={`flat-parent-${pIdx}`} className="space-y-4 mb-4">{parentBlock.groups.map((group: any, gIdx: number) => renderGroupBlock(group, gIdx))}</div>;
     });
   }
 
@@ -414,10 +485,10 @@ export default function DynamicCockpitPage() {
                       <h5 className="font-bold text-[14px] text-zinc-900">{cardRole}</h5>
                       <p className="text-[11px] font-medium text-zinc-400">{list.length} Assigned</p>
                     </div>
-                    {simulatedRole === "admin" && ( <button onClick={() => setFocusedRole(active ? null : cardRole)} className="w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold border">+</button> )}
+                    {activeRole === "admin" && ( <button onClick={() => setFocusedRole(active ? null : cardRole)} className="w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold border">+</button> )}
                   </div>
                   <div className="flex-1 mt-3">
-                    {active && simulatedRole === "admin" ? (
+                    {active && activeRole === "admin" ? (
                       <form onSubmit={handleDropdownSubmit} className="space-y-1.5">
                         <select required value={selectedUserId} onChange={(e) => setSelectedUserId(e.target.value)} className="w-full bg-zinc-50 border rounded-xl px-2.5 py-2 text-xs outline-none font-bold">
                           <option value="">-- Assign Member --</option>
@@ -433,7 +504,7 @@ export default function DynamicCockpitPage() {
                               {m.profiles?.avatar_url ? <img src={m.profiles.avatar_url} alt="" className="w-6 h-6 rounded-full object-cover" /> : <div className="w-6 h-6 rounded-full bg-blue-600 text-white text-[10px] font-bold flex items-center justify-center">{m.profiles?.full_name?.charAt(0)}</div>}
                               <span className="text-[13px] font-bold text-zinc-800">{m.profiles?.full_name}</span>
                             </div>
-                            {simulatedRole === "admin" && ( <button onClick={() => handleOriginalLocalRemove(m.id)} className="text-[10px] text-zinc-400 hover:text-red-500 opacity-0 group-hover:opacity-100 p-1">✕</button> )}
+                            {activeRole === "admin" && ( <button onClick={() => handleOriginalLocalRemove(m.id)} className="text-[10px] text-zinc-400 hover:text-red-500 opacity-0 group-hover:opacity-100 p-1">✕</button> )}
                           </div>
                         ))}
                       </div>
@@ -458,7 +529,7 @@ export default function DynamicCockpitPage() {
             </div>
           </div>
 
-          <div className={`absolute bottom-0 left-0 right-0 bg-white/95 border-t border-zinc-200 p-4 px-6 flex items-center justify-between transition-all duration-300 z-50 ${hasChanges && simulatedRole === "admin" ? 'translate-y-0 opacity-100' : 'translate-y-4 opacity-0 pointer-events-none'}`}>
+          <div className={`absolute bottom-0 left-0 right-0 bg-white/95 border-t border-zinc-200 p-4 px-6 flex items-center justify-between transition-all duration-300 z-50 ${hasChanges && activeRole === "admin" ? 'translate-y-0 opacity-100' : 'translate-y-4 opacity-0 pointer-events-none'}`}>
             <p className="text-xs font-extrabold text-zinc-700">Unsaved Lineup Changes Staged</p>
             <div className="flex items-center gap-2">
               <button onClick={() => { setStagedRoster(roster); setHasChanges(false); }} className="px-4 py-2 text-xs font-bold text-zinc-500 hover:bg-zinc-100 rounded-xl">Discard</button>
@@ -472,7 +543,7 @@ export default function DynamicCockpitPage() {
         <div className="flex-1 bg-white p-5 overflow-y-auto rounded-b-3xl space-y-4">
           <div className="flex justify-between items-center border-b pb-2">
             <h4 className="text-xs font-black text-zinc-400 uppercase tracking-wider">Setlists under this event container block</h4>
-            {simulatedRole === "admin" && (
+            {activeRole === "admin" && (
               <button onClick={() => setIsCreateSetlistOpen(true)} className="px-3 py-1.5 bg-zinc-900 text-white font-bold text-[11px] rounded-xl shadow-sm uppercase tracking-wider">＋ New Setlist Block</button>
             )}
           </div>
@@ -506,7 +577,7 @@ export default function DynamicCockpitPage() {
               >
                 🚀 Start Rehearsal
               </button>
-              {simulatedRole === "admin" && (
+              {activeRole === "admin" && (
                 <div className="flex items-center gap-1">
                   <button onClick={() => { setIsEditingSetlist(!isEditingSetlist); setIsAddingSong(false); }} className="w-8 h-8 rounded-xl border flex items-center justify-center text-sm bg-white">⚙️</button>
                   <button onClick={() => { setIsAddingSong(!isAddingSong); setIsEditingSetlist(false); }} className="w-8 h-8 rounded-xl border flex items-center justify-center text-sm bg-white">＋</button>
@@ -516,7 +587,7 @@ export default function DynamicCockpitPage() {
           </div>
           
           <div className="p-5 space-y-4 z-10 pb-32 flex-1 overflow-y-auto custom-scrollbar max-h-[42vh]">
-            {isAddingSong && simulatedRole === "admin" && (
+            {isAddingSong && activeRole === "admin" && (
               <div className="bg-white p-5 rounded-2xl border border-blue-200 shadow-sm mb-4">
                 <label className="text-[11px] font-bold text-zinc-500 uppercase block mb-2">Choose Database Song</label>
                 <div className="flex gap-2">
@@ -545,7 +616,7 @@ export default function DynamicCockpitPage() {
             {parentBlockRowsRenderer(treeBlocks, isEditingSetlist)}
           </div>
 
-          <div className={`absolute bottom-0 left-0 right-0 bg-white/90 border-t border-zinc-200 p-4 px-6 flex items-center justify-between transition-all duration-300 z-50 ${hasSetlistChanges && simulatedRole === "admin" ? 'translate-y-0 opacity-100' : 'translate-y-4 opacity-0 pointer-events-none'}`}>
+          <div className={`absolute bottom-0 left-0 right-0 bg-white/90 border-t border-zinc-200 p-4 px-6 flex items-center justify-between transition-all duration-300 z-50 ${hasSetlistChanges && activeRole === "admin" ? 'translate-y-0 opacity-100' : 'translate-y-4 opacity-0 pointer-events-none'}`}>
             <p className="text-xs font-extrabold text-zinc-700">Setlist track variations changes staged</p>
             <div className="flex items-center gap-2">
               <button onClick={() => { fetchLiveSetlistTracks(selectedSetlistId); setHasSetlistChanges(false); }} className="px-4 py-2 text-xs font-bold text-zinc-500 hover:bg-zinc-100 rounded-xl">Discard</button>

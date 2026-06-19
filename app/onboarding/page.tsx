@@ -31,6 +31,59 @@ export default function OnboardingPage() {
   const [selectedTeamId, setSelectedTeamId] = useState<string>("");
   const [selectedMinistries, setSelectedMinistries] = useState<string[]>([]);
 
+  const [joinCode, setJoinCode] = useState<string>("");
+  const [joinError, setJoinError] = useState<string>("");
+
+  // ✅ PHASE 2 FIX: Lookup the team by Join Code and assign the user
+  async function handleJoinTeam() {
+    setJoinError("");
+    
+    if (!joinCode.trim()) {
+      setJoinError("Please enter a valid join code.");
+      return;
+    }
+
+    // 1. Get the securely authenticated user ID directly from Supabase
+    const { data: { user } } = await supabase.auth.getUser();
+    
+    if (!user) {
+      setJoinError("Authentication error. Please log in again.");
+      return;
+    }
+
+    // 2. Lookup the UUID of the team using the join code
+    const { data: teamData, error: teamError } = await supabase
+      .from("teams")
+      .select("id, name")
+      .eq("join_code", joinCode.toLowerCase().trim())
+      .maybeSingle();
+
+    if (teamError || !teamData) {
+      setJoinError("Invalid code. Please check your spelling and try again.");
+      return;
+    }
+
+    // 3. Assign the user's profile to the hidden UUID using the real user.id
+    const { error: profileError } = await supabase
+      .from("profiles")
+      .update({ team_id: teamData.id })
+      .eq("id", user.id); 
+
+    if (profileError) {
+      setJoinError("Failed to join the team. Please try again.");
+      return;
+    }
+
+    // 4. Send them to the dashboard!
+    setStep(3); // CHANGE THIS to whatever your state is called (e.g., setCurrentStep(3), nextStep(), etc.)
+  }
+
+  // ✅ PHASE 2 FIX: Allow users to skip and wander around with a NULL team_id
+  async function handleSkipTeamSelection() {
+    // We just safely route them to the dashboard. Their team_id remains NULL.
+    setStep(3); // CHANGE THIS to match your local state
+  }
+
   useEffect(() => {
     async function fetchInitialData() {
       // 1. Get the authenticated user
@@ -73,7 +126,8 @@ export default function OnboardingPage() {
   };
 
   const handleCompleteOnboarding = async () => {
-    if (!userId || !selectedTeamId || selectedMinistries.length === 0 || !fullName.trim()) return;
+    // ✅ SURGICAL FIX: Removed `!selectedTeamId` so "Lone Wolf" users who skipped Step 2 can still finish!
+    if (!userId || selectedMinistries.length === 0 || !fullName.trim()) return;
 
     setSaving(true);
 
@@ -81,9 +135,9 @@ export default function OnboardingPage() {
       const { error } = await supabase
         .from("profiles")
         .update({ 
-          full_name: fullName.trim(), // Save the confirmed name
-          team_id: selectedTeamId,
+          full_name: fullName.trim(), 
           ministries: selectedMinistries 
+          // ✅ SURGICAL FIX: Removed team_id from the payload so we don't accidentally overwrite Step 2
         })
         .eq("id", userId);
 
@@ -161,51 +215,52 @@ export default function OnboardingPage() {
         {/* STEP 2: CHOOSE TEAM */}
         {step === 2 && (
           <div className="animate-in fade-in slide-in-from-right-4 duration-300">
-            <div className="text-center space-y-2 mb-8 mt-2">
-              <div className="w-12 h-12 bg-blue-600 text-white rounded-2xl flex items-center justify-center text-xl font-black mx-auto shadow-md mb-4">
-                🏛️
-              </div>
-              <h1 className="text-2xl font-black text-zinc-900 tracking-tight">Select Your Church</h1>
-              <p className="text-xs font-bold text-zinc-500">Which location do you serve at primarily?</p>
-            </div>
+            <div className="text-center space-y-2 mb-8">
+          <div className="w-12 h-12 bg-blue-600 text-white rounded-full flex items-center justify-center mx-auto mb-4 shadow-md text-xl">
+            🏛️
+          </div>
+          <h2 className="text-2xl font-black text-zinc-900 tracking-tight">Enter your Church ID</h2>
+          <p className="text-xs font-bold text-zinc-500">Ask your Music Director for your 10-character join code.</p>
+        </div>
 
-            <div className="space-y-6">
-              <div className="grid gap-2 max-h-[40vh] overflow-y-auto custom-scrollbar p-1">
-                {teams.map((team) => (
-                  <button
-                    key={team.id}
-                    type="button"
-                    onClick={() => setSelectedTeamId(team.id)}
-                    className={`w-full p-4 rounded-xl border text-sm font-bold transition-all text-left flex justify-between items-center ${
-                      selectedTeamId === team.id 
-                        ? "bg-blue-50 border-blue-500 text-blue-700 ring-4 ring-blue-500/10 shadow-sm" 
-                        : "bg-white border-zinc-200 text-zinc-600 hover:bg-zinc-50 hover:border-zinc-300"
-                    }`}
-                  >
-                    {team.name}
-                    {selectedTeamId === team.id && <span className="text-blue-600">✓</span>}
-                  </button>
-                ))}
-              </div>
+        <div className="space-y-4 mb-8">
+          <div>
+            <input
+              type="text"
+              value={joinCode}
+              onChange={(e) => setJoinCode(e.target.value)}
+              placeholder="e.g. gith-12345"
+              className="w-full text-center text-lg font-black tracking-widest uppercase border border-zinc-200 rounded-xl p-4 shadow-inner focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+              maxLength={10}
+            />
+            {joinError && (
+              <p className="text-red-500 text-xs font-bold text-center mt-2 animate-in slide-in-from-top-1">{joinError}</p>
+            )}
+          </div>
+        </div>
 
-              <div className="grid grid-cols-3 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setStep(1)}
-                  className="col-span-1 py-4 rounded-xl bg-zinc-100 text-zinc-700 font-black text-xs uppercase tracking-widest hover:bg-zinc-200 transition-all"
-                >
-                  Back
-                </button>
-                <button
-                  type="button"
-                  disabled={!selectedTeamId}
-                  onClick={() => setStep(3)}
-                  className="col-span-2 py-4 rounded-xl bg-zinc-950 text-white font-black text-xs uppercase tracking-widest shadow-lg hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-                >
-                  Continue
-                </button>
-              </div>
-            </div>
+        <div className="flex gap-3 mt-8">
+          <button
+            type="button"
+            onClick={handleSkipTeamSelection}
+            className="flex-1 py-4 bg-zinc-100 hover:bg-zinc-200 text-zinc-600 font-black text-xs uppercase tracking-widest rounded-xl transition-all shadow-sm"
+          >
+            Skip For Now
+          </button>
+          
+          <button
+            type="button"
+            onClick={handleJoinTeam}
+            disabled={joinCode.trim().length < 10}
+            className={`flex-1 py-4 font-black text-xs uppercase tracking-widest rounded-xl transition-all shadow-sm ${
+              joinCode.trim().length === 10
+                ? "bg-blue-600 hover:bg-blue-700 text-white cursor-pointer"
+                : "bg-zinc-500 hover:bg-zinc-600 text-white/50 cursor-not-allowed"
+            }`}
+          >
+            Continue
+          </button>
+        </div>
           </div>
         )}
 

@@ -158,7 +158,7 @@ export default function SongsListPage() {
     {/* ========================================= */}
     {/* 1. STICKY HEADER & SEARCH BAR BLOCK       */}
     {/* ========================================= */}
-    <header className="sticky top-0 z-[100] flex-shrink-0 w-full bg-[#f8f9fa] px-4 md:px-8 pt-4 md:pt-8 pb-4 space-y-4 border-b border-zinc-200 shadow-sm supports-[backdrop-filter]:bg-[#f8f9fa]/95 supports-[backdrop-filter]:backdrop-blur-md">
+    <header className="sticky top-0 z-[100] flex-shrink-0 w-full bg-[#ffffff] px-4 md:px-8 pt-4 md:pt-8 pb-4 space-y-4 border-b border-zinc-200 shadow-sm">
       {/* Title Row */}
       <div className="flex items-center gap-4">
         <button 

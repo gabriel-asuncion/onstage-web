@@ -31,6 +31,62 @@ export default function Sidebar() {
   // ✅ Local state to populate team names in the dropdown
   const [teamNamesMap, setTeamNamesMap] = useState<Record<string, string>>({});
 
+  // ✅ PHASE 3 FIX: Join Code Modal States
+  const [modalJoinCode, setModalJoinCode] = useState("");
+  const [isJoining, setIsJoining] = useState(false);
+  const [copyText, setCopyText] = useState("Copy Code");
+
+  // ✅ PHASE 3 FIX: For Lone Wolves to join a team directly from the sidebar
+  async function handleJoinFromProfile() {
+    if (!modalJoinCode.trim() || !simulatedUserId) return;
+    setIsJoining(true);
+
+    try {
+      const { data: teamData, error: teamError } = await supabase
+        .from("teams")
+        .select("id")
+        .eq("join_code", modalJoinCode.toLowerCase().trim())
+        .maybeSingle();
+
+      if (teamError || !teamData) {
+        alert("Invalid join code. Please try again.");
+        setIsJoining(false);
+        return;
+      }
+
+      const { error: profileError } = await supabase
+        .from("profiles")
+        .update({ team_id: teamData.id })
+        .eq("id", simulatedUserId);
+
+      if (profileError) throw profileError;
+
+      // Force a hard reload so the Engine Context recalculates their workspace completely
+      window.location.reload();
+    } catch (err) {
+      console.error(err);
+      alert("Something went wrong.");
+      setIsJoining(false);
+    }
+  }
+
+  // ✅ PHASE 3 FIX: Copy current team's join code
+  async function handleCopyJoinCode() {
+    if (!userTeamId) return;
+    
+    const { data } = await supabase
+      .from("teams")
+      .select("join_code")
+      .eq("id", userTeamId)
+      .single();
+
+    if (data?.join_code) {
+      navigator.clipboard.writeText(data.join_code.toUpperCase());
+      setCopyText("Copied! ✅");
+      setTimeout(() => setCopyText("Copy Code"), 2000);
+    }
+  }
+
   // Sync profile metrics instantly when switching developer identities
   async function fetchActiveProfileContext() {
     if (!simulatedUserId) return;
@@ -251,13 +307,44 @@ export default function Sidebar() {
               </div>
 
               {/* ✅ SURGICAL ADDITION: Workspace Indicator (Always visible, dropdown only if multi-campus) */}
+              {/* ✅ PHASE 3 FIX: Dynamic Workspace Indicator & Join Code Manager */}
               <div className="space-y-2 pt-4 border-t border-zinc-100 mt-auto">
-                <label className="text-[10px] font-black text-blue-600 uppercase tracking-widest block flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse"></span>
-                  Current Branch
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[10px] font-black text-blue-600 uppercase tracking-widest flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse"></span>
+                    Current Branch
+                  </label>
+                  {userTeamId && (
+                    <button
+                      onClick={handleCopyJoinCode}
+                      className="text-[9px] font-black text-zinc-400 uppercase tracking-widest hover:text-blue-600 transition-colors"
+                    >
+                      {copyText}
+                    </button>
+                  )}
+                </div>
                 
-                {secondaryTeamIds && secondaryTeamIds.length > 0 ? (
+                {!userTeamId ? (
+                  // LONE WOLF UI: Show input to join a team
+                  <div className="bg-zinc-50 border border-zinc-200 rounded-xl p-1.5 flex gap-2 shadow-inner">
+                    <input
+                      type="text"
+                      value={modalJoinCode}
+                      onChange={(e) => setModalJoinCode(e.target.value)}
+                      placeholder="Enter Church ID..."
+                      className="flex-1 bg-white border border-zinc-200 rounded-lg px-3 py-2 text-xs font-black uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+                      maxLength={10}
+                    />
+                    <button
+                      onClick={handleJoinFromProfile}
+                      disabled={isJoining || modalJoinCode.trim().length < 10}
+                      className="px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-zinc-300 disabled:cursor-not-allowed text-white text-[10px] font-black uppercase tracking-widest rounded-lg transition-all"
+                    >
+                      {isJoining ? "..." : "Join"}
+                    </button>
+                  </div>
+                ) : secondaryTeamIds && secondaryTeamIds.length > 0 ? (
+                  // MULTI-CAMPUS UI
                   <select 
                     value={userTeamId || ""}
                     onChange={(e) => switchWorkspace(e.target.value)}
@@ -269,6 +356,7 @@ export default function Sidebar() {
                     ))}
                   </select>
                 ) : (
+                  // SINGLE CAMPUS UI
                   <div className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2 text-xs font-black text-zinc-500 shadow-sm cursor-not-allowed flex items-center gap-2">
                     <span className="opacity-75">👑</span> 
                     <span className="truncate">Primary: ({teamNamesMap[primaryTeamId || ""] || "Mother Church"})</span>

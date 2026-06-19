@@ -3,8 +3,11 @@
 import { useEffect, useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "../../utils/supabase/client";
+import Link from "next/link"; // ✅ SURGICAL FIX: Added Link import
 import { useEngine } from "../context/EngineContext";
 import { getUserTeam, getAllProfiles } from "../../utils/supabase/actions";
+
+
 
 interface EventItem { 
   id: string; 
@@ -206,12 +209,23 @@ export default function EventsManagerPage() {
             </h1>
             
             {activeRole === "admin" && (
-              <button 
-                onClick={() => setIsCreateModalOpen(true)}
-                className="px-4 py-2 md:px-5 md:py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-black text-[10px] md:text-xs rounded-xl shadow-md transition-all active:scale-95 uppercase tracking-wider shrink-0 flex items-center gap-1"
-              >
-                <span className="text-sm leading-none">+</span> Add Event
-              </button>
+              <div className="flex items-center gap-2 md:gap-3">
+                {/* ✅ PHASE 4 FIX: The Create Team routing button */}
+                <Link
+                  href="/events/create-team"
+                  className="px-4 py-2 md:px-5 md:py-2.5 bg-white border border-zinc-200 hover:border-blue-500 hover:text-blue-600 text-zinc-500 font-black text-[10px] md:text-xs rounded-xl shadow-sm transition-all active:scale-95 uppercase tracking-wider shrink-0 flex items-center gap-1.5"
+                >
+                  <span className="text-sm leading-none">🏛️</span> Create Team
+                </Link>
+
+                {/* Your original Add Event button */}
+                <button 
+                  onClick={() => setIsCreateModalOpen(true)}
+                  className="px-4 py-2 md:px-5 md:py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-black text-[10px] md:text-xs rounded-xl shadow-md transition-all active:scale-95 uppercase tracking-wider shrink-0 flex items-center gap-1"
+                >
+                  <span className="text-sm leading-none">+</span> Add Event
+                </button>
+              </div>
             )}
           </div>
 
@@ -323,7 +337,7 @@ export default function EventsManagerPage() {
       {/* 3. SCROLLING GRID CONTENT                 */}
       {/* ========================================= */}
       <main className="flex-1 overflow-y-auto p-4 md:p-8 custom-scrollbar pb-24 md:pb-8 w-full">
-        <div className="max-w-7xl mx-auto w-full">
+        <div className="max-w-7xl w-full">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6 content-start">
             {parsedFilteredEventsGrid.map((evt) => {
               const cleanEvtDate = evt.event_date ? evt.event_date.split("T")[0] : "2026-06-12";

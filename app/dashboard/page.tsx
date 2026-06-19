@@ -163,10 +163,10 @@ export default function DashboardPage() {
      song.artist?.toLowerCase().includes(bookmarkSearchQuery.toLowerCase()))
   );
 
-  if (loading) return <div className="p-4 md:p-8 text-center text-xs font-black uppercase tracking-widest text-zinc-400 animate-pulse">Synchronizing Dashboard Matrix...</div>;
+  if (loading) return <div className="p-4 text-center text-xs font-black uppercase tracking-widest text-zinc-400 animate-pulse">Synchronizing Dashboard Matrix...</div>;
 
   return (
-    <div className="p-4 md:p-8 max-w-7xl w-full mx-auto space-y-4 md:space-y-8 animate-in fade-in duration-150">
+    <div className="p-4 md:p-4 max-w-7xl w-full mx-auto space-y-4 md:space-y-8 animate-in fade-in duration-150">
       
       {/* MASTER HERO HEADER CONTAINER BLOCK */}
       <div className="bg-white border border-zinc-200 rounded-2xl p-6 shadow-sm space-y-4">

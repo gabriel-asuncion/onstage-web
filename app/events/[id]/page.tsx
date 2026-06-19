@@ -55,7 +55,7 @@ export default function EventCockpitPage() {
   const router = useRouter();
   const params = useParams();
   const eventId = params?.id as string; 
-  const { activeRole } = useEngine();
+  const { activeRole, userTeamId } = useEngine();
 
   const [hasMounted, setHasMounted] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -92,8 +92,9 @@ export default function EventCockpitPage() {
   const [customGroupName, setCustomGroupName] = useState("");
   const [selectedGroupColor, setSelectedGroupColor] = useState("blue");
 
-  const [focusedRole, setFocusedRole] = useState<string | null>(null);
-  const [selectedUserId, setSelectedUserId] = useState("");
+  // ✅ SURGICAL FIX: "Load & Shoot" Matrix Interaction States
+  const [loadedUserId, setLoadedUserId] = useState<string | null>(null);
+  const [matrixFilter, setMatrixFilter] = useState<string>("All");
   const [isDeploying, setIsDeploying] = useState(false);
 
   const [isCreateSetlistOpen, setIsCreateSetlistOpen] = useState(false);
@@ -181,17 +182,32 @@ export default function EventCockpitPage() {
 
   async function loadData() {
     try {
-      const dbProfiles = await getAllProfiles();
-      const uniqueProfilesMap = new Map<string, DBProfile>();
-      (dbProfiles as DBProfile[]).forEach(p => { if (!uniqueProfilesMap.has(p.id)) uniqueProfilesMap.set(p.id, p); });
-      const combinedProfiles = Array.from(uniqueProfilesMap.values());
+      // 1. Fetch Event Info FIRST to determine the correct workspace bounds
+      const { data: eventData } = await supabase.from("events").select("*").eq("id", eventId).maybeSingle();
+      
+      // ✅ SURGICAL FIX: Strictly use the Event's native team, OR fallback to the user's active sidebar workspace
+      const activeWorkspaceId = eventData?.team_id || userTeamId;
+      
+      // Keep local team state happy for your other functions
+      setTeam({ id: activeWorkspaceId });
+
+      // 2. ✅ SURGICAL FIX: Securely fetch ONLY profiles mapped to this specific workspace!
+      let combinedProfiles: DBProfile[] = [];
+      
+      if (activeWorkspaceId) {
+        const { data: dbProfiles } = await supabase
+          .from("profiles")
+          .select("*")
+          .or(`team_id.eq.${activeWorkspaceId},secondary_team_ids.cs.{${activeWorkspaceId}}`);
+
+        const uniqueProfilesMap = new Map<string, DBProfile>();
+        (dbProfiles as DBProfile[] || []).forEach(p => { if (!uniqueProfilesMap.has(p.id)) uniqueProfilesMap.set(p.id, p); });
+        combinedProfiles = Array.from(uniqueProfilesMap.values());
+      }
+      
       setProfiles(combinedProfiles);
 
-      const userTeam = await getUserTeam();
-      const targetTeam = userTeam || { id: "00000000-0000-0000-0000-000000000000", name: "OnPraise Ministry Team" };
-      setTeam(targetTeam);
-
-      const { data: eventData } = await supabase.from("events").select("*").eq("id", eventId).maybeSingle();
+      // 3. Mount Event Data
       if (eventData) {
         setActiveEvent({ 
           id: eventData.id, 
@@ -200,13 +216,16 @@ export default function EventCockpitPage() {
           service_type: eventData.service_type, 
           description: eventData.description,
           team_id: eventData.team_id
-        });
+        } as any);
       } else {
-        setActiveEvent({ id: eventId, title: "June Week#3 2026", event_date: "2026-06-12", service_type: "Divine Service", description: "Operational block frame details." });
+        setActiveEvent({ id: eventId, title: "June Week#3 2026", event_date: "2026-06-12", service_type: "Divine Service", description: "Operational block frame details." } as any);
       }
 
       await fetchEventSetlists(eventId);
-      await syncRosterUI(targetTeam.id, combinedProfiles);
+      
+      // 4. Sync roster securely locked to this exact workspace
+      await syncRosterUI(activeWorkspaceId, combinedProfiles);
+      
       setAllDatabaseSongs(await getAllSongs());
     } catch (e) { console.error(e); }
     setLoading(false);
@@ -269,7 +288,7 @@ export default function EventCockpitPage() {
     setHasChanges(true);
   }
   
-  function handleDropdownSubmit(e: React.FormEvent) { e.preventDefault(); if (selectedUserId && focusedRole) { handleLocalAddOrMove(selectedUserId, focusedRole); setSelectedUserId(""); setFocusedRole(null); } }
+  // function handleDropdownSubmit(e: React.FormEvent) { e.preventDefault(); if (selectedUserId && focusedRole) { handleLocalAddOrMove(selectedUserId, focusedRole); setSelectedUserId(""); setFocusedRole(null); } }
   function handleOriginalLocalRemove(rowId: string) { if (activeRole !== "admin") return; setStagedRoster(prev => prev.filter(r => r.id !== rowId)); setHasChanges(true); }
   
   async function saveLineupChanges() { 
@@ -614,73 +633,80 @@ export default function EventCockpitPage() {
           <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 gap-3 content-start">
             {GRID_CARDS.map((cardRole) => {
               const list = stagedRoster.filter(m => m.role === cardRole);
-              const active = focusedRole === cardRole;
               
-              const eligible = profiles.filter(p => 
-                p.ministries?.includes(cardRole) && 
-                !p.unavailable_dates?.includes(targetFilterDate)
-              );
+              // ✅ SURGICAL FIX: Check if the loaded user is qualified for this specific card
+              const loadedUser = loadedUserId ? profiles.find(p => p.id === loadedUserId) : null;
+              const isQualified = loadedUser ? (loadedUser.ministries || []).includes(cardRole) : true;
+              const isDisabledDrop = loadedUserId && !isQualified;
 
               return (
-                <div key={cardRole} className="bg-white p-3 rounded-[1rem] border shadow-sm flex flex-col justify-between min-h-[170px] hover:border-zinc-300 transition-all">
+                <div 
+                  key={cardRole} 
+                  onClick={() => {
+                    if (loadedUserId && activeRole === "admin" && isQualified) {
+                      handleLocalAddOrMove(loadedUserId, cardRole);
+                      setLoadedUserId(null); 
+                    }
+                  }}
+                  className={`bg-white p-3 rounded-[1rem] border shadow-sm flex flex-col justify-between min-h-[80px] transition-all duration-300 ${
+                    loadedUserId && activeRole === "admin" 
+                      ? isQualified 
+                        ? "hover:border-blue-500 hover:bg-blue-50/30 cursor-pointer ring-4 ring-blue-500/10" 
+                        : "opacity-40 grayscale cursor-not-allowed border-zinc-200" // Grey out unqualified cards!
+                      : "hover:border-zinc-300"
+                  }`}
+                >
                   <div className="flex items-start justify-between relative">
                     <div>
                       <h5 className="font-extrabold text-base text-zinc-900 tracking-tight">{cardRole}</h5>
                       <p className="text-[11px] font-bold text-zinc-400 mt-0.5">{list.length} Assigned</p>
                     </div>
                     {activeRole === "admin" && ( 
-                      <button type="button" onClick={() => setFocusedRole(active ? null : cardRole)} className="w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold border hover:bg-zinc-50">＋</button> 
+                      <button 
+                        type="button" 
+                        disabled={isDisabledDrop}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (loadedUserId && isQualified) {
+                            handleLocalAddOrMove(loadedUserId, cardRole);
+                            setLoadedUserId(null);
+                          } else if (!loadedUserId) {
+                            alert("Select a volunteer from the dock below first!");
+                          }
+                        }} 
+                        className={`w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold border transition-all duration-300 ${
+                          isDisabledDrop ? "bg-zinc-100 text-zinc-300 border-zinc-100" :
+                          loadedUserId ? "bg-blue-600 border-blue-600 text-white animate-pulse shadow-md" : "hover:bg-zinc-50"
+                        }`}
+                      >
+                        {loadedUserId ? "↓" : "＋"}
+                      </button> 
                     )}
                   </div>
                   <div className="flex-1 mt-4">
-                    {active && activeRole === "admin" ? (
-                      <form onSubmit={handleDropdownSubmit} className="space-y-2">
-                        <select required value={selectedUserId} onChange={(e) => setSelectedUserId(e.target.value)} className="w-full bg-zinc-50 border rounded-xl px-3 py-2 text-xs font-bold outline-none cursor-pointer">
-                          <option value="">-- Assign Member --</option>
-                          {eligible.map(p => <option key={p.id} value={p.id}>{p.full_name || "Unknown Volunteer"}</option>)}
-                        </select>
-                        <button type="submit" className="w-full bg-zinc-950 text-white font-black text-[10px] py-2.5 rounded-xl uppercase tracking-wider">Commit Assignment</button>
-                      </form>
-                    ) : (
-                      <div className="space-y-2">
-                        {list.map(m => (
-                          <div key={m.id} className="flex items-center justify-between group p-1.5 rounded-xl hover:bg-zinc-50/50">
-                            <div className="flex items-center gap-2.5">
-                              {m.profiles?.avatar_url ? <img src={m.profiles.avatar_url} alt="" className="w-7 h-7 rounded-full object-cover border" /> : <div className="w-7 h-7 rounded-full bg-blue-600 text-white text-xs font-black flex items-center justify-center">{m.profiles?.full_name?.charAt(0) || "U"}</div>}
-                              <span className="text-[14px] font-bold text-zinc-800 tracking-tight">{m.profiles?.full_name || "Active Row Hand"}</span>
-                            </div>
-                            {activeRole === "admin" && ( <button type="button" onClick={() => handleOriginalLocalRemove(m.id)} className="text-[10px] text-zinc-400 hover:text-red-500 opacity-0 group-hover:opacity-100 p-1">✕</button> )}
+                    <div className="space-y-2">
+                      {list.map(m => (
+                        <div key={m.id} className="flex items-center justify-between group p-1.5 rounded-xl hover:bg-zinc-50/50" onClick={e => e.stopPropagation()}>
+                          <div className="flex items-center gap-2.5">
+                            {m.profiles?.avatar_url ? <img src={m.profiles.avatar_url} alt="" className="w-7 h-7 rounded-full object-cover border" /> : <div className="w-7 h-7 rounded-full bg-blue-600 text-white text-xs font-black flex items-center justify-center">{m.profiles?.full_name?.charAt(0) || "U"}</div>}
+                            <span className="text-[14px] font-bold text-zinc-800 tracking-tight">{m.profiles?.full_name || "Active Row Hand"}</span>
                           </div>
-                        ))}
-                      </div>
-                    )}
+                          {activeRole === "admin" && ( <button type="button" onClick={() => handleOriginalLocalRemove(m.id)} className="text-[10px] text-zinc-400 hover:text-red-500 opacity-0 md:group-hover:opacity-100 p-2 md:p-1 active:scale-95 transition-all">✕</button> )}
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 </div>
               );
             })}
           </div>
 
-          {/* POOLS GRIDS PANEL LAYOUTS */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
-            <div className="bg-white border p-6 rounded-[1rem] shadow-sm flex flex-col justify-between min-h-[160px]">
-              <div>
-                <h5 className="font-black text-emerald-700 text-sm flex items-center gap-1.5 uppercase tracking-wider">Available Matrix <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span></h5>
-                <p className="text-[11px] font-bold text-zinc-400 mt-0.5">{availablePool.length}/{profiles.length} Volunteers Ready to Serve</p>
-              </div>
-              <div className="mt-4 flex -space-x-2 overflow-hidden pt-4 border-t border-zinc-100">
-                {availablePool.map((p) => (
-                  <div key={p.id} className="inline-flex w-10 h-10 rounded-full ring-4 ring-white relative items-center justify-center bg-blue-600 text-white font-bold text-xs shadow-sm" title={p.full_name || "Active Hand"}>
-                    {p.avatar_url ? <img src={p.avatar_url} alt="" className="w-full h-full rounded-full object-cover" /> : <span>{p.full_name?.charAt(0) || "U"}</span>}
-                  </div>
-                ))}
-                {availablePool.length === 0 && <span className="text-xs font-semibold text-zinc-400 italic pl-1">All qualified team members currently assigned.</span>}
-              </div>
-            </div>
-
-            <div className="bg-white border p-6 rounded-[2rem] shadow-sm flex flex-col justify-between min-h-[160px]">
+          {/* STATIC PANELS (UNAVAILABLE ONLY) */}
+          {/* <div className="grid grid-cols-1 gap-3 pt-2 mb-32 md:mb-12">
+            <div className="bg-white border p-6 rounded-[2rem] shadow-sm flex flex-col justify-between min-h-[140px]">
               <div>
                 <h5 className="font-black text-red-600 text-sm flex items-center gap-1.5 uppercase tracking-wider">Unavailable Blockouts <span className="w-2 h-2 rounded-full bg-red-500"></span></h5>
-                <p className="text-[11px] font-bold text-zinc-400 mt-0.5">{unavailablePool.length} Row Node Flags Accounted For</p>
+                <p className="text-[11px] font-bold text-zinc-400 mt-0.5">{unavailablePool.length} Member(s) Away</p>
               </div>
               <div className="mt-4 flex -space-x-2 overflow-hidden pt-4 border-t border-zinc-100">
                 {unavailablePool.map((p) => (
@@ -688,13 +714,63 @@ export default function EventCockpitPage() {
                     {p.avatar_url ? <img src={p.avatar_url} alt="" className="w-full h-full rounded-full object-cover grayscale opacity-60" /> : <span>{p.full_name?.charAt(0) || "🚫"}</span>}
                   </div>
                 ))}
-                {unavailablePool.length === 0 && <span className="text-xs font-semibold text-zinc-400 italic pl-1">All catalog hands available.</span>}
+                {unavailablePool.length === 0 && <span className="text-xs font-semibold text-zinc-400 italic pl-1">No scheduled absences for this event.</span>}
               </div>
             </div>
-          </div>
+          </div> */}
+
+          {/* ✅ SURGICAL FIX: UNIFIED DOCK WITH UNAVAILABLE TAB */}
+          {activeRole === "admin" && (
+            <div className="fixed bottom-15 md:bottom-8 left-4 right-4 md:left-[6.5rem] md:right-8 bg-white/95 supports-[backdrop-filter]:backdrop-blur-xl border border-zinc-200/80 p-4 rounded-[1rem] shadow-[0_-8px_30px_-15px_rgba(0,0,0,0.1)] z-[90] flex flex-col gap-3 transition-all duration-300 animate-in slide-in-from-bottom-8">
+              <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
+                <div className="flex items-center gap-1.5 overflow-x-auto custom-scrollbar no-scrollbar flex-1 pr-4">
+                  <button onClick={() => setMatrixFilter("All")} className={`px-4 py-2 rounded-full text-[10px] font-black uppercase tracking-widest whitespace-nowrap transition-all ${matrixFilter === "All" ? "bg-zinc-900 text-white shadow-md scale-105" : "bg-zinc-100 text-zinc-500 hover:bg-zinc-200"}`}>All Hands</button>
+                  
+                  {Array.from(new Set(availablePool.flatMap(p => p.ministries || []))).map(min => (
+                    <button key={min} onClick={() => setMatrixFilter(min)} className={`px-4 py-2 rounded-full text-[10px] font-black uppercase tracking-widest whitespace-nowrap transition-all ${matrixFilter === min ? "bg-blue-600 text-white shadow-md scale-105" : "bg-zinc-100 text-zinc-500 hover:bg-zinc-200"}`}>{min}</button>
+                  ))}
+
+                  {/* The new Unavailable Tab */}
+                  <button onClick={() => { setMatrixFilter("Unavailable"); setLoadedUserId(null); }} className={`px-4 py-2 rounded-full text-[10px] font-black uppercase tracking-widest whitespace-nowrap transition-all ml-2 ${matrixFilter === "Unavailable" ? "bg-red-600 text-white shadow-md scale-105" : "bg-red-50 text-red-600 hover:bg-red-100"}`}>
+                    Unavailable ({unavailablePool.length})
+                  </button>
+                </div>
+                
+                {loadedUserId && (
+                  <button onClick={() => setLoadedUserId(null)} className="text-[10px] font-black text-red-500 hover:bg-red-50 px-3 py-1.5 rounded-full uppercase tracking-widest transition-colors shrink-0">Clear Selection</button>
+                )}
+              </div>
+              
+              <div className="flex items-center gap-4 overflow-x-auto custom-scrollbar pb-2 pt-1 px-1">
+                {/* Dynamically render either the Available Pool OR the Unavailable Pool based on the tab */}
+                {(matrixFilter === "Unavailable" ? unavailablePool : availablePool.filter(p => matrixFilter === "All" ? true : p.ministries?.includes(matrixFilter))).map(p => {
+                  const isLoaded = loadedUserId === p.id;
+                  const isBlocked = matrixFilter === "Unavailable";
+
+                  return (
+                    <button 
+                      key={p.id} 
+                      disabled={isBlocked} // Prevent picking up unavailable members
+                      onClick={() => setLoadedUserId(isLoaded ? null : p.id)}
+                      className={`flex flex-col items-center gap-2 shrink-0 transition-all duration-300 ${isBlocked ? "opacity-50 cursor-not-allowed grayscale" : isLoaded ? "-translate-y-2 scale-110" : "hover:-translate-y-1 hover:scale-105 active:scale-95"}`}
+                    >
+                      <div className={`w-12 h-12 rounded-full relative items-center justify-center font-black text-sm shadow-sm transition-all duration-300 ${isBlocked ? "bg-zinc-200 text-zinc-500 ring-1 ring-zinc-300" : isLoaded ? "bg-blue-600 text-white ring-4 ring-blue-500 ring-offset-2 shadow-lg" : "bg-blue-600 text-white ring-1 ring-zinc-200"}`}>
+                        {p.avatar_url ? <img src={p.avatar_url} alt="" className="w-full h-full rounded-full object-cover" /> : <span className="flex items-center justify-center w-full h-full">{isBlocked ? "🚫" : p.full_name?.charAt(0) || "U"}</span>}
+                        {isLoaded && <div className="absolute -bottom-1 -right-1 bg-blue-500 border-2 border-white text-white w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black shadow-sm">✓</div>}
+                      </div>
+                      <span className={`text-[9px] font-black uppercase tracking-widest truncate w-16 text-center ${isBlocked ? "text-zinc-400" : isLoaded ? "text-blue-600" : "text-zinc-500"}`}>{p.full_name?.split(' ')[0]}</span>
+                    </button>
+                  );
+                })}
+                
+                {matrixFilter === "Unavailable" && unavailablePool.length === 0 && <span className="text-xs font-semibold text-zinc-400 italic py-2 pl-2">No scheduled absences for this event.</span>}
+                {matrixFilter !== "Unavailable" && availablePool.filter(p => matrixFilter === "All" ? true : p.ministries?.includes(matrixFilter)).length === 0 && <span className="text-xs font-semibold text-zinc-400 italic py-2 pl-2">No available members found for this filter.</span>}
+              </div>
+            </div>
+          )}
 
           {/* MOBILE RESPONSIVE CONFIRMATION POPUP */}
-          <div className={`fixed bottom-24 md:bottom-8 left-4 right-4 md:left-32 md:right-8 bg-zinc-950 text-white border border-zinc-800 p-4 md:p-5 flex flex-col md:flex-row items-center justify-between gap-4 md:gap-0 rounded-2xl shadow-2xl transition-all duration-300 z-[10000] ${hasChanges && activeRole === "admin" ? 'translate-y-0 opacity-100' : 'translate-y-16 opacity-0 pointer-events-none'}`}>
+          <div className={`fixed top-20 md:top-24 left-4 right-4 md:left-auto md:right-8 bg-zinc-950 text-white border border-zinc-800 p-4 md:p-5 flex flex-col md:flex-row items-center justify-between gap-4 md:gap-4 rounded-2xl shadow-2xl transition-all duration-300 z-[10000] ${hasChanges && activeRole === "admin" ? 'translate-y-0 opacity-100' : '-translate-y-16 opacity-0 pointer-events-none'}`}>
             <p className="text-sm font-extrabold text-center md:text-left">Unsaved Lineup changes staged locally</p>
             <div className="flex items-center gap-2 md:gap-3 w-full md:w-auto">
               <button type="button" onClick={() => { setStagedRoster(roster); setHasChanges(false); }} className="flex-1 md:flex-none px-4 py-2.5 text-xs font-bold text-zinc-400 hover:text-white bg-zinc-900 md:bg-transparent rounded-xl md:rounded-none transition-colors">Discard</button>

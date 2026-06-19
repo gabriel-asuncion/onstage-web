@@ -59,3 +59,25 @@ The heart of OnPraise is the `SetlistPerformanceRoomPage`. Here is a brief overv
 ```bash
    git clone [https://github.com/your-org/onpraise.git](https://github.com/your-org/onpraise.git)
    cd onpraise
+
+2. Install dependencies:
+```bash
+    npm install
+   # or yarn install / pnpm install
+
+3.  Configure Environment Variables:
+    Create a .env.local file in the root directory and add your Supabase keys:
+```bash
+    NEXT_PUBLIC_SUPABASE_URL=your_supabase_project_url
+    NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
+
+4. Run the development server:
+```bash
+    npm run dev
+
+Open http://localhost:3000 with your browser to see the result.
+
+🔒 Security & Access
+Database RLS: Row Level Security (RLS) policies in Supabase ensure that users can only fetch setlists and profiles belonging to their active team_id.
+
+Route Protection: Next.js middleware and global context guards ensure unauthenticated or cross-workspace users are safely redirected to onboarding or login.
