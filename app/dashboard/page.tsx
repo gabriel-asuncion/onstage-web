@@ -110,7 +110,7 @@ export default function DashboardPage() {
 
       // 4. Fetch roster assignments
       const { data: rosterData, error: rosterErr } = await supabase
-        .from("team_members")
+        .from("event_rosters") // ✅ SURGICAL FIX: Pointing to the correct event table!
         .select("*");
       if (!rosterErr && rosterData) setAllocationsList(rosterData);
 
@@ -153,9 +153,11 @@ export default function DashboardPage() {
 
   const upcomingEventsSectionData = futureActiveEvents.slice(0, 5);
 
+  // ✅ SURGICAL FIX: Appended .slice(0, 3) to cap the rendered active plans
   const userAssignedActivePlans = futureActiveEvents.filter(evt =>
     allocationsList.some(member => member.event_id === evt.id && member.user_id === simulatedUserId)
-  );
+  ).slice(0, 3);
+
 
   const filteredBookmarkedSongs = allSongs.filter(song => 
     bookmarkedSongIds.includes(song.id) &&

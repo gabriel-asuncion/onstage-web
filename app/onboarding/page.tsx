@@ -126,24 +126,32 @@ export default function OnboardingPage() {
   };
 
   const handleCompleteOnboarding = async () => {
-    // ✅ SURGICAL FIX: Removed `!selectedTeamId` so "Lone Wolf" users who skipped Step 2 can still finish!
     if (!userId || selectedMinistries.length === 0 || !fullName.trim()) return;
 
     setSaving(true);
 
     try {
+      // 1. Fetch the authenticated session data from Supabase
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
+      if (authError) throw authError;
+
+      // 2. Extract the Google avatar and verified email address
+      const googleAvatarUrl = user?.user_metadata?.avatar_url || user?.user_metadata?.picture || null;
+      const gmailAddress = user?.email || user?.user_metadata?.email || null; // 👈 Extracts the Gmail address
+
+      // 3. Upsert everything cleanly into your database
       const { error } = await supabase
         .from("profiles")
-        .update({ 
+        .upsert({ 
+          id: userId,
           full_name: fullName.trim(), 
-          ministries: selectedMinistries 
-          // ✅ SURGICAL FIX: Removed team_id from the payload so we don't accidentally overwrite Step 2
-        })
-        .eq("id", userId);
+          ministries: selectedMinistries,
+          avatar_url: googleAvatarUrl,
+          email: gmailAddress // 👈 Saves the Gmail address to your profiles table
+        });
 
       if (error) throw error;
 
-      // Force a hard reload to the dashboard so the EngineContext picks up the new data
       window.location.href = "/dashboard"; 
     } catch (error) {
       console.error("Error saving profile:", error);

@@ -6,13 +6,14 @@ import { createClient } from "../utils/supabase/client";
 
 interface DBProfileRow {
   id: string;
-  team_id?: string; // ✅ ADD THIS
+  team_id?: string; 
+  role: string; // ✅ ADDED: Role property
   full_name: string;
   email: string;
   avatar_url?: string;
   ministries: string[];
   unavailable_dates: string[];
-  secondary_team_ids: string[]; // ✅ ADDED
+  secondary_team_ids: string[]; 
 }
 
 const AVAILABLE_MINISTRY_POSITIONS = ["VAST", "Pastor", "Dancer", "Musician", "Backup", "Music Leader"];
@@ -30,15 +31,18 @@ export default function DevFab() {
   // Master Global User Directory Management Modals
   const [isGlobalModalOpen, setIsGlobalModalOpen] = useState(false);
   const [globalProfiles, setGlobalProfiles] = useState<DBProfileRow[]>([]);
-  const [availableTeams, setAvailableTeams] = useState<any[]>([]); // ✅ ADDED
+  const [availableTeams, setAvailableTeams] = useState<any[]>([]); 
   const [loadingProfiles, setLoadingProfiles] = useState(false);
   
+  // ✅ ADDED: Search Filter State
+  const [searchQuery, setSearchQuery] = useState("");
+
   // Active editing profile focus nodes
   const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
   const [formName, setFormName] = useState("");
   const [formMinistries, setFormMinistries] = useState<string[]>([]);
   const [formDates, setFormDates] = useState<string[]>([]);
-  const [formSecondaryTeams, setFormSecondaryTeams] = useState<string[]>([]); // ✅ ADDED
+  const [formSecondaryTeams, setFormSecondaryTeams] = useState<string[]>([]); 
   const [stagedNewBlockoutDate, setStagedNewBlockoutDate] = useState("2026-06-14");
   const [isSavingData, setIsSavingData] = useState(false);
 
@@ -52,10 +56,10 @@ export default function DevFab() {
   async function syncGlobalDatabaseProfiles() {
     setLoadingProfiles(true);
     
-    // ✅ Fetch Profiles WITH secondary teams
+    // ✅ Fetch Profiles WITH secondary teams AND role
     const { data: profilesData } = await supabase
       .from("profiles")
-      .select("id, team_id, full_name, email, avatar_url, ministries, unavailable_dates, secondary_team_ids")
+      .select("id, team_id, role, full_name, email, avatar_url, ministries, unavailable_dates, secondary_team_ids")
       .order("full_name", { ascending: true });
     
     // ✅ Fetch all teams to populate the multi-select dropdown
@@ -73,6 +77,7 @@ export default function DevFab() {
     if (isGlobalModalOpen) {
       syncGlobalDatabaseProfiles();
       setEditingProfileId(null);
+      setSearchQuery(""); // Reset search when opening
     }
   }, [isGlobalModalOpen]);
 
@@ -135,14 +140,13 @@ export default function DevFab() {
     setFormName(profile.full_name || "");
     setFormMinistries(profile.ministries || []);
     setFormDates(profile.unavailable_dates || []);
-    setFormSecondaryTeams(profile.secondary_team_ids || []); // ✅ Hydrate array
+    setFormSecondaryTeams(profile.secondary_team_ids || []); 
   }
 
   function handleToggleFormMinistrySelection(tag: string) {
     setFormMinistries(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
   }
   
-  // ✅ ADDED: Toggle Teams Array
   function handleToggleFormTeamSelection(teamId: string) {
     setFormSecondaryTeams(prev => prev.includes(teamId) ? prev.filter(t => t !== teamId) : [...prev, teamId]);
   }
@@ -167,7 +171,7 @@ export default function DevFab() {
         full_name: formName.trim(),
         ministries: formMinistries,
         unavailable_dates: formDates,
-        secondary_team_ids: formSecondaryTeams // ✅ Save the Array
+        secondary_team_ids: formSecondaryTeams 
       })
       .eq("id", editingProfileId);
 
@@ -184,6 +188,31 @@ export default function DevFab() {
     }
     setIsSavingData(false);
   }
+
+  // ✅ ADDED: Fast Role Toggle Function
+  async function handleToggleRole(userId: string, currentRole: string) {
+    const newRole = currentRole === "admin" ? "member" : "admin";
+    try {
+      const { error } = await supabase
+        .from("profiles")
+        .update({ role: newRole })
+        .eq("id", userId);
+
+      if (error) throw error;
+
+      // Update local state instantly
+      setGlobalProfiles(prev => prev.map(p => 
+        p.id === userId ? { ...p, role: newRole } : p
+      ));
+    } catch (error: any) {
+      alert(`Failed to change role: ${error.message}`);
+    }
+  }
+
+  // ✅ Filter profiles dynamically based on the search input
+  const filteredProfiles = globalProfiles.filter(p => 
+    p.full_name?.toLowerCase().includes(searchQuery.toLowerCase())
+  );
 
   if (position.x === 0 && position.y === 0) return null;
 
@@ -250,21 +279,53 @@ export default function DevFab() {
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-8 custom-scrollbar space-y-4">
+            <div className="flex-1 overflow-y-auto p-8 custom-scrollbar space-y-6">
+              
+              {/* ✅ ADDED: Sleek Search Bar */}
+              <div className="max-w-md">
+                <input 
+                  type="text" 
+                  placeholder="Search users by name..." 
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full bg-white border border-zinc-200 rounded-2xl px-5 py-3.5 text-sm font-bold text-zinc-800 focus:border-blue-500 focus:outline-none transition-all shadow-inner"
+                />
+              </div>
+
               {loadingProfiles ? (
                 <div className="text-center py-20 text-xs font-black uppercase text-zinc-400 tracking-widest animate-pulse">Querying Database User Registries Matrix...</div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
-                  {globalProfiles.map((profile) => {
+                  
+                  {/* ✅ Switched to mapping filteredProfiles */}
+                  {filteredProfiles.map((profile) => {
                     const isRowEditingActive = editingProfileId === profile.id;
 
                     return (
                       <div 
                         key={profile.id} 
-                        className={`bg-white border rounded-[2rem] p-6 shadow-sm transition-all duration-150 ${
+                        // ✅ ADDED: 'relative' class to anchor the absolute toggle switch
+                        className={`relative bg-white border rounded-[2rem] p-6 shadow-sm transition-all duration-150 ${
                           isRowEditingActive ? "border-blue-500 ring-2 ring-blue-500/10" : "border-zinc-200"
                         }`}
                       >
+                        
+                        {/* ✅ ADDED: Admin/Member Toggle Switch */}
+                        {!isRowEditingActive && (
+                          <div className="absolute top-6 right-6 flex items-center gap-2">
+                            <span className={`text-[9px] font-black uppercase tracking-widest ${profile.role === 'admin' ? 'text-blue-600' : 'text-zinc-400'}`}>
+                              {profile.role === 'admin' ? 'Admin' : 'Member'}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleRole(profile.id, profile.role || 'member')}
+                              className={`w-10 h-5 rounded-full relative transition-colors duration-200 outline-none flex items-center px-0.5 shadow-inner ${profile.role === 'admin' ? 'bg-blue-600' : 'bg-zinc-200'}`}
+                            >
+                              <div className={`w-4 h-4 bg-white rounded-full transition-transform duration-200 shadow-sm ${profile.role === 'admin' ? 'translate-x-5' : 'translate-x-0'}`} />
+                            </button>
+                          </div>
+                        )}
+
                         {isRowEditingActive ? (
                           <form onSubmit={handleCommitProfileEditsToDB} className="space-y-4 animate-in fade-in duration-100">
                             
@@ -302,14 +363,11 @@ export default function DevFab() {
                               </div>
                             </div>
 
-                            {/* ✅ SURGICAL ADDITION: Multi-Campus UI Controller (With Primary Lock) */}
                             <div className="space-y-1.5 pt-1 border-t border-zinc-100 mt-2">
                               <label className="text-[10px] font-black text-purple-600 uppercase tracking-wider block">Multi-Campus Access Permissions</label>
                               <div className="flex flex-col gap-1 max-h-32 overflow-y-auto custom-scrollbar border rounded-xl p-2 bg-zinc-50">
                                 {availableTeams.map(team => {
-                                  // ✅ Check if this is their primary home base
                                   const isPrimary = profile.team_id === team.id;
-                                  // ✅ It is checked if it is primary, OR if it's in their secondary teams array
                                   const isChecked = isPrimary || formSecondaryTeams.includes(team.id);
                                   
                                   return (
@@ -367,7 +425,7 @@ export default function DevFab() {
                           </form>
                         ) : (
                           <div className="space-y-4 flex flex-col justify-between h-full min-h-[160px]">
-                            <div className="space-y-3.5">
+                            <div className="space-y-3.5 pr-14"> {/* Added pr-14 to prevent text overlapping the toggle */}
                               <div className="flex items-center gap-3">
                                 {profile.avatar_url ? (
                                   <img src={profile.avatar_url} className="w-12 h-12 rounded-xl object-cover border" alt="" />
@@ -388,7 +446,6 @@ export default function DevFab() {
                                   {(!profile.ministries || profile.ministries.length === 0) && <span className="text-[10px] text-zinc-400 italic font-medium">No position groups assigned.</span>}
                                 </div>
 
-                                {/* ✅ Display Secondary Teams in UI */}
                                 {profile.secondary_team_ids && profile.secondary_team_ids.length > 0 && (
                                   <div className="text-[9px] font-black uppercase tracking-widest text-purple-600 bg-purple-50 px-2 py-1 rounded border border-purple-100 inline-block">
                                     {profile.secondary_team_ids.length} Extra Workspace{profile.secondary_team_ids.length > 1 ? "s" : ""}
@@ -418,6 +475,13 @@ export default function DevFab() {
                       </div>
                     );
                   })}
+                  
+                  {filteredProfiles.length === 0 && !loadingProfiles && (
+                    <div className="col-span-1 md:col-span-2 text-center py-12 text-zinc-400 font-bold text-sm">
+                      No profiles found matching "{searchQuery}"
+                    </div>
+                  )}
+
                 </div>
               )}
             </div>

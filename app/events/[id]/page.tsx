@@ -93,11 +93,11 @@ export default function EventCockpitPage() {
   const [customGroupName, setCustomGroupName] = useState("");
   const [selectedGroupColor, setSelectedGroupColor] = useState("blue");
 
-  // ✅ SURGICAL FIX: "Load & Shoot" Matrix Interaction States
+  // "Load & Shoot" Matrix Interaction States
   const [loadedUserId, setLoadedUserId] = useState<string | null>(null);
   const [matrixFilter, setMatrixFilter] = useState<string>("All");
   const [isDeploying, setIsDeploying] = useState(false);
-  const [isDockOpen, setIsDockOpen] = useState(false); // Controls inline dock visibility
+  const [isDockOpen, setIsDockOpen] = useState(false); 
 
   const [isCreateSetlistOpen, setIsCreateSetlistOpen] = useState(false);
   const [newSetlistName, setNewSetlistName] = useState("");
@@ -108,6 +108,11 @@ export default function EventCockpitPage() {
   const [editServiceType, setEditServiceType] = useState("Divine Service");
   const [editDesc, setEditDesc] = useState("");
   const [isUpdatingEvent, setIsUpdatingEvent] = useState(false);
+
+  // ✅ SURGICAL FIX: New UX Safeguard States
+  const [showExitConfirm, setShowExitConfirm] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const [isTimePickerOpen, setIsTimePickerOpen] = useState(false);
   const [timePickerTargetItemId, setTimePickerTargetItemId] = useState<string | null>(null);
@@ -122,7 +127,7 @@ export default function EventCockpitPage() {
 
   async function syncRosterUI(currentTeamId: string, allProfilesData: DBProfile[]) {
     const { data: rawRoster, error } = await supabase
-      .from("team_members")
+      .from("event_rosters") 
       .select("id, role, user_id")
       .eq("event_id", eventId);
 
@@ -238,6 +243,27 @@ export default function EventCockpitPage() {
     setIsEditEventOpen(true);
   }
 
+  // ✅ SURGICAL FIX: Unsaved Warning Checks for Edit Modal
+  function handleCloseEditModalRequest() {
+    if (!activeEvent) return;
+    const isDirty = 
+      editTitle.trim() !== activeEvent.title ||
+      editDate !== (activeEvent.event_date ? activeEvent.event_date.split("T")[0] : "2026-06-12") ||
+      editServiceType !== (activeEvent.service_type || "Divine Service") ||
+      editDesc.trim() !== (activeEvent.description || "");
+
+    if (isDirty) {
+      setShowExitConfirm(true);
+    } else {
+      setIsEditEventOpen(false);
+    }
+  }
+
+  function forceCloseDiscardingChanges() {
+    setShowExitConfirm(false);
+    setIsEditEventOpen(false);
+  }
+
   async function handleUpdateEventSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!editTitle.trim()) return;
@@ -271,6 +297,21 @@ export default function EventCockpitPage() {
     }
   }
 
+  // ✅ SURGICAL FIX: Delete Event Handler
+  async function handleDeleteEvent() {
+    if (activeRole !== "admin") return;
+    setIsDeleting(true);
+    try {
+      const { error } = await supabase.from('events').delete().eq('id', eventId);
+      if (error) throw error;
+      router.push('/events');
+    } catch (err: any) {
+      alert(`Failed to delete event block: ${err.message}`);
+      setIsDeleting(false);
+      setShowDeleteConfirm(false);
+    }
+  }
+
   function handleLocalAddOrMove(userId: string, targetRole: string, sourceRole: string | null = null) {
     if (activeRole !== "admin") return;
     if (stagedRoster.some(r => r.user_id === userId && r.role === targetRole)) return; 
@@ -290,7 +331,7 @@ export default function EventCockpitPage() {
     try {
       const removedIds = roster.filter(r => !stagedRoster.some(sr => sr.id === r.id)).map(r => r.id); 
       for (const id of removedIds) {
-        const { error: delError } = await supabase.from("team_members").delete().eq("id", id);
+        const { error: delError } = await supabase.from("event_rosters").delete().eq("id", id);
         if (delError) { alert(`Deletion Error: ${delError.message}`); setIsDeploying(false); return; }
       }
 
@@ -299,7 +340,8 @@ export default function EventCockpitPage() {
         const targetTeamId = activeEvent?.team_id || team?.id;
         const payload: any = { event_id: eventId, user_id: row.user_id, role: row.role };
         if (targetTeamId && targetTeamId !== "00000000-0000-0000-0000-000000000000") { payload.team_id = targetTeamId; }
-        const { error: insError } = await supabase.from("team_members").insert(payload);
+        
+        const { error: insError } = await supabase.from("event_rosters").insert(payload);
         if (insError) { alert(`Database Write Rejected: ${insError.message}`); setIsDeploying(false); return; }
       }
 
@@ -565,7 +607,7 @@ export default function EventCockpitPage() {
                     if (loadedUserId && activeRole === "admin" && isQualified) {
                       handleLocalAddOrMove(loadedUserId, cardRole);
                       setLoadedUserId(null); 
-                      setIsDockOpen(false); // Auto-close dock when done!
+                      setIsDockOpen(false);
                     }
                   }}
                   className={`bg-white p-3 rounded-[1rem] border shadow-sm flex flex-col min-h-[80px] transition-all duration-300 ${
@@ -588,9 +630,8 @@ export default function EventCockpitPage() {
                           if (loadedUserId && isQualified) {
                             handleLocalAddOrMove(loadedUserId, cardRole);
                             setLoadedUserId(null);
-                            setIsDockOpen(false); // Auto-close dock when dropped!
+                            setIsDockOpen(false); 
                           } else if (!loadedUserId) {
-                            // ✅ SURGICAL FIX: Open dock and auto-filter to this role!
                             setIsDockOpen(true);
                             setMatrixFilter(cardRole);
                           }
@@ -605,7 +646,6 @@ export default function EventCockpitPage() {
                     )}
                   </div>
 
-                  {/* ✅ SURGICAL FIX: New Horizontal Wrap Layout for Avatars */}
                   <div className="flex-1 mt-3">
                     <div className="flex flex-wrap gap-2">
                       {list.map(m => (
@@ -630,7 +670,6 @@ export default function EventCockpitPage() {
             })}
           </div>
 
-          {/* ✅ SURGICAL FIX: Inline, togglable unassigned dock */}
           {activeRole === "admin" && isDockOpen && (
             <div className="bg-zinc-50/80 border border-zinc-200 p-4 rounded-[1rem] shadow-inner mt-2 flex flex-col gap-3 animate-in fade-in slide-in-from-top-4 duration-200 mb-20 md:mb-0">
               <div className="flex items-center justify-between border-b border-zinc-200/60 pb-3">
@@ -678,7 +717,6 @@ export default function EventCockpitPage() {
             </div>
           )}
 
-          {/* MOBILE RESPONSIVE CONFIRMATION POPUP */}
           <div className={`fixed bottom-20 md:bottom-8 left-4 right-4 md:left-auto md:right-8 bg-zinc-950 text-white border border-zinc-800 p-4 md:p-5 flex flex-col md:flex-row items-center justify-between gap-4 md:gap-4 rounded-2xl shadow-2xl transition-all duration-300 z-[10000] ${hasChanges && activeRole === "admin" ? 'translate-y-0 opacity-100' : 'translate-y-16 opacity-0 pointer-events-none'}`}>
             <p className="text-sm font-extrabold text-center md:text-left">Unsaved Lineup changes staged locally</p>
             <div className="flex items-center gap-2 md:gap-3 w-full md:w-auto">
@@ -771,30 +809,83 @@ export default function EventCockpitPage() {
 
       {/* --- EDIT ACTIVE EVENT OVERLAY MODAL --- */}
       {isEditEventOpen && (
-        <div className="fixed inset-0 bg-zinc-950/60 backdrop-blur-sm z-[140000] flex items-center justify-center p-4">
-          <form onSubmit={handleUpdateEventSubmit} className="bg-white rounded-[2rem] shadow-2xl w-full max-w-md p-6 relative flex flex-col space-y-4 animate-in zoom-in-95">
-            <button type="button" onClick={() => setIsEditEventOpen(false)} className="absolute top-6 right-6 w-8 h-8 rounded-full bg-zinc-100 text-zinc-500 font-bold text-xs flex items-center justify-center">✕</button>
+        <div 
+          className="fixed inset-0 bg-zinc-950/60 backdrop-blur-sm z-[140000] flex items-center justify-center p-4"
+          onClick={handleCloseEditModalRequest} // ✅ SURGICAL FIX: Backdrop triggers unsaved check
+        >
+          <form 
+            onSubmit={handleUpdateEventSubmit} 
+            onClick={(e) => e.stopPropagation()} // Prevents closing when clicking inside form
+            className="bg-white rounded-[2rem] shadow-2xl w-full max-w-md p-6 relative flex flex-col space-y-4 animate-in zoom-in-95"
+          >
+            <button type="button" onClick={handleCloseEditModalRequest} className="absolute top-6 right-6 w-8 h-8 rounded-full bg-zinc-100 hover:bg-zinc-200 text-zinc-500 font-bold text-xs flex items-center justify-center transition-colors">✕</button>
             <h3 className="text-xl font-black text-zinc-900 tracking-tight">Edit Event Block</h3>
             <div className="space-y-1">
-              <label className="text-[10px] font-black text-zinc-400 uppercase block">Event Title</label>
-              <input type="text" required value={editTitle} onChange={e => setEditTitle(e.target.value)} className="w-full bg-zinc-50 border rounded-xl px-4 py-3 text-sm font-semibold outline-none focus:border-blue-500" />
+              <label className="text-[10px] font-black text-zinc-400 uppercase block tracking-wider">Event Title</label>
+              <input type="text" required value={editTitle} onChange={e => setEditTitle(e.target.value)} className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 text-sm font-semibold outline-none focus:border-blue-500 focus:bg-white transition-colors" />
             </div>
             <div className="space-y-1">
-              <label className="text-[10px] font-black text-zinc-400 uppercase block">Type of Service Preset</label>
-              <select value={editServiceType} onChange={(e) => setEditServiceType(e.target.value)} className="w-full bg-zinc-50 border rounded-xl px-4 py-3 text-sm font-semibold outline-none focus:border-blue-500 cursor-pointer">
+              <label className="text-[10px] font-black text-zinc-400 uppercase block tracking-wider">Type of Service Preset</label>
+              <select value={editServiceType} onChange={(e) => setEditServiceType(e.target.value)} className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 text-sm font-semibold outline-none focus:border-blue-500 focus:bg-white transition-colors cursor-pointer">
                 {SERVICE_TYPE_PRESETS.map(preset => <option key={preset} value={preset}>{preset}</option>)}
               </select>
             </div>
             <div className="space-y-1">
-              <label className="text-[10px] font-black text-zinc-400 uppercase block">Event Date</label>
-              <input type="date" required value={editDate} onChange={e => setEditDate(e.target.value)} className="w-full bg-zinc-50 border rounded-xl px-4 py-3 text-sm font-semibold outline-none focus:border-blue-500" />
+              <label className="text-[10px] font-black text-zinc-400 uppercase block tracking-wider">Event Date</label>
+              <input type="date" required value={editDate} onChange={e => setEditDate(e.target.value)} className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 text-sm font-semibold outline-none focus:border-blue-500 focus:bg-white transition-colors" />
             </div>
             <div className="space-y-1">
-              <label className="text-[10px] font-black text-zinc-400 uppercase block">Summary Description</label>
-              <textarea value={editDesc} onChange={e => setEditDesc(e.target.value)} className="w-full bg-zinc-50 border rounded-xl px-4 py-3 text-sm font-semibold outline-none h-24 resize-none focus:border-blue-500" />
+              <label className="text-[10px] font-black text-zinc-400 uppercase block tracking-wider">Summary Description</label>
+              <textarea value={editDesc} onChange={e => setEditDesc(e.target.value)} className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 text-sm font-semibold outline-none h-24 resize-none focus:border-blue-500 focus:bg-white transition-colors custom-scrollbar" />
             </div>
-            <button type="submit" disabled={isUpdatingEvent} className="w-full bg-blue-600 text-white font-black py-3.5 rounded-xl text-xs uppercase tracking-widest shadow-md">{isUpdatingEvent ? "Saving..." : "Commit Event Changes"}</button>
+            
+            {/* ✅ SURGICAL FIX: Delete button placed alongside Commit Changes */}
+            <div className="flex gap-2 pt-2">
+              <button 
+                type="button" 
+                onClick={() => setShowDeleteConfirm(true)}
+                className="flex-1 bg-red-50 hover:bg-red-100 text-red-600 font-black py-3.5 rounded-xl text-xs uppercase tracking-widest transition-all active:scale-95 border border-red-200"
+              >
+                Delete
+              </button>
+              <button 
+                type="submit" 
+                disabled={isUpdatingEvent} 
+                className="flex-[2] bg-blue-600 hover:bg-blue-700 text-white font-black py-3.5 rounded-xl text-xs uppercase tracking-widest shadow-md transition-all active:scale-95"
+              >
+                {isUpdatingEvent ? "Saving..." : "Commit Changes"}
+              </button>
+            </div>
           </form>
+        </div>
+      )}
+
+      {/* ✅ SURGICAL FIX: Unsaved Changes Warning Modal (For Edit Overlay) */}
+      {showExitConfirm && (
+        <div className="fixed inset-0 bg-zinc-950/40 backdrop-blur-sm z-[150000] flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 text-center border border-zinc-200">
+            <h3 className="text-lg font-black text-zinc-900 mb-2 tracking-tight">Discard changes?</h3>
+            <p className="text-xs text-zinc-500 font-medium mb-6">You have unsaved edits in your event block. Are you sure you want to close and lose this data?</p>
+            <div className="flex gap-3">
+              <button onClick={() => setShowExitConfirm(false)} className="flex-1 py-2.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 font-bold text-xs rounded-xl transition-colors">Keep Editing</button>
+              <button onClick={forceCloseDiscardingChanges} className="flex-1 py-2.5 bg-red-500 hover:bg-red-600 text-white font-bold text-xs rounded-xl shadow-sm transition-colors">Discard</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ✅ SURGICAL FIX: Delete Event Confirmation Modal */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 bg-zinc-950/40 backdrop-blur-sm z-[150000] flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 text-center border border-zinc-200">
+            <div className="w-12 h-12 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto text-xl shadow-inner border border-red-200 mb-4">⚠️</div>
+            <h3 className="text-lg font-black text-zinc-900 mb-2 tracking-tight">Delete this event?</h3>
+            <p className="text-xs text-zinc-500 font-medium mb-6">This will permanently delete the event, its setlists, and all scheduled lineups. This action cannot be undone.</p>
+            <div className="flex gap-3">
+              <button onClick={() => setShowDeleteConfirm(false)} disabled={isDeleting} className="flex-1 py-2.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 font-bold text-xs rounded-xl transition-colors">Cancel</button>
+              <button onClick={handleDeleteEvent} disabled={isDeleting} className="flex-1 py-2.5 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-xl shadow-sm transition-colors">{isDeleting ? "Deleting..." : "Yes, Delete"}</button>
+            </div>
+          </div>
         </div>
       )}
 

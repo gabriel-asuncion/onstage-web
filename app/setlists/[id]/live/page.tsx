@@ -65,6 +65,110 @@ const STRUCTURE_CATALOG_PRESETS = [
   "Intro", "Verse 1", "Verse 2", "Verse 3", "Pre-Chorus", "Chorus 1", "Chorus 2", "Bridge", "Instrumental", "Outro"
 ];
 
+// ✅ SURGICAL ADDITION: Global Memory Cache for zero-latency playback
+const audioCache: Record<string, HTMLAudioElement> = {};
+
+// ✅ SURGICAL REFACTOR: Centralized normalizer for smart scanning
+const normalizeSectionNameToAudioFile = (rawSectionName: string): string | null => {
+  if (!rawSectionName) return null;
+  let cleanName = rawSectionName.trim();
+  const lowerName = cleanName.toLowerCase();
+  
+  if (lowerName.includes("pre")) return "Pre Chorus";
+  if (lowerName.includes("post")) return "Post Chorus";
+  if (lowerName.includes("chorus")) return "Chorus";
+  if (lowerName.includes("bridge")) return "Bridge";
+  if (lowerName.includes("intro")) return "Intro";
+  if (lowerName.includes("outro")) return "Outro";
+  if (lowerName.includes("refrain")) return "Refrain";
+  if (lowerName.includes("ad lib")) return "Ad Lib";
+  if (lowerName.includes("interlude")) return "Interlude";
+  if (lowerName.includes("instrumental") || lowerName.includes("inst")) return "Instrumental";
+  
+  // Smart Regex catch for Verses (maps "Verse1", "verse 1", "Verse 1 (Quiet)" -> "Verse 1")
+  const verseMatch = lowerName.match(/verse\s*(\d+)/);
+  if (verseMatch) return `Verse ${verseMatch[1]}`;
+  
+  // Return null if it's a completely custom name that doesn't have a matching .wav file
+  return null; 
+};
+
+// ✅ SURGICAL PERFORMANCE FIX: O(1) Memoized Rendering
+// This stops React from rebuilding the entire song when the playhead moves down a line
+const MemoizedLyricLine = React.memo(({ 
+  line, 
+  sectionIndex, 
+  lineIndex, 
+  isCurrentlyPlayingLine, 
+  showChords, 
+  lyricsFontSize, 
+  lineSpacing 
+}: {
+  line: ParsedLineToken;
+  sectionIndex: number;
+  lineIndex: number;
+  isCurrentlyPlayingLine: boolean;
+  showChords: boolean;
+  lyricsFontSize: number;
+  lineSpacing: number;
+}) => {
+  return (
+    <div 
+      id={`line-${sectionIndex}-${lineIndex}`}
+      style={{ paddingBottom: `${lineSpacing}px` }} 
+      className={`flex flex-col sm:flex-row sm:items-start justify-between gap-2 border-b border-zinc-100/50 last:border-0 p-3 -mx-3 rounded-2xl transition-all duration-300 ${
+        isCurrentlyPlayingLine 
+          ? "bg-zinc-100 shadow-sm scale-[1.005] border-transparent z-20" 
+          : ""
+      }`}
+    >
+      <div className="flex flex-wrap items-end gap-x-2 gap-y-3.5 py-0.5 leading-none flex-1">
+        {line.words.map((wordObj, wIdx) => (
+          <div key={wIdx} className="flex flex-col items-start min-h-[36px] justify-end">
+            {showChords && wordObj.chords.length > 0 && (
+              <div className="text-[11px] font-mono font-black tracking-tight pb-0.5 select-none text-blue-600">
+                {wordObj.chords.map((ch, cIdx) => (
+                  <span key={cIdx} className="mr-0.5 px-0.5 rounded border bg-blue-50/60 border-blue-100/40">{ch}</span>
+                ))}
+              </div>
+            )}
+            <div 
+              style={{ fontSize: `${lyricsFontSize}px` }}
+              className="font-sans font-bold tracking-tight transition-all duration-100 uppercase text-zinc-950"
+            >
+              {wordObj.word || " "}
+            </div>
+          </div>
+        ))}
+      </div>
+      {line.comment && (
+        <div style={{ fontFamily: "'Nothing You Could Do', cursive" }} className="text-[14px] tracking-wide select-none whitespace-nowrap sm:pl-4 self-end text-zinc-400">
+          {line.comment}
+        </div>
+      )}
+    </div>
+  );
+});
+MemoizedLyricLine.displayName = "MemoizedLyricLine";
+
+const playGuideCue = (rawSectionName: string) => {
+  if (typeof window === "undefined" || !rawSectionName) return;
+  
+  const cleanName = normalizeSectionNameToAudioFile(rawSectionName);
+  if (!cleanName) return; // Bypass silently if no matching audio file exists
+
+  if (!audioCache[cleanName]) {
+    const audio = new Audio(`/sound_files/${cleanName}.wav`);
+    audio.preload = "auto";
+    audio.volume = 0.85;
+    audioCache[cleanName] = audio;
+  }
+
+  const targetAudio = audioCache[cleanName];
+  targetAudio.currentTime = 0; 
+  targetAudio.play().catch(e => console.warn(`Silent guide cue bypass: ${cleanName}.wav`));
+};
+
 const normalizeKeyNote = (note: string): string => {
   const flatMap: { [key: string]: string } = { "Db": "C#", "Eb": "D#", "Gb": "F#", "Ab": "G#", "Bb": "A#" };
   return flatMap[note] || note;
@@ -118,6 +222,9 @@ export default function SetlistPerformanceRoomPage() {
   const [lineSpacing, setLineSpacing] = useState<number>(16); 
   const [isMdLockModalOpen, setIsMdLockModalOpen] = useState<boolean>(false); // ✅ SURGICAL FIX: Added modal state
 
+  // ✅ SURGICAL ADDITION: Prevents the vocal cue from stuttering/repeating
+  const hasPlayedCueRef = useRef<boolean>(false);
+
   // Presence State
   const [onlineUsers, setOnlineUsers] = useState<{ id: string; name: string; initials: string; bg: string; connectionId?: string; avatar?: string | null; isMD?: boolean; }[]>([]);
   const [localPresenceUser, setLocalPresenceUser] = useState<{ id: string; name: string; initials: string; bg: string; connectionId?: string; avatar?: string | null; isMD?: boolean; } | null>(null);
@@ -126,6 +233,30 @@ export default function SetlistPerformanceRoomPage() {
   const localPresenceUserRef = useRef<any>(null);
   const isChannelSubscribedRef = useRef<boolean>(false);
   const mdSectionStartTimeRef = useRef<number | null>(null);
+
+  // ✅ SURGICAL ADDITION: Direct DOM Pointers for the Metronome
+  const metronomeRefs = useRef<(HTMLDivElement | null)[]>([null, null, null, null]);
+
+  // ✅ DOM Mutator: Bypasses React to instantly paint the metronome colors
+  const updateMetronomeUI = (activeBeat: number, isPlaying: boolean) => {
+    metronomeRefs.current.forEach((el, index) => {
+      if (!el) return;
+      const beatNum = index + 1;
+      
+      // Wipe existing color classes
+      el.className = "w-6 h-6 flex items-center justify-center font-mono font-black text-[10px] rounded border transition-all duration-75 select-none";
+
+      if (isPlaying && activeBeat === beatNum) {
+        if (beatNum === 4) {
+          el.classList.add("bg-[#faba37]", "text-white", "border-[#e0a22b]");
+        } else {
+          el.classList.add("bg-blue-600", "text-white", "border-blue-500");
+        }
+      } else {
+        el.classList.add("bg-white", "text-zinc-200", "border-zinc-100");
+      }
+    });
+  };
  
   // Floating scroll state anchors tracking fields
   const [showSyncBack, setShowSyncBack] = useState<boolean>(false);
@@ -143,6 +274,33 @@ export default function SetlistPerformanceRoomPage() {
   const [queuedSectionIndex, setQueuedSectionIndex] = useState<number | null>(null);
   const queuedSectionIndexRef = useRef<number | null>(null);
   const clickTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // ✅ SURGICAL REFACTOR: Smart dynamic preloader scans the setlist layout
+  useEffect(() => {
+    if (typeof window === "undefined" || tracksList.length === 0) return;
+    
+    const uniqueRequiredFiles = new Set<string>();
+
+    // 1. Scan the AST tree of every song in the setlist
+    tracksList.forEach(track => {
+      const structure = track.custom_structure || [];
+      structure.forEach(section => {
+        const fileName = normalizeSectionNameToAudioFile(section.section_name);
+        if (fileName) uniqueRequiredFiles.add(fileName);
+      });
+    });
+
+    // 2. Silently fetch only the required files for this specific event
+    uniqueRequiredFiles.forEach(fileName => {
+      if (!audioCache[fileName]) {
+        const audio = new Audio(`/sound_files/${fileName}.wav`);
+        audio.preload = "auto";
+        audio.volume = 0.85;
+        audioCache[fileName] = audio;
+      }
+    });
+    
+  }, [tracksList]); // Triggers dynamically whenever the setlist is loaded or modified
 
   // Advanced Drag and Drop Interactive Feedback States
   const [isStructureModalOpen, setIsStructureModalOpen] = useState(false);
@@ -282,7 +440,7 @@ export default function SetlistPerformanceRoomPage() {
           currentSectionIndexRef.current = payload.sectionIndex;
           setCurrentSectionIndex(payload.sectionIndex);
           lastBeatRef.current = 1;
-          setCurrentBeat(1);
+          updateMetronomeUI(1, true); // ✅ FAST DOM MUTATION
           
           // Reset lines tracking
           activeLineIndexRef.current = 0;
@@ -308,7 +466,7 @@ export default function SetlistPerformanceRoomPage() {
           setCurrentSectionIndex(payload.sectionIndex);
           
           lastBeatRef.current = 1;
-          setCurrentBeat(1);
+          updateMetronomeUI(1, true); // ✅ FAST DOM MUTATION
           activeLineIndexRef.current = 0;
           setActiveLineIndex(0);
 
@@ -346,6 +504,7 @@ export default function SetlistPerformanceRoomPage() {
   function executeLocalResetSequence() {
     isPlayingRef.current = false;
     setIsPlayingFlow(false);
+    hasPlayedCueRef.current = false;
     
     if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     
@@ -354,7 +513,7 @@ export default function SetlistPerformanceRoomPage() {
     activeLineIndexRef.current = 0;
     
     setCurrentSectionIndex(0);
-    setCurrentBeat(1);
+    updateMetronomeUI(1, false); // ✅ FAST DOM MUTATION
     setActiveLineIndex(0);
     setQueuedTrackIndex(null);
     setQueuedSectionIndex(null);
@@ -574,64 +733,74 @@ export default function SetlistPerformanceRoomPage() {
     }
   }, [activeLineIndex, currentSectionIndex, isPlayingFlow]);
 
-  // Viewport listener evaluates user scroll drift
+  // ✅ SURGICAL PERFORMANCE FIX: Hardware-Accelerated IntersectionObserver
   useEffect(() => {
     const containerNode = scrollContainerRef.current;
-    if (!containerNode) return;
+    if (!containerNode || !isPlayingFlow) return;
 
-    const handleContainerScrollDetection = () => {
-      if (!isPlayingFlow || isAutoScrollingRef.current) return;
+    if (currentTrackIndex !== playingTrackIndexRef.current) {
+      setShowSyncBack(true);
+      return;
+    }
 
-      if (currentTrackIndex !== playingTrackIndexRef.current) {
-        setShowSyncBack(true);
-        return;
+    const activeLineId = `line-${currentSectionIndex}-${activeLineIndex}`;
+    const targetElement = document.getElementById(activeLineId);
+
+    if (!targetElement) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        
+        // Ignore the trigger if the engine itself is auto-scrolling
+        if (isAutoScrollingRef.current) return;
+
+        // If the line leaves the 60% boundary, it is no longer intersecting
+        if (!entry.isIntersecting) {
+          setShowSyncBack(true);
+        } else {
+          setShowSyncBack(false);
+        }
+      },
+      {
+        root: containerNode,
+        // ✅ The Magic Box: Shrinks the detection zone by 20% on top and bottom
+        rootMargin: "-20% 0px -20% 0px", 
+        threshold: 0 // Triggers the exact millisecond it crosses the line
       }
+    );
 
-      // ✅ SURGICAL FIX: Target the specific active line instead of the massive section block
-      const activeLineId = `line-${currentSectionIndex}-${activeLineIndexRef.current}`;
-      const targetElement = document.getElementById(activeLineId);
-      
-      if (!targetElement) return;
+    observer.observe(targetElement);
 
-      const containerRect = containerNode.getBoundingClientRect();
-      const elementRect = targetElement.getBoundingClientRect();
-
-      // ✅ High Sensitivity: Trigger free-scroll if the active line drifts out of the middle 60% of the screen
-      const topBoundary = containerRect.top + (containerRect.height * 0.2);
-      const bottomBoundary = containerRect.bottom - (containerRect.height * 0.2);
-
-      const isOutOfViewBounds = (elementRect.top < topBoundary) || (elementRect.bottom > bottomBoundary);
-      
-      setShowSyncBack(isOutOfViewBounds);
+    return () => {
+      observer.disconnect();
     };
-
-    containerNode.addEventListener("scroll", handleContainerScrollDetection);
-    return () => containerNode.removeEventListener("scroll", handleContainerScrollDetection);
-  }, [isPlayingFlow, currentSectionIndex, currentTrackIndex, playingTrackIndex]);
+  }, [isPlayingFlow, currentSectionIndex, activeLineIndex, currentTrackIndex]);
 
   // ==========================================================
   // --- COMPOSER ENGINE HARDWARE ANIMATION TIMELINE LOOP -----
   // ==========================================================
   useEffect(() => {
-    if (!isPlayingFlow || !activeSong || sections.length === 0) {
+    // ✅ SURGICAL FIX 1: Use Refs here so the engine doesn't rely on state variables
+    if (!isPlayingFlow || !activeSongRef.current || sectionsRef.current.length === 0) {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
       return;
     }
 
-    sectionStartTimeRef.current = performance.now();
-    lastBeatRef.current = 1;
-
-    const isCurrentlyMD = localPresenceUser?.isMD === true;
-    
+    // Only set the initial start time when the user physically clicks "Play"
     if (pauseOffsetMsRef.current > 0) {
       sectionStartTimeRef.current = performance.now() - pauseOffsetMsRef.current;
     } else {
       sectionStartTimeRef.current = performance.now();
     }
+    lastBeatRef.current = 1;
 
     const clockExecutionTick = (timestamp: number) => {
       if (!isPlayingRef.current || !activeSongRef.current || sectionsRef.current.length === 0) return;
       
+      // ✅ SURGICAL FIX 2: Check MD status via Ref every frame so we don't need it in the dependency array
+      const isCurrentlyMD = localPresenceUserRef.current?.isMD === true;
+
       const song = playingSongRef.current || activeSongRef.current; 
       const secs = playingSectionsRef.current;
       const idx = currentSectionIndexRef.current;
@@ -698,7 +867,42 @@ export default function SetlistPerformanceRoomPage() {
       const currentBeatPulse = Math.floor(elapsedMs / beatSpeedMsCurrent) % 4 + 1;
       if (currentBeatPulse !== lastBeatRef.current) {
         lastBeatRef.current = currentBeatPulse;
-        setCurrentBeat(currentBeatPulse);
+        updateMetronomeUI(currentBeatPulse, true); // ✅ FAST DOM MUTATION
+      }
+      
+      // ✅ SURGICAL ADDITION: Guide Cue Engine (Scenarios 1 & 3)
+      const remainingBeats = (totalDurationMs - elapsedMs) / beatSpeedMsCurrent;
+      
+      // If we are in the last 4 beats, and haven't played the cue yet
+      if (remainingBeats <= 4.05 && remainingBeats > 0 && !hasPlayedCueRef.current) {
+        hasPlayedCueRef.current = true; // Lock it so it only plays once
+        
+        let nextSectionName = "";
+        
+        // Scenario 3: Is there a manually queued section?
+        if (queuedSectionIndexRef.current !== null && queuedTrackIndexRef.current !== null) {
+          const queuedTrack = tracksListRef.current[queuedTrackIndexRef.current];
+          if (queuedTrack && queuedTrack.custom_structure) {
+             nextSectionName = queuedTrack.custom_structure[queuedSectionIndexRef.current]?.section_name;
+          }
+        } else {
+          // Scenario 1: Normal playback flow
+          const nextSectionIdx = currentSectionIndexRef.current + 1;
+          if (nextSectionIdx < secs.length) {
+             nextSectionName = secs[nextSectionIdx].section_name;
+          } else {
+             // Look ahead to the next track if this is the end of the song
+             const nextTrackIdx = playingTrackIndexRef.current + 1;
+             if (nextTrackIdx < tracksListRef.current.length) {
+                const nextTrack = tracksListRef.current[nextTrackIdx];
+                if (nextTrack && nextTrack.custom_structure) {
+                   nextSectionName = nextTrack.custom_structure[0]?.section_name;
+                }
+             }
+          }
+        }
+        
+        if (nextSectionName) playGuideCue(nextSectionName);
       }
 
       // ==========================================
@@ -739,13 +943,6 @@ export default function SetlistPerformanceRoomPage() {
       // 4. NEXT SECTION TRANSITION HANDLING
       // ==========================================
       if (elapsedMs >= totalDurationMs) {
-        if (!isCurrentlyMD) {
-          if (backdropProgressRef.current) backdropProgressRef.current.style.transform = "scaleX(1)";
-          if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = "scaleX(1)";
-          animationFrameRef.current = requestAnimationFrame(clockExecutionTick);
-          return;
-        }
-
         const harmsActiveQueue = queuedSectionIndexRef.current !== null && queuedTrackIndexRef.current !== null;
         let nextTrackIdx = playingTrackIndexRef.current;
         let nextSectionIdx = idx + 1;
@@ -770,7 +967,7 @@ export default function SetlistPerformanceRoomPage() {
             setActiveDisplayKey(targetTrackItem.custom_key || targetTrackItem.songs.original_key || "G");
             setSections(targetTrackItem.custom_structure || []);
 
-            if (realtimeChannelRef.current) {
+            if (isCurrentlyMD && realtimeChannelRef.current) {
               realtimeChannelRef.current.send({
                 type: "broadcast",
                 event: "lobby_sync",
@@ -782,22 +979,27 @@ export default function SetlistPerformanceRoomPage() {
 
         const currentPlayingSongSections = playingSectionsRef.current;
         if (nextSectionIdx < currentPlayingSongSections.length) {
-          const overrun = elapsedMs - totalDurationMs;
+          
+          // ✅ SURGICAL FIX 1: Advance anchors purely by math. Zero clock drift!
+          sectionStartTimeRef.current += totalDurationMs;
+          if (mdSectionStartTimeRef.current !== null) {
+            mdSectionStartTimeRef.current += totalDurationMs;
+          }
+
           currentSectionIndexRef.current = nextSectionIdx;
           setCurrentSectionIndex(nextSectionIdx);
           
           activeLineIndexRef.current = 0;
           setActiveLineIndex(0);
 
-          sectionStartTimeRef.current = performance.now() - overrun;
+          hasPlayedCueRef.current = false;
+          
           lastBeatRef.current = 1;
+          updateMetronomeUI(1, true); // ✅ FAST DOM MUTATION
 
-          const calculatedNextStart = Date.now() - overrun;
-          if (isCurrentlyMD) {
-            mdSectionStartTimeRef.current = calculatedNextStart;
-          }
-
-          if (realtimeChannelRef.current) {
+          // ✅ SURGICAL FIX 2: Both viewers and MDs transition instantly. 
+          // Only the MD broadcasts the safety sync packet in the background.
+          if (isCurrentlyMD && realtimeChannelRef.current) {
             realtimeChannelRef.current.send({
               type: "broadcast",
               event: "lobby_sync",
@@ -805,11 +1007,12 @@ export default function SetlistPerformanceRoomPage() {
                 action: "JUMP", 
                 trackIndex: nextTrackIdx,
                 sectionIndex: nextSectionIdx,
-                mdSectionStartTime: calculatedNextStart
+                mdSectionStartTime: mdSectionStartTimeRef.current
               }
             });
           }
         } else {
+          hasPlayedCueRef.current = false;
           handleAdvanceToNextSetlistTrack();
           return;
         }
@@ -823,7 +1026,8 @@ export default function SetlistPerformanceRoomPage() {
     return () => {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
-  }, [isPlayingFlow, currentSectionIndex, activeSong, sections, localPresenceUser]);
+  // ✅ SURGICAL FIX 3: Stripped out all state variables! The engine never tears itself down during a song now.
+  }, [isPlayingFlow]);
 
   function handleToggleFlowPlaybackState() {
     if (!localPresenceUser?.isMD) {
@@ -980,12 +1184,19 @@ export default function SetlistPerformanceRoomPage() {
     setCurrentSectionIndex(index);
     
     lastBeatRef.current = 1;
-    setCurrentBeat(1);
+    updateMetronomeUI(1, isPlayingRef.current); // ✅ FAST DOM MUTATION
     
     activeLineIndexRef.current = 0;
     setActiveLineIndex(0);
 
+    // ✅ Reset the cue lock so the end of this new section can trigger the next cue
+    hasPlayedCueRef.current = false; 
+
     if (isPlayingRef.current && activeSong) {
+      // ✅ SCENARIO 2: Immediate fast-jump playback cue
+      const targetSec = sections[index] || sectionsRef.current[index];
+      if (targetSec) playGuideCue(targetSec.section_name);
+
       sectionStartTimeRef.current = performance.now();
       const activeSection = sections[index];
       if (activeSection) {
@@ -1146,7 +1357,10 @@ export default function SetlistPerformanceRoomPage() {
           const chordsList: string[] = [];
           let match;
           while ((match = chordRegex.exec(chunk)) !== null) {
-            chordsList.push(match[1]);
+            // ✅ SURGICAL PERFORMANCE FIX: Transpose here ONCE in memory, not 8x a second in the UI!
+            const rawChord = match[1];
+            const finalChord = runtimeSemitoneDelta !== 0 ? transposeBracketContent(rawChord, runtimeSemitoneDelta) : rawChord;
+            chordsList.push(finalChord);
           }
           const wordText = chunk.replace(/\[[^\]]+\]/g, "");
           return { chords: chordsList, word: wordText };
@@ -1157,7 +1371,7 @@ export default function SetlistPerformanceRoomPage() {
 
       return { id: section.id, section_name: section.section_name, lines: linesArray };
     });
-  }, [sections]);
+  }, [sections, runtimeSemitoneDelta]); // ✅ Added runtime dependency
   
   // ✅ Update AST cache dependency
   useEffect(() => {
@@ -1279,23 +1493,20 @@ export default function SetlistPerformanceRoomPage() {
             </div>
 
             <div className="flex items-center gap-1 bg-zinc-50 p-1 rounded-lg border border-zinc-200 shadow-inner shrink-0">
-              {[1, 2, 3, 4].map((beatNum) => {
-                const isByBeatPulsing = isPlayingFlow && currentBeat === beatNum;
-                return (
-                  <div
-                    key={beatNum}
-                    className={`w-6 h-6 flex items-center justify-center font-mono font-black text-[10px] rounded border transition-all duration-75 select-none ${
-                      isByBeatPulsing
-                        ? beatNum === 4
-                          ? "bg-[#faba37] text-white border-[#e0a22b]"
-                          : "bg-blue-600 text-white border-blue-500"
-                        : "bg-white text-zinc-200 border-zinc-100"
-                    }`}
-                  >
-                    {beatNum}
-                  </div>
-                );
-              })}
+              {[1, 2, 3, 4].map((beatNum) => (
+                <div
+                  key={beatNum}
+                  // ✅ SURGICAL FIX: Attach the DOM pointer
+                  ref={(el) => { metronomeRefs.current[beatNum - 1] = el; }}
+                  className={`w-6 h-6 flex items-center justify-center font-mono font-black text-[10px] rounded border transition-all duration-75 select-none ${
+                    isPlayingFlow && currentBeat === beatNum
+                      ? beatNum === 4 ? "bg-[#faba37] text-white border-[#e0a22b]" : "bg-blue-600 text-white border-blue-500"
+                      : "bg-white text-zinc-200 border-zinc-100"
+                  }`}
+                >
+                  {beatNum}
+                </div>
+              ))}
             </div>
 
             <div className="flex items-center gap-1.5 shrink-0 ml-1">
@@ -1422,47 +1633,21 @@ export default function SetlistPerformanceRoomPage() {
 
                 <div className="pl-0.5 select-text selection:bg-blue-50 text-zinc-800 space-y-2">
                   {section.lines.length === 0 ? <div className="h-4" /> : section.lines.map((line: ParsedLineToken, lIdx: number) => {
-                    // Compute specific line highlight logic
                     const isCurrentlyPlayingLine = isThisSectionActivePlayback && activeLineIndex === lIdx;
                     
                     return (
-                      <div 
-                        key={lIdx} 
-                        id={`line-${idx}-${lIdx}`} // ID assignment for the auto-scroller anchor
-                        style={{ paddingBottom: `${lineSpacing}px` }} 
-                        className={`flex flex-col sm:flex-row sm:items-start justify-between gap-2 border-b border-zinc-100/50 last:border-0 p-3 -mx-3 rounded-2xl transition-all duration-300 ${
-                          isCurrentlyPlayingLine 
-                            ? "bg-zinc-100 shadow-sm scale-[1.005] border-transparent z-20" // ✅ SURGICAL ALTERATION: Changed to light gray styling block
-                            : ""
-                        }`}
-                      >
-                        <div className="flex flex-wrap items-end gap-x-2 gap-y-3.5 py-0.5 leading-none flex-1">
-                          {line.words.map((wordObj, wIdx) => (
-                            <div key={wIdx} className="flex flex-col items-start min-h-[36px] justify-end">
-                              {showChords && wordObj.chords.length > 0 && (
-                                // ✅ Retained core text color parameters so text stays readable over the soft gray background
-                                <div className="text-[11px] font-mono font-black tracking-tight pb-0.5 select-none text-blue-600">
-                                  {wordObj.chords.map((ch, cIdx) => {
-                                    const finalChord = runtimeSemitoneDelta !== 0 ? transposeBracketContent(ch, runtimeSemitoneDelta) : ch;
-                                    return <span key={cIdx} className="mr-0.5 px-0.5 rounded border bg-blue-50/60 border-blue-100/40">{finalChord}</span>;
-                                  })}
-                                </div>
-                              )}
-                              <div 
-                                style={{ fontSize: `${lyricsFontSize}px` }}
-                                className="font-sans font-bold tracking-tight transition-all duration-100 uppercase text-zinc-950"
-                              >
-                                {wordObj.word || " "}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                        {line.comment && (
-                          <div style={{ fontFamily: "'Nothing You Could Do', cursive" }} className="text-[14px] tracking-wide select-none whitespace-nowrap sm:pl-4 self-end text-zinc-400">
-                            {line.comment}
-                          </div>
-                        )}
-                      </div>
+                      // ✅ SURGICAL FIX: Call the Memoized component. 
+                      // If 'isCurrentlyPlayingLine' doesn't flip, React skips rendering this instantly.
+                      <MemoizedLyricLine 
+                        key={lIdx}
+                        line={line}
+                        sectionIndex={idx}
+                        lineIndex={lIdx}
+                        isCurrentlyPlayingLine={isCurrentlyPlayingLine}
+                        showChords={showChords}
+                        lyricsFontSize={lyricsFontSize}
+                        lineSpacing={lineSpacing}
+                      />
                     );
                   })}
                 </div>

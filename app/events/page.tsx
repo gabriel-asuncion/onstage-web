@@ -3,11 +3,9 @@
 import { useEffect, useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "../../utils/supabase/client";
-import Link from "next/link"; // ✅ SURGICAL FIX: Added Link import
+import Link from "next/link"; 
 import { useEngine } from "../context/EngineContext";
 import { getUserTeam, getAllProfiles } from "../../utils/supabase/actions";
-
-
 
 interface EventItem { 
   id: string; 
@@ -35,7 +33,6 @@ export default function EventsManagerPage() {
   const supabase = createClient();
   const router = useRouter();
   
-  // ✅ SURGICAL ADDITION: Pull activeRole and userTeamId from the Engine
   const { activeRole, userTeamId } = useEngine();
 
   const [team, setTeam] = useState<any>(null);
@@ -63,6 +60,9 @@ export default function EventsManagerPage() {
   const [eventDesc, setEventDesc] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // ✅ SURGICAL ADDITION: Unsaved Changes Modal State
+  const [showExitConfirm, setShowExitConfirm] = useState(false);
+
   const currentSystemDateString = useMemo(() => {
     return new Date().toISOString().split("T")[0]; 
   }, []);
@@ -83,7 +83,6 @@ export default function EventsManagerPage() {
       const userTeam = await getUserTeam();
       setTeam(userTeam || { id: "00000000-0000-0000-0000-000000000000", name: "OnPraise Ministry Team" });
 
-      // ✅ PHASE 3 FILTER: Dynamically build the query to lock down events to the user's team
       let query = supabase
         .from("events")
         .select("*")
@@ -111,6 +110,26 @@ export default function EventsManagerPage() {
     }
   }
 
+  // ✅ SURGICAL ADDITION: Safely handle modal closure
+  function handleCloseModalRequest() {
+    // Check if any form fields have been touched/modified
+    if (eventTitle.trim() !== "" || eventDesc.trim() !== "") {
+      setShowExitConfirm(true);
+    } else {
+      setIsCreateModalOpen(false);
+    }
+  }
+
+  // ✅ SURGICAL ADDITION: Force close discarding changes
+  function forceCloseDiscardingChanges() {
+    setShowExitConfirm(false);
+    setIsCreateModalOpen(false);
+    setEventTitle("");
+    setEventDesc("");
+    setEventServiceType("Divine Service");
+    setEventDate("2026-06-12");
+  }
+
   async function handleCreateEventSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!eventTitle.trim()) return;
@@ -123,7 +142,6 @@ export default function EventsManagerPage() {
       description: eventDesc.trim() || "Worship gathering event plan block."
     };
 
-    // ✅ Automatically assign the Engine's team ID to the new event
     if (userTeamId) {
       payload.team_id = userTeamId;
     }
@@ -193,16 +211,11 @@ export default function EventsManagerPage() {
   if (loading) return <div className="p-8 text-center text-xs font-bold uppercase tracking-widest animate-pulse">Loading Events Matrix Router Hub...</div>;
 
   return (
-    // 👇 1. MASTER WRAPPER: Full height, flex column setup
     <div className="h-[calc(100dvh-4rem)] md:h-screen w-full flex flex-col bg-[#f8f9fa] relative animate-in fade-in duration-200">
       
-      {/* ========================================= */}
-      {/* 2. STICKY HEADER                          */}
-      {/* ========================================= */}
       <header className="sticky top-0 z-[50] w-full flex-shrink-0 bg-white border-b border-zinc-200 shadow-sm supports-[backdrop-filter]:bg-white/95 supports-[backdrop-filter]:backdrop-blur-md">
         <div className="max-w-7xl mx-auto w-full">
           
-          {/* Top Bar: Title & Actions */}
           <div className="flex justify-between items-center px-4 md:px-8 py-4 md:py-5">
             <h1 className="text-2xl md:text-3xl font-black text-zinc-950 tracking-tight" style={{ fontFamily: "Georgia, serif" }}>
               Events
@@ -210,7 +223,6 @@ export default function EventsManagerPage() {
             
             {activeRole === "admin" && (
               <div className="flex items-center gap-2 md:gap-3">
-                {/* ✅ PHASE 4 FIX: The Create Team routing button */}
                 <Link
                   href="/events/create-team"
                   className="px-4 py-2 md:px-5 md:py-2.5 bg-white border border-zinc-200 hover:border-blue-500 hover:text-blue-600 text-zinc-500 font-black text-[10px] md:text-xs rounded-xl shadow-sm transition-all active:scale-95 uppercase tracking-wider shrink-0 flex items-center gap-1.5"
@@ -218,7 +230,6 @@ export default function EventsManagerPage() {
                   <span className="text-sm leading-none">🏛️</span> Create Team
                 </Link>
 
-                {/* Your original Add Event button */}
                 <button 
                   onClick={() => setIsCreateModalOpen(true)}
                   className="px-4 py-2 md:px-5 md:py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-black text-[10px] md:text-xs rounded-xl shadow-md transition-all active:scale-95 uppercase tracking-wider shrink-0 flex items-center gap-1"
@@ -229,7 +240,6 @@ export default function EventsManagerPage() {
             )}
           </div>
 
-          {/* Search & Filter Accordion (Anchored inside the sticky header) */}
           <div className="px-4 md:px-8 pb-4">
             <div className="bg-zinc-50 border border-zinc-200/80 rounded-2xl overflow-hidden select-none transition-all">
               <button
@@ -333,9 +343,6 @@ export default function EventsManagerPage() {
         </div>
       </header>
 
-      {/* ========================================= */}
-      {/* 3. SCROLLING GRID CONTENT                 */}
-      {/* ========================================= */}
       <main className="flex-1 overflow-y-auto p-4 md:p-8 custom-scrollbar pb-24 md:pb-8 w-full">
         <div className="max-w-7xl w-full">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6 content-start">
@@ -396,9 +403,18 @@ export default function EventsManagerPage() {
 
       {/* --- CREATE NEW EVENT DIALOG MODAL PANEL --- */}
       {isCreateModalOpen && (
-        <div className="fixed inset-0 bg-zinc-950/60 backdrop-blur-sm z-[140000] flex items-center justify-center p-4">
-          <form onSubmit={handleCreateEventSubmit} className="bg-white rounded-[2rem] shadow-2xl w-full max-w-md p-6 relative flex flex-col space-y-4 animate-in zoom-in-95 duration-150">
-            <button type="button" onClick={() => setIsCreateModalOpen(false)} className="absolute top-6 right-6 w-8 h-8 rounded-full bg-zinc-100 text-zinc-500 font-bold text-xs flex items-center justify-center transition-colors hover:bg-zinc-200">✕</button>
+        // ✅ SURGICAL ADDITION: Backdrop onClick triggers handleCloseModalRequest
+        <div 
+          className="fixed inset-0 bg-zinc-950/60 backdrop-blur-sm z-[140000] flex items-center justify-center p-4"
+          onClick={handleCloseModalRequest}
+        >
+          {/* ✅ SURGICAL ADDITION: onClick={(e) => e.stopPropagation()} prevents form clicks from bubbling to backdrop */}
+          <form 
+            onSubmit={handleCreateEventSubmit} 
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white rounded-[2rem] shadow-2xl w-full max-w-md p-6 relative flex flex-col space-y-4 animate-in zoom-in-95 duration-150"
+          >
+            <button type="button" onClick={handleCloseModalRequest} className="absolute top-6 right-6 w-8 h-8 rounded-full bg-zinc-100 text-zinc-500 font-bold text-xs flex items-center justify-center transition-colors hover:bg-zinc-200">✕</button>
             <h3 className="text-xl font-black text-zinc-900 tracking-tight">Create Event Block</h3>
             
             <div className="space-y-1">
@@ -433,6 +449,31 @@ export default function EventsManagerPage() {
           </form>
         </div>
       )}
+
+      {/* ✅ SURGICAL ADDITION: Unsaved Changes Warning Modal */}
+      {showExitConfirm && (
+        <div className="fixed inset-0 bg-zinc-950/40 backdrop-blur-sm z-[150000] flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 text-center border border-zinc-200">
+            <h3 className="text-lg font-black text-zinc-900 mb-2 tracking-tight">Discard changes?</h3>
+            <p className="text-xs text-zinc-500 font-medium mb-6">You have unsaved details in your event block. Are you sure you want to close and lose this data?</p>
+            <div className="flex gap-3">
+              <button 
+                onClick={() => setShowExitConfirm(false)}
+                className="flex-1 py-2.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 font-bold text-xs rounded-xl transition-colors"
+              >
+                Keep Editing
+              </button>
+              <button 
+                onClick={forceCloseDiscardingChanges}
+                className="flex-1 py-2.5 bg-red-500 hover:bg-red-600 text-white font-bold text-xs rounded-xl shadow-sm transition-colors"
+              >
+                Discard
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

@@ -1,83 +1,74 @@
-# 🎸 OnPraise
+content = """
+# 🎸 Live Worship Performance Engine
 
-OnPraise is a real-time, synchronized setlist and performance management platform designed for worship teams and live bands. It acts as a digital teleprompter, dynamic chord chart, and stage communication tool all rolled into one. 
-
-With real-time WebSocket synchronization, the Music Director (MD) can control the flow of the setlist, driving auto-scrolling lyrics and beat-tracking across every connected device on stage instantly.
-
----
-
-## ✨ Key Features
-
-*   **Real-Time Stage Synchronization:** When the Music Director starts a song, jumps to a specific section (e.g., Bridge), or moves to the next track, every band member's screen follows instantly with zero-latency network syncing.
-*   **Smart Teleprompter & Auto-Scrolling:** Lyrics and chords auto-scroll line-by-line based on the song's BPM, custom measure/beat timings, and arrangement structure. 
-*   **On-the-Fly Transposition:** Shift the key of any song in the setlist instantly. The engine automatically transposes inline chords and complex slash chords (e.g., `B/D#` to `C/E`) without altering the original database record.
-*   **Custom Arrangements:** Drag-and-drop structural blocks to create custom flow overrides for a specific weekend (e.g., Intro -> Verse 1 -> Chorus -> Chorus -> Instrumental) without affecting the master song library.
-*   **Granular User Preferences:** Every musician can customize their own UI. Vocalists can hide chords entirely, while instrumentalists can tweak font sizes and line spacing for optimal readability on stage.
-*   **Multi-Workspace & Role Management:** Built-in team switching, allowing users to bounce between different church branches or bands seamlessly, with strict role guards (Super Admin, Admin, Member, Tester).
-*   **Developer Simulation Engine:** A built-in FAB (Floating Action Button) context that allows developers to instantly simulate different roles and account states without needing to juggle multiple login credentials.
+A stage-ready, ultra-low latency setlist manager and teleprompter engine built for modern worship teams. Designed to keep the entire band in perfect sync during live performances with real-time WebSockets, zero-latency audio guide cues, and a hardware-accelerated 60fps rendering timeline.
 
 ---
 
-## 🛠 Tech Stack
+## ✨ Core Features
 
-**Frontend Architecture**
-*   **Framework:** [Next.js](https://nextjs.org/) (App Router)
-*   **UI Library:** [React](https://reactjs.org/)
-*   **Language:** [TypeScript](https://www.typescriptlang.org/) for strict type safety and interface modeling
-*   **Styling:** [Tailwind CSS](https://tailwindcss.com/) for rapid, utility-first UI design
-*   **Bundler:** Turbopack for ultra-fast local HMR (Hot Module Replacement)
+* **⚡ Real-Time Stage Sync:** Powered by Supabase WebSockets. The Music Director (MD) drives the setlist, instantly synchronizing the lyrics, metronome, and section jumps across all band members' devices (iPads, phones, displays).
+* **🧠 Smart Audio Cues:** Zero-latency vocal guide cues (e.g., "Chorus", "Verse 1", "Bridge") are intelligently preloaded into device RAM by scanning the setlist AST tree. Cues fire automatically 4 beats before section transitions.
+* **🏎️ Hardware-Accelerated Teleprompter:** Custom `requestAnimationFrame` timeline loop decoupled from React state to eliminate layout thrashing. Features $O(1)$ memoized lyric rendering to ensure buttery smooth 60fps scrolling on older stage devices.
+* **🎼 Dynamic AST Transposer:** Chords are parsed into an Abstract Syntax Tree and transposed in memory—eliminating the need for heavy regex calculations during the render cycle. Change keys instantly without dropping frames.
+* **📅 Event & Roster Management:** Multi-campus workspace architecture. Admins can schedule events, assign volunteers to specific roles (VAST, Pastor, Dancer, Musician, Backup, Music Leader), and manage cross-team access.
+* **🧱 Drag & Drop Setlist Builder:** Construct unique song structures on the fly. Reorder sections, override section timings, and instantly deploy updates to the team.
 
-**Backend & Infrastructure**
-*   **Database:** [Supabase](https://supabase.com/) (PostgreSQL)
-*   **Authentication:** Supabase Auth (Magic Links, OAuth, Session Management)
-*   **Real-time:** Supabase Realtime (WebSocket channels for presence tracking and stage broadcasting)
-*   **Hosting/Deployment:** Vercel (Recommended)
+## 🛠️ Tech Stack
 
----
-
-## 🧠 How It Works (The Live Engine)
-
-The heart of OnPraise is the `SetlistPerformanceRoomPage`. Here is a brief overview of how the engine handles live playback:
-
-1.  **Presence & Lobby:** When a user enters the live view, they subscribe to a Supabase channel specific to that setlist (`setlist_lobby_[id]`).
-2.  **The Music Director (MD) Lock:** By default, the setlist is in "Read-Only" mode. A user with appropriate permissions must click **Take Music Director Control** to unlock playback.
-3.  **The Playback Clock:** Once the MD hits play, a high-performance `requestAnimationFrame` clock loop begins. It calculates the song's tempo, the duration of the current section (Measures × Beats), and determines exactly which line of lyrics to highlight.
-4.  **Broadcast Syncing:** As the MD navigates the song, lightweight payload events (`START`, `STOP`, `JUMP`, `TRACK_CHANGE`, `QUEUE`) are broadcasted to the channel. 
-5.  **Client Compensation:** Follower devices receive these pings, calculate network latency off the timestamp, and adjust their local visual auto-scrollers so that everyone on stage is highlighting the exact same word at the exact same millisecond.
-
----
+* **Framework:** Next.js 14+ (App Router)
+* **Language:** TypeScript
+* **Styling:** Tailwind CSS
+* **Database & Auth:** Supabase (PostgreSQL, Row Level Security)
+* **Real-Time:** Supabase Channels (WebSockets)
 
 ## 🚀 Getting Started
 
-### Prerequisites
-*   Node.js 18.x or higher
-*   A Supabase project instance
+### 1. Clone & Install
 
-### Installation
-
-1. **Clone the repository:**
 ```bash
-   git clone [https://github.com/your-org/onpraise.git](https://github.com/your-org/onpraise.git)
-   cd onpraise
+git clone <repository-url>
+cd worship-engine
+npm install
+```
 
-2. Install dependencies:
-```bash
-    npm install
-   # or yarn install / pnpm install
+### 2. Environment Variables
+Create a .env.local file in the root directory and add your Supabase credentials:
 
-3.  Configure Environment Variables:
-    Create a .env.local file in the root directory and add your Supabase keys:
 ```bash
-    NEXT_PUBLIC_SUPABASE_URL=your_supabase_project_url
-    NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
+NEXT_PUBLIC_SUPABASE_URL=your_supabase_project_url
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
+```
 
-4. Run the development server:
+### 3. Database Setup (Supabase)
+Ensure the following tables are created in your Supabase SQL Editor with appropriate RLS policies:
+
+- profiles (User registry, multi-campus IDs, ministries)
+- teams (Workspace teams for multi-campus isolation)
+- events (Service dates, descriptions, service types)
+- event_rosters (Role assignments per event)
+- songs (Global song library, default BPM, keys, section timings)
+- setlists (Groups of songs attached to an event)
+- setlist_songs (Songs mapped to a setlist with custom structures and keys)
+
+Note: For local development, you may need to temporarily open RLS policies to allow inserts/deletes without constraint blockers.
+
+### 4. Run the Development Server
+
 ```bash
-    npm run dev
+npm run dev
+```
 
 Open http://localhost:3000 with your browser to see the result.
 
-🔒 Security & Access
-Database RLS: Row Level Security (RLS) policies in Supabase ensure that users can only fetch setlists and profiles belonging to their active team_id.
+🏗️ Architecture Highlights
+The Engine Loop
+The performance teleprompter bypasses React's traditional state management for high-frequency updates. The metronome and progress bars are mutated via direct DOM Ref manipulation, ensuring the engine never triggers a re-render cascade during a song.
 
-Route Protection: Next.js middleware and global context guards ensure unauthenticated or cross-workspace users are safely redirected to onboarding or login.
+Intersection Observer Sync
+Scroll-tracking is offloaded to the browser's GPU using the IntersectionObserver API. If a musician manually scrolls away from the active lyric line, a non-blocking "Sync Back" button appears instantly, allowing them to snap back to the MD's playhead without interrupting the background clock.
+
+Smart Garbage Collection
+When a performance is halted or transitioning tracks, the engine executes a strict local reset sequence—destroying old animation frames, clearing network locks, and resetting the metronome UI to prevent memory leaks and ghost beats.
+
+Built with precision for worship ministries that demand excellence.

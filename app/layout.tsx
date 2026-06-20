@@ -10,11 +10,14 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
-      <body className="bg-[#f8f9fa] min-h-screen text-zinc-950 antialiased">
-        <EngineProvider>
-          {/* ✅ SURGICAL FIX: Let the Client Wrapper handle the conditional layout */}
-          <ClientLayoutWrapper>
+      <html lang="en" suppressHydrationWarning>
+        <body 
+          className="bg-[#f8f9fa] min-h-screen text-zinc-950 antialiased" 
+          suppressHydrationWarning
+        >
+          <EngineProvider>
+            {/* ✅ SURGICAL FIX: Let the Client Wrapper handle the rest */}
+            <ClientLayoutWrapper>
             {children}
           </ClientLayoutWrapper>
         </EngineProvider>
