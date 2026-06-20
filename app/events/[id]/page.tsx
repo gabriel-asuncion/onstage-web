@@ -15,6 +15,7 @@ interface SetlistSongItem {
   id: string; 
   sequence_order: number; 
   start_time: string; 
+  target_key?: string;
   parent_group?: string | null;
   group_name?: string | null; 
   parent_color?: string | null;
@@ -96,6 +97,7 @@ export default function EventCockpitPage() {
   const [loadedUserId, setLoadedUserId] = useState<string | null>(null);
   const [matrixFilter, setMatrixFilter] = useState<string>("All");
   const [isDeploying, setIsDeploying] = useState(false);
+  const [isDockOpen, setIsDockOpen] = useState(false); // Controls inline dock visibility
 
   const [isCreateSetlistOpen, setIsCreateSetlistOpen] = useState(false);
   const [newSetlistName, setNewSetlistName] = useState("");
@@ -112,7 +114,6 @@ export default function EventCockpitPage() {
   const [selectedHour, setSelectedHour] = useState("08");
   const [selectedMinute, setSelectedMinute] = useState("00");
   const [selectedPeriod, setSelectedPeriod] = useState("AM");
-  const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
 
   // ==========================================
@@ -182,18 +183,11 @@ export default function EventCockpitPage() {
 
   async function loadData() {
     try {
-      // 1. Fetch Event Info FIRST to determine the correct workspace bounds
       const { data: eventData } = await supabase.from("events").select("*").eq("id", eventId).maybeSingle();
-      
-      // ✅ SURGICAL FIX: Strictly use the Event's native team, OR fallback to the user's active sidebar workspace
       const activeWorkspaceId = eventData?.team_id || userTeamId;
-      
-      // Keep local team state happy for your other functions
       setTeam({ id: activeWorkspaceId });
 
-      // 2. ✅ SURGICAL FIX: Securely fetch ONLY profiles mapped to this specific workspace!
       let combinedProfiles: DBProfile[] = [];
-      
       if (activeWorkspaceId) {
         const { data: dbProfiles } = await supabase
           .from("profiles")
@@ -204,10 +198,8 @@ export default function EventCockpitPage() {
         (dbProfiles as DBProfile[] || []).forEach(p => { if (!uniqueProfilesMap.has(p.id)) uniqueProfilesMap.set(p.id, p); });
         combinedProfiles = Array.from(uniqueProfilesMap.values());
       }
-      
       setProfiles(combinedProfiles);
 
-      // 3. Mount Event Data
       if (eventData) {
         setActiveEvent({ 
           id: eventData.id, 
@@ -222,10 +214,7 @@ export default function EventCockpitPage() {
       }
 
       await fetchEventSetlists(eventId);
-      
-      // 4. Sync roster securely locked to this exact workspace
       await syncRosterUI(activeWorkspaceId, combinedProfiles);
-      
       setAllDatabaseSongs(await getAllSongs());
     } catch (e) { console.error(e); }
     setLoading(false);
@@ -255,7 +244,7 @@ export default function EventCockpitPage() {
     setIsUpdatingEvent(true);
 
     try {
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from("events")
         .update({
           title: editTitle.trim(),
@@ -263,16 +252,20 @@ export default function EventCockpitPage() {
           service_type: editServiceType, 
           description: editDesc.trim()
         })
-        .eq("id", eventId);
+        .eq("id", eventId)
+        .select(); 
 
-      if (!error) {
-        setActiveEvent(prev => prev ? { ...prev, title: editTitle, event_date: editDate, service_type: editServiceType, description: editDesc } : null);
-        setIsEditEventOpen(false);
+      if (error) {
+        alert(`Update Error: ${error.message}`);
+      } else if (!data || data.length === 0) {
+        alert("Update Blocked: Database Row Level Security (RLS) prevented the save. Please check your Supabase policies for the 'events' table.");
       } else {
-        alert(`Update Failed: ${error.message}`);
+        const updatedRecord = data[0];
+        setActiveEvent(prev => prev ? { ...prev, title: updatedRecord.title, event_date: updatedRecord.event_date, service_type: updatedRecord.service_type, description: updatedRecord.description } : null);
+        setIsEditEventOpen(false);
       }
-    } catch (err) {
-      console.error(err);
+    } catch (err: any) {
+      console.error("Crash during update:", err);
     } finally {
       setIsUpdatingEvent(false);
     }
@@ -288,7 +281,6 @@ export default function EventCockpitPage() {
     setHasChanges(true);
   }
   
-  // function handleDropdownSubmit(e: React.FormEvent) { e.preventDefault(); if (selectedUserId && focusedRole) { handleLocalAddOrMove(selectedUserId, focusedRole); setSelectedUserId(""); setFocusedRole(null); } }
   function handleOriginalLocalRemove(rowId: string) { if (activeRole !== "admin") return; setStagedRoster(prev => prev.filter(r => r.id !== rowId)); setHasChanges(true); }
   
   async function saveLineupChanges() { 
@@ -299,37 +291,21 @@ export default function EventCockpitPage() {
       const removedIds = roster.filter(r => !stagedRoster.some(sr => sr.id === r.id)).map(r => r.id); 
       for (const id of removedIds) {
         const { error: delError } = await supabase.from("team_members").delete().eq("id", id);
-        if (delError) {
-          alert(`Deletion Error: ${delError.message}`);
-          setIsDeploying(false);
-          return;
-        }
+        if (delError) { alert(`Deletion Error: ${delError.message}`); setIsDeploying(false); return; }
       }
 
       const addedRows = stagedRoster.filter(sr => sr.isNew); 
       for (const row of addedRows) {
         const targetTeamId = activeEvent?.team_id || team?.id;
-        const payload: any = {
-          event_id: eventId,
-          user_id: row.user_id,
-          role: row.role
-        };
-
-        if (targetTeamId && targetTeamId !== "00000000-0000-0000-0000-000000000000") {
-          payload.team_id = targetTeamId;
-        }
-
+        const payload: any = { event_id: eventId, user_id: row.user_id, role: row.role };
+        if (targetTeamId && targetTeamId !== "00000000-0000-0000-0000-000000000000") { payload.team_id = targetTeamId; }
         const { error: insError } = await supabase.from("team_members").insert(payload);
-        if (insError) {
-          alert(`Database Write Rejected: ${insError.message}`);
-          setIsDeploying(false);
-          return;
-        }
+        if (insError) { alert(`Database Write Rejected: ${insError.message}`); setIsDeploying(false); return; }
       }
 
       await syncRosterUI(eventId, profiles); 
       setHasChanges(false);
-      setShowSuccessModal(true); // Shows the custom modal instead!
+      setShowSuccessModal(true);
     } catch (err: any) {
       alert(`Runtime Exception: ${err.message || err}`);
     } finally {
@@ -342,27 +318,12 @@ export default function EventCockpitPage() {
     if (!newSetlistName.trim()) return;
 
     try {
-      const payload: any = {
-        event_id: eventId,
-        name: newSetlistName.trim(),
-        service_date: activeEvent?.event_date ? activeEvent.event_date.split("T")[0] : ACTIVE_SERVICE_DATE
-      };
+      const payload: any = { event_id: eventId, name: newSetlistName.trim(), service_date: activeEvent?.event_date ? activeEvent.event_date.split("T")[0] : ACTIVE_SERVICE_DATE };
+      if (team?.id && team.id !== "00000000-0000-0000-0000-000000000000") { payload.team_id = team.id; }
 
-      if (team?.id && team.id !== "00000000-0000-0000-0000-000000000000") {
-        payload.team_id = team.id;
-      }
+      const { data, error } = await supabase.from("setlists").insert(payload).select().maybeSingle();
 
-      const { data, error } = await supabase
-        .from("setlists")
-        .insert(payload)
-        .select()
-        .maybeSingle();
-
-      if (error) {
-        alert(`Failed to build block: ${error.message}`);
-        return;
-      }
-
+      if (error) { alert(`Failed to build block: ${error.message}`); return; }
       if (data) {
         setEventSetlists(prev => [...prev, data]);
         setSelectedSetlistId(data.id);
@@ -371,14 +332,11 @@ export default function EventCockpitPage() {
         setNewSetlistName("");
         setViewSubScreen("songs_view");
       }
-    } catch (err) { 
-      console.error(err); 
-    }
+    } catch (err) { console.error(err); }
   }
 
   async function handleAddSongSubmit() {
-    if (activeRole !== "admin") return;
-    if (!selectedNewSongId) return;
+    if (activeRole !== "admin" || !selectedNewSongId) return;
     const songToAdd = allDatabaseSongs.find(s => s.id === selectedNewSongId);
     if (!songToAdd) return;
     const optimisticItem: SetlistSongItem = { id: `temp-${Date.now()}`, sequence_order: stagedSetlistSongs.length + 1, start_time: "08:30", assigned_user_ids: [], parent_group: null, group_name: null, songs: songToAdd };
@@ -419,44 +377,25 @@ export default function EventCockpitPage() {
   }
 
   // Drag and drop sequencing
-  function handleDragStart(index: number) {
-    if (activeRole !== "admin") return;
-    setDraggedSongIndex(index);
-  }
-
+  function handleDragStart(index: number) { if (activeRole === "admin") setDraggedSongIndex(index); }
   function handleDragOver(e: React.DragEvent, targetIndex: number) {
     e.preventDefault();
     if (draggedSongIndex === null || draggedSongIndex === targetIndex || activeRole !== "admin") return;
-    
     const reorderedSongs = [...stagedSetlistSongs];
     const [removed] = reorderedSongs.splice(draggedSongIndex, 1);
     reorderedSongs.splice(targetIndex, 0, removed);
-    
-    const freshlyOrdered = reorderedSongs.map((song, i) => ({ ...song, sequence_order: i + 1 }));
-    setStagedSetlistSongs(freshlyOrdered);
+    setStagedSetlistSongs(reorderedSongs.map((song, i) => ({ ...song, sequence_order: i + 1 })));
     setDraggedSongIndex(targetIndex);
     setHasSetlistChanges(true);
   }
 
-  function handleToggleCheckboxSelect(id: string) {
-    setSelectedForGroup(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
-  }
+  function handleToggleCheckboxSelect(id: string) { setSelectedForGroup(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]); }
 
   function applyGroupTransformation() {
     if (selectedForGroup.length === 0 || activeRole !== "admin") return;
     const finalGroupName = customGroupName.trim() || null;
-    
-    const updatedSongs = stagedSetlistSongs.map(song => {
-      if (selectedForGroup.includes(song.id)) {
-        return { ...song, group_name: finalGroupName, group_color: selectedGroupColor };
-      }
-      return song;
-    });
-
-    setStagedSetlistSongs(updatedSongs);
-    setHasSetlistChanges(true);
-    setSelectedForGroup([]);
-    setCustomGroupName("");
+    const updatedSongs = stagedSetlistSongs.map(song => selectedForGroup.includes(song.id) ? { ...song, group_name: finalGroupName, group_color: selectedGroupColor } : song);
+    setStagedSetlistSongs(updatedSongs); setHasSetlistChanges(true); setSelectedForGroup([]); setCustomGroupName("");
   }
 
   const songFilteredDatabaseSongs = allDatabaseSongs.filter(s => s.title.toLowerCase().includes(songSearchQuery.toLowerCase()));
@@ -512,29 +451,20 @@ export default function EventCockpitPage() {
           <div className="flex items-center gap-3 md:gap-4 flex-1 min-w-0">
             <div className="flex items-center gap-2 shrink-0" onClick={e => e.stopPropagation()}>
               {activeRole === "admin" && (
-                <input 
-                  type="checkbox" 
-                  className="w-4 h-4 rounded border-zinc-300 checked:bg-blue-600 cursor-pointer" 
-                  checked={selectedForGroup.includes(item.id)} 
-                  onChange={() => handleToggleCheckboxSelect(item.id)}
-                />
+                <input type="checkbox" className="w-4 h-4 rounded border-zinc-300 checked:bg-blue-600 cursor-pointer" checked={selectedForGroup.includes(item.id)} onChange={() => handleToggleCheckboxSelect(item.id)} />
               )}
               {activeRole === "admin" && <div className="text-zinc-300 text-lg font-bold select-none cursor-grab px-1">☰</div>}
             </div>
-            
             <div className="flex flex-col flex-1 min-w-0 select-none pl-1 md:pl-2">
               <div className="flex items-center gap-1.5 mb-1 shrink-0">
-                <span className="w-5 h-5 rounded-full bg-zinc-100 text-zinc-500 flex items-center justify-center text-[9px] md:text-[10px] font-black uppercase tracking-tight">{item.songs?.key_signature || "G"}</span>
+                <span className="w-5 h-5 rounded-full bg-zinc-100 text-zinc-500 flex items-center justify-center text-[9px] md:text-[10px] font-black uppercase tracking-tight">{item.target_key || item.songs?.original_key || "G"}</span>
                 <span className="bg-zinc-100/80 text-zinc-500 px-2 py-0.5 rounded-full text-[9px] md:text-[10px] font-black tracking-tight whitespace-nowrap">{item.songs?.tempo || "70"} BPM</span>
               </div>
               <h4 className="font-bold text-[15px] md:text-[16px] text-zinc-900 leading-tight truncate">{item.songs?.title}</h4>
             </div>
           </div>
-          
           <div className="ml-3 flex items-center shrink-0" onClick={e => e.stopPropagation()}>
-            {activeRole === "admin" && (
-              <button onClick={() => setStagedSetlistSongs(prev => prev.filter(s => s.id !== item.id)) } className="w-8 h-8 rounded-full bg-red-50 text-red-500 hover:bg-red-100 flex items-center justify-center transition-colors">✕</button>
-            )}
+            {activeRole === "admin" && ( <button onClick={() => setStagedSetlistSongs(prev => prev.filter(s => s.id !== item.id)) } className="w-8 h-8 rounded-full bg-red-50 text-red-500 hover:bg-red-100 flex items-center justify-center transition-colors">✕</button> )}
           </div>
         </div>
       );
@@ -557,35 +487,26 @@ export default function EventCockpitPage() {
   if (loading) return <div className="p-12 text-center text-xs font-bold animate-pulse">Loading Cockpit Content...</div>;
 
   return (
-    <div className="p-6 md:p-8 w-full max-w-7xl mx-auto space-y-6 animate-in fade-in duration-200">
+    <div className="p-4 md:p-8 w-full max-w-7xl mx-auto space-y-6 animate-in fade-in duration-200">
       
-      {/* 🔴 RESPONSIVE FLEX LAYOUT HERO BANNER 🔴 */}
-      <div className="bg-[#2b6eff] text-white p-4 md:p-8 rounded-2xl shadow-sm overflow-hidden shrink-0">
+      {/* 🔴 STREAMLINED RESPONSIVE HERO BANNER 🔴 */}
+      <div className="bg-[#2b6eff] text-white p-4 md:p-6 rounded-2xl shadow-sm overflow-hidden shrink-0">
         <div className="flex justify-between items-start gap-2">
-          <div className="space-y-3">
-            <button onClick={() => router.push("/events")} className="text-xs font-bold text-blue-100 hover:underline block">‹ Back to Events List</button>
-            <div className="flex flex-wrap items-center gap-2 select-none">
-              <span className="bg-white/20 text-white font-black text-[9px] uppercase tracking-widest px-3 py-1 rounded-full backdrop-blur-md">Active Plan Workspace</span>
-              {activeEvent?.service_type && (
-                <span className="bg-zinc-950/40 text-blue-100 border border-blue-400/20 font-black text-[9px] uppercase tracking-widest px-3 py-1 rounded-full backdrop-blur-md">⚡ {activeEvent.service_type}</span>
-              )}
-            </div>
+          <div className="space-y-1">
+            <button onClick={() => router.push("/events")} className="text-xs font-bold text-blue-100 hover:underline block mb-2">‹ Back to Events List</button>
           </div>
           
           {activeRole === "admin" && (
-            <button 
-              onClick={handleOpenEditEventModal}
-              className="px-3 md:px-4 py-2 bg-white/10 border border-white/20 hover:bg-white/20 text-white font-black text-xs rounded-xl shadow-md backdrop-blur-md transition-all active:scale-95 uppercase tracking-wider flex items-center gap-2 shrink-0"
-            >
-              <span>✏️</span> <span className="hidden sm:inline">Edit Event</span>
+            <button onClick={handleOpenEditEventModal} className="px-3 md:px-4 py-2 bg-white/10 border border-white/20 hover:bg-white/20 text-white font-black text-xs rounded-xl shadow-md backdrop-blur-md transition-all active:scale-95 uppercase tracking-wider flex items-center gap-2 shrink-0">
+              <span>✏️</span> <span className="hidden sm:inline">Edit</span>
             </button>
           )}
         </div>
-        <h1 className="text-3xl md:text-4xl font-black tracking-tight mt-4 leading-tight">{activeEvent?.title || "June Week#3 2026"}</h1>
+        <h1 className="text-3xl md:text-4xl font-black tracking-tight mt-1 leading-tight">{activeEvent?.title || "June Week#3 2026"}</h1>
       </div>
 
       {/* VIEW PANEL SELECTION TABS */}
-      <div className="bg-white p-1 rounded-2xl border grid grid-cols-3 gap-1 text-center text-xs font-black uppercase tracking-wider shadow-sm">
+      <div className="bg-white p-1 rounded-2xl border grid grid-cols-3 gap-1 text-center text-xs font-black uppercase tracking-wider shadow-sm mt-6">
         <button onClick={() => setViewSubScreen("matrix")} className={`py-3.5 rounded-xl border flex items-center justify-center gap-2 transition-all ${viewSubScreen === "matrix" ? "bg-zinc-100 text-zinc-950 border-zinc-300 font-black shadow-inner" : "bg-white text-zinc-400 border-transparent"}`}>
           <img src="/assets/participants.svg" className="w-4 h-4 object-contain" alt="" />
           Positions
@@ -633,8 +554,6 @@ export default function EventCockpitPage() {
           <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 gap-3 content-start">
             {GRID_CARDS.map((cardRole) => {
               const list = stagedRoster.filter(m => m.role === cardRole);
-              
-              // ✅ SURGICAL FIX: Check if the loaded user is qualified for this specific card
               const loadedUser = loadedUserId ? profiles.find(p => p.id === loadedUserId) : null;
               const isQualified = loadedUser ? (loadedUser.ministries || []).includes(cardRole) : true;
               const isDisabledDrop = loadedUserId && !isQualified;
@@ -646,35 +565,37 @@ export default function EventCockpitPage() {
                     if (loadedUserId && activeRole === "admin" && isQualified) {
                       handleLocalAddOrMove(loadedUserId, cardRole);
                       setLoadedUserId(null); 
+                      setIsDockOpen(false); // Auto-close dock when done!
                     }
                   }}
-                  className={`bg-white p-3 rounded-[1rem] border shadow-sm flex flex-col justify-between min-h-[80px] transition-all duration-300 ${
+                  className={`bg-white p-3 rounded-[1rem] border shadow-sm flex flex-col min-h-[80px] transition-all duration-300 ${
                     loadedUserId && activeRole === "admin" 
-                      ? isQualified 
-                        ? "hover:border-blue-500 hover:bg-blue-50/30 cursor-pointer ring-4 ring-blue-500/10" 
-                        : "opacity-40 grayscale cursor-not-allowed border-zinc-200" // Grey out unqualified cards!
+                      ? isQualified ? "hover:border-blue-500 hover:bg-blue-50/30 cursor-pointer ring-4 ring-blue-500/10" : "opacity-40 grayscale cursor-not-allowed border-zinc-200"
                       : "hover:border-zinc-300"
                   }`}
                 >
                   <div className="flex items-start justify-between relative">
                     <div>
-                      <h5 className="font-extrabold text-base text-zinc-900 tracking-tight">{cardRole}</h5>
-                      <p className="text-[11px] font-bold text-zinc-400 mt-0.5">{list.length} Assigned</p>
+                      <h5 className="font-extrabold text-sm md:text-base text-zinc-900 tracking-tight leading-tight">{cardRole}</h5>
+                      <p className="text-[10px] md:text-[11px] font-bold text-zinc-400 mt-0.5">{list.length} Assigned</p>
                     </div>
                     {activeRole === "admin" && ( 
                       <button 
                         type="button" 
-                        disabled={isDisabledDrop}
+                        disabled={!!isDisabledDrop}
                         onClick={(e) => {
                           e.stopPropagation();
                           if (loadedUserId && isQualified) {
                             handleLocalAddOrMove(loadedUserId, cardRole);
                             setLoadedUserId(null);
+                            setIsDockOpen(false); // Auto-close dock when dropped!
                           } else if (!loadedUserId) {
-                            alert("Select a volunteer from the dock below first!");
+                            // ✅ SURGICAL FIX: Open dock and auto-filter to this role!
+                            setIsDockOpen(true);
+                            setMatrixFilter(cardRole);
                           }
                         }} 
-                        className={`w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold border transition-all duration-300 ${
+                        className={`w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold border transition-all duration-300 shrink-0 ${
                           isDisabledDrop ? "bg-zinc-100 text-zinc-300 border-zinc-100" :
                           loadedUserId ? "bg-blue-600 border-blue-600 text-white animate-pulse shadow-md" : "hover:bg-zinc-50"
                         }`}
@@ -683,15 +604,23 @@ export default function EventCockpitPage() {
                       </button> 
                     )}
                   </div>
-                  <div className="flex-1 mt-4">
-                    <div className="space-y-2">
+
+                  {/* ✅ SURGICAL FIX: New Horizontal Wrap Layout for Avatars */}
+                  <div className="flex-1 mt-3">
+                    <div className="flex flex-wrap gap-2">
                       {list.map(m => (
-                        <div key={m.id} className="flex items-center justify-between group p-1.5 rounded-xl hover:bg-zinc-50/50" onClick={e => e.stopPropagation()}>
-                          <div className="flex items-center gap-2.5">
-                            {m.profiles?.avatar_url ? <img src={m.profiles.avatar_url} alt="" className="w-7 h-7 rounded-full object-cover border" /> : <div className="w-7 h-7 rounded-full bg-blue-600 text-white text-xs font-black flex items-center justify-center">{m.profiles?.full_name?.charAt(0) || "U"}</div>}
-                            <span className="text-[14px] font-bold text-zinc-800 tracking-tight">{m.profiles?.full_name || "Active Row Hand"}</span>
+                        <div key={m.id} className="flex flex-col items-center gap-1 group p-1 rounded-xl w-[3.5rem] relative" onClick={e => e.stopPropagation()}>
+                          <div className="relative">
+                            {m.profiles?.avatar_url ? (
+                              <img src={m.profiles.avatar_url} alt="" className="w-8 h-8 rounded-full object-cover border shadow-sm" />
+                            ) : (
+                              <div className="w-8 h-8 rounded-full bg-blue-600 text-white text-[10px] font-black flex items-center justify-center shadow-sm border border-blue-700/20">{m.profiles?.full_name?.charAt(0) || "U"}</div>
+                            )}
+                            {activeRole === "admin" && ( 
+                              <button type="button" onClick={() => handleOriginalLocalRemove(m.id)} className="absolute -top-1 -right-1 bg-red-100 text-red-600 rounded-full w-4 h-4 flex items-center justify-center text-[8px] font-bold opacity-100 md:opacity-0 md:group-hover:opacity-100 hover:bg-red-500 hover:text-white transition-all shadow-sm">✕</button> 
+                            )}
                           </div>
-                          {activeRole === "admin" && ( <button type="button" onClick={() => handleOriginalLocalRemove(m.id)} className="text-[10px] text-zinc-400 hover:text-red-500 opacity-0 md:group-hover:opacity-100 p-2 md:p-1 active:scale-95 transition-all">✕</button> )}
+                          <span className="text-[9px] font-bold text-zinc-600 tracking-tight text-center truncate w-full">{m.profiles?.full_name?.split(' ')[0] || "User"}</span>
                         </div>
                       ))}
                     </div>
@@ -701,48 +630,31 @@ export default function EventCockpitPage() {
             })}
           </div>
 
-          {/* STATIC PANELS (UNAVAILABLE ONLY) */}
-          {/* <div className="grid grid-cols-1 gap-3 pt-2 mb-32 md:mb-12">
-            <div className="bg-white border p-6 rounded-[2rem] shadow-sm flex flex-col justify-between min-h-[140px]">
-              <div>
-                <h5 className="font-black text-red-600 text-sm flex items-center gap-1.5 uppercase tracking-wider">Unavailable Blockouts <span className="w-2 h-2 rounded-full bg-red-500"></span></h5>
-                <p className="text-[11px] font-bold text-zinc-400 mt-0.5">{unavailablePool.length} Member(s) Away</p>
-              </div>
-              <div className="mt-4 flex -space-x-2 overflow-hidden pt-4 border-t border-zinc-100">
-                {unavailablePool.map((p) => (
-                  <div key={p.id} className="inline-flex w-10 h-10 rounded-full ring-4 ring-white relative items-center justify-center bg-zinc-200 border text-zinc-600 font-bold text-xs shadow-sm" title={`${p.full_name || "User"} (Blocked Out)`}>
-                    {p.avatar_url ? <img src={p.avatar_url} alt="" className="w-full h-full rounded-full object-cover grayscale opacity-60" /> : <span>{p.full_name?.charAt(0) || "🚫"}</span>}
-                  </div>
-                ))}
-                {unavailablePool.length === 0 && <span className="text-xs font-semibold text-zinc-400 italic pl-1">No scheduled absences for this event.</span>}
-              </div>
-            </div>
-          </div> */}
-
-          {/* ✅ SURGICAL FIX: UNIFIED DOCK WITH UNAVAILABLE TAB */}
-          {activeRole === "admin" && (
-            <div className="fixed bottom-15 md:bottom-8 left-4 right-4 md:left-[6.5rem] md:right-8 bg-white/95 supports-[backdrop-filter]:backdrop-blur-xl border border-zinc-200/80 p-4 rounded-[1rem] shadow-[0_-8px_30px_-15px_rgba(0,0,0,0.1)] z-[90] flex flex-col gap-3 transition-all duration-300 animate-in slide-in-from-bottom-8">
-              <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
+          {/* ✅ SURGICAL FIX: Inline, togglable unassigned dock */}
+          {activeRole === "admin" && isDockOpen && (
+            <div className="bg-zinc-50/80 border border-zinc-200 p-4 rounded-[1rem] shadow-inner mt-2 flex flex-col gap-3 animate-in fade-in slide-in-from-top-4 duration-200 mb-20 md:mb-0">
+              <div className="flex items-center justify-between border-b border-zinc-200/60 pb-3">
                 <div className="flex items-center gap-1.5 overflow-x-auto custom-scrollbar no-scrollbar flex-1 pr-4">
-                  <button onClick={() => setMatrixFilter("All")} className={`px-4 py-2 rounded-full text-[10px] font-black uppercase tracking-widest whitespace-nowrap transition-all ${matrixFilter === "All" ? "bg-zinc-900 text-white shadow-md scale-105" : "bg-zinc-100 text-zinc-500 hover:bg-zinc-200"}`}>All Hands</button>
+                  <button onClick={() => setMatrixFilter("All")} className={`px-4 py-2 rounded-full text-[10px] font-black uppercase tracking-widest whitespace-nowrap transition-all ${matrixFilter === "All" ? "bg-zinc-900 text-white shadow-md scale-105" : "bg-white border text-zinc-500 hover:bg-zinc-100"}`}>All Hands</button>
                   
                   {Array.from(new Set(availablePool.flatMap(p => p.ministries || []))).map(min => (
-                    <button key={min} onClick={() => setMatrixFilter(min)} className={`px-4 py-2 rounded-full text-[10px] font-black uppercase tracking-widest whitespace-nowrap transition-all ${matrixFilter === min ? "bg-blue-600 text-white shadow-md scale-105" : "bg-zinc-100 text-zinc-500 hover:bg-zinc-200"}`}>{min}</button>
+                    <button key={min} onClick={() => setMatrixFilter(min)} className={`px-4 py-2 rounded-full text-[10px] font-black uppercase tracking-widest whitespace-nowrap transition-all ${matrixFilter === min ? "bg-blue-600 text-white shadow-md scale-105" : "bg-white border text-zinc-500 hover:bg-zinc-100"}`}>{min}</button>
                   ))}
 
-                  {/* The new Unavailable Tab */}
                   <button onClick={() => { setMatrixFilter("Unavailable"); setLoadedUserId(null); }} className={`px-4 py-2 rounded-full text-[10px] font-black uppercase tracking-widest whitespace-nowrap transition-all ml-2 ${matrixFilter === "Unavailable" ? "bg-red-600 text-white shadow-md scale-105" : "bg-red-50 text-red-600 hover:bg-red-100"}`}>
                     Unavailable ({unavailablePool.length})
                   </button>
                 </div>
                 
-                {loadedUserId && (
-                  <button onClick={() => setLoadedUserId(null)} className="text-[10px] font-black text-red-500 hover:bg-red-50 px-3 py-1.5 rounded-full uppercase tracking-widest transition-colors shrink-0">Clear Selection</button>
-                )}
+                <div className="flex items-center gap-2 shrink-0 pl-2">
+                  {loadedUserId && (
+                    <button onClick={() => setLoadedUserId(null)} className="text-[10px] font-black text-red-500 hover:bg-red-50 px-3 py-1.5 rounded-full uppercase tracking-widest transition-colors shrink-0">Clear Selection</button>
+                  )}
+                  <button onClick={() => setIsDockOpen(false)} className="w-7 h-7 rounded-full bg-zinc-200 text-zinc-600 flex items-center justify-center font-bold text-xs hover:bg-zinc-300 transition-colors">✕</button>
+                </div>
               </div>
               
               <div className="flex items-center gap-4 overflow-x-auto custom-scrollbar pb-2 pt-1 px-1">
-                {/* Dynamically render either the Available Pool OR the Unavailable Pool based on the tab */}
                 {(matrixFilter === "Unavailable" ? unavailablePool : availablePool.filter(p => matrixFilter === "All" ? true : p.ministries?.includes(matrixFilter))).map(p => {
                   const isLoaded = loadedUserId === p.id;
                   const isBlocked = matrixFilter === "Unavailable";
@@ -750,11 +662,11 @@ export default function EventCockpitPage() {
                   return (
                     <button 
                       key={p.id} 
-                      disabled={isBlocked} // Prevent picking up unavailable members
+                      disabled={isBlocked}
                       onClick={() => setLoadedUserId(isLoaded ? null : p.id)}
                       className={`flex flex-col items-center gap-2 shrink-0 transition-all duration-300 ${isBlocked ? "opacity-50 cursor-not-allowed grayscale" : isLoaded ? "-translate-y-2 scale-110" : "hover:-translate-y-1 hover:scale-105 active:scale-95"}`}
                     >
-                      <div className={`w-12 h-12 rounded-full relative items-center justify-center font-black text-sm shadow-sm transition-all duration-300 ${isBlocked ? "bg-zinc-200 text-zinc-500 ring-1 ring-zinc-300" : isLoaded ? "bg-blue-600 text-white ring-4 ring-blue-500 ring-offset-2 shadow-lg" : "bg-blue-600 text-white ring-1 ring-zinc-200"}`}>
+                      <div className={`w-12 h-12 rounded-full relative items-center justify-center font-black text-sm shadow-sm transition-all duration-300 ${isBlocked ? "bg-zinc-200 text-zinc-500 ring-1 ring-zinc-300" : isLoaded ? "bg-blue-600 text-white ring-4 ring-blue-500 ring-offset-2 shadow-lg" : "bg-blue-600 text-white ring-1 ring-zinc-200 border-2 border-white"}`}>
                         {p.avatar_url ? <img src={p.avatar_url} alt="" className="w-full h-full rounded-full object-cover" /> : <span className="flex items-center justify-center w-full h-full">{isBlocked ? "🚫" : p.full_name?.charAt(0) || "U"}</span>}
                         {isLoaded && <div className="absolute -bottom-1 -right-1 bg-blue-500 border-2 border-white text-white w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black shadow-sm">✓</div>}
                       </div>
@@ -762,15 +674,12 @@ export default function EventCockpitPage() {
                     </button>
                   );
                 })}
-                
-                {matrixFilter === "Unavailable" && unavailablePool.length === 0 && <span className="text-xs font-semibold text-zinc-400 italic py-2 pl-2">No scheduled absences for this event.</span>}
-                {matrixFilter !== "Unavailable" && availablePool.filter(p => matrixFilter === "All" ? true : p.ministries?.includes(matrixFilter)).length === 0 && <span className="text-xs font-semibold text-zinc-400 italic py-2 pl-2">No available members found for this filter.</span>}
               </div>
             </div>
           )}
 
           {/* MOBILE RESPONSIVE CONFIRMATION POPUP */}
-          <div className={`fixed top-20 md:top-24 left-4 right-4 md:left-auto md:right-8 bg-zinc-950 text-white border border-zinc-800 p-4 md:p-5 flex flex-col md:flex-row items-center justify-between gap-4 md:gap-4 rounded-2xl shadow-2xl transition-all duration-300 z-[10000] ${hasChanges && activeRole === "admin" ? 'translate-y-0 opacity-100' : '-translate-y-16 opacity-0 pointer-events-none'}`}>
+          <div className={`fixed bottom-20 md:bottom-8 left-4 right-4 md:left-auto md:right-8 bg-zinc-950 text-white border border-zinc-800 p-4 md:p-5 flex flex-col md:flex-row items-center justify-between gap-4 md:gap-4 rounded-2xl shadow-2xl transition-all duration-300 z-[10000] ${hasChanges && activeRole === "admin" ? 'translate-y-0 opacity-100' : 'translate-y-16 opacity-0 pointer-events-none'}`}>
             <p className="text-sm font-extrabold text-center md:text-left">Unsaved Lineup changes staged locally</p>
             <div className="flex items-center gap-2 md:gap-3 w-full md:w-auto">
               <button type="button" onClick={() => { setStagedRoster(roster); setHasChanges(false); }} className="flex-1 md:flex-none px-4 py-2.5 text-xs font-bold text-zinc-400 hover:text-white bg-zinc-900 md:bg-transparent rounded-xl md:rounded-none transition-colors">Discard</button>
@@ -845,7 +754,7 @@ export default function EventCockpitPage() {
               <button type="button" onClick={handleStartRehearsal} disabled={stagedSetlistSongs.length === 0} className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 font-black text-white text-xs uppercase tracking-widest shadow-md rounded-xl disabled:opacity-40">🚀 Start Rehearsal</button>
             </div>
             
-            <div className="p-6 bg-zinc-50/50 space-y-4 max-h-[50vh] overflow-y-auto custom-scrollbar">
+            <div className="p-6 bg-zinc-50/50 space-y-4 overflow-y-auto custom-scrollbar">
               {parentBlockRowsRenderer(treeBlocks, isEditingSetlist)}
             </div>
 
@@ -929,6 +838,7 @@ export default function EventCockpitPage() {
           </div>
         </div>
       )}
+      
       {/* SUCCESS CONFIRMATION MODAL */}
       {showSuccessModal && (
         <div className="fixed inset-0 bg-zinc-950/60 backdrop-blur-sm z-[150000] flex items-center justify-center p-4">

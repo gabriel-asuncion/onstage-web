@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+// import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { createClient } from "../utils/supabase/client";
 import { useEngine } from "../app/context/EngineContext";
 
@@ -18,6 +19,7 @@ interface UserProfile {
 export default function Sidebar() {
   const supabase = createClient();
   const pathname = usePathname();
+  const router = useRouter(); // ✅ SURGICAL FIX: Initialize the router
   
   // ✅ SURGICAL ADDITION: Pulling workspace variables from Engine Context
   const { simulatedRole, simulatedUserId, userTeamId, primaryTeamId, secondaryTeamIds, switchWorkspace } = useEngine();
@@ -27,6 +29,16 @@ export default function Sidebar() {
   const [activeProfile, setActiveProfile] = useState<UserProfile | null>(null);
   const [newBlockoutDate, setNewBlockoutDate] = useState("2026-06-21");
   const [isSavingSchedule, setIsSavingSchedule] = useState(false);
+  
+  // ✅ SURGICAL FIX: Secure Supabase sign-out logic
+  const handleLogout = async () => {
+    try {
+      await supabase.auth.signOut();
+      router.push("/login"); // (Adjust to "/" if your login page is at the root)
+    } catch (error) {
+      console.error("Error logging out:", error);
+    }
+  };
   
   // ✅ Local state to populate team names in the dropdown
   const [teamNamesMap, setTeamNamesMap] = useState<Record<string, string>>({});
@@ -409,7 +421,18 @@ export default function Sidebar() {
                 >
                   {isSavingSchedule ? "Syncing..." : "Block Date"}
                 </button>
+                
               </form>
+              {/* ✅ SURGICAL FIX: Restored Logout Button at the bottom of the column */}
+              <div className="mt-6 pt-5 border-t border-zinc-100">
+                <button 
+                  type="button" 
+                  onClick={handleLogout}
+                  className="w-full py-3 bg-red-50 hover:bg-red-100 text-red-600 font-black text-[11px] uppercase tracking-widest rounded-xl transition-colors shadow-sm"
+                >
+                  Sign Out
+                </button>
+              </div>
             </div>
 
           </div>

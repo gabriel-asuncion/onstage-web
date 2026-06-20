@@ -8,7 +8,7 @@ import { useEngine } from "@/app/context/EngineContext"; // Adjust path if neede
 export default function CreateTeamPage() {
   const supabase = createClient();
   const router = useRouter();
-  const { realUserId, userTeamId } = useEngine(); // Pulling from your context
+  const { simulatedUserId, userTeamId } = useEngine(); // Pulling from your context
 
   const [teamName, setTeamName] = useState("");
   const [keyword, setKeyword] = useState("");
@@ -53,7 +53,7 @@ export default function CreateTeamPage() {
           team_id: newTeam.id,
           role: "admin" // Automatically promote the creator to Admin!
         })
-        .eq("id", realUserId);
+        .eq("id", simulatedUserId);
 
       if (profileError) throw profileError;
 

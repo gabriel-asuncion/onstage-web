@@ -98,7 +98,7 @@ export default function SongEditPage() {
   const editingSongId = params.id as string;
 
   const editorContentContainerRef = useRef<HTMLDivElement | null>(null);
-  const { simulatedRole, simulatedUserId } = useEngine();
+  const { activeRole, userTeamId } = useEngine();
 
   // Primary Hydration States
   const [loading, setLoading] = useState(true);
@@ -113,6 +113,23 @@ export default function SongEditPage() {
   const [formThemes, setFormThemes] = useState<string[]>([]);
   const [themeInputSearchValue, setThemeInputSearchValue] = useState("");
   const [isArtistDropdownFocused, setIsArtistDropdownFocused] = useState(false);
+  const [knownArtists, setKnownArtists] = useState<string[]>([]);
+
+  useEffect(() => {
+    const fetchGlobalArtists = async () => {
+      const { data: allSongs } = await supabase
+        .from("songs")
+        .select("artist");
+        
+      if (allSongs) {
+        const uniqueArtists = Array.from(new Set(allSongs.map(s => s.artist).filter(Boolean)));
+        setKnownArtists(uniqueArtists as string[]);
+      }
+    };
+    
+    fetchGlobalArtists();
+  }, [supabase]);
+
   const [isThemeDropdownFocused, setIsThemeDropdownFocused] = useState(false);
   const [formSections, setFormSections] = useState<SongSectionBlock[]>([]);
   const [sectionTimings, setSectionTimings] = useState<SectionTimingMap>({});
@@ -147,6 +164,11 @@ export default function SongEditPage() {
   useEffect(() => {
     const hydrateArrangementWorkspace = async () => {
       if (!editingSongId) return;
+      
+      if (editingSongId === "new") {
+        setLoading(false);
+        return; 
+      }
       try {
         setLoading(true);
         const { data: song, error: songFetchError } = await supabase
@@ -186,8 +208,9 @@ export default function SongEditPage() {
         } else {
           setFormSections([{ id: "sec-1", type: "Verse 1", label: "Verse 1", content: "", repetitions: 1 }]);
         }
-      } catch (err) {
-        console.error("Tracking hydration synced drop failure:", err);
+      } catch (err: any) {
+        // ✅ SURGICAL FIX: Stringify the hydration error so it doesn't hide
+        console.error("Tracking hydration synced drop failure:", err?.message || JSON.stringify(err));
       } finally {
         setLoading(false);
         setHasUnsavedChanges(false);
@@ -428,6 +451,12 @@ export default function SongEditPage() {
 
   const handleCommitSongChangesToDB = async () => {
     if (!editingSongId) return;
+
+    if (activeRole !== "admin") {
+      alert("Permission denied: Only admins can save arrangement modifications.");
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -444,29 +473,51 @@ export default function SongEditPage() {
         };
       });
 
-      const { error: songUpdateError } = await supabase
-        .from("songs")
-        .update({ 
-          title: formTitle,
-          artist: formArtist,
-          tempo: parseInt(formTempo, 10) || 75,
-          original_key: formKey,
-          themes: formThemes.join(", "),
-          section_timings: updatedSectionTimings 
-        })
-        .eq("id", editingSongId);
+      const songPayload = {
+        title: formTitle,
+        artist: formArtist,
+        tempo: parseInt(formTempo, 10) || 75,
+        original_key: formKey,
+        themes: formThemes.join(", "),
+        section_timings: updatedSectionTimings,
+        // ✅ SURGICAL FIX: Pass an empty string to satisfy the database's strict NOT NULL constraint!
+        chordpro_content: "" 
+      };
 
-      if (songUpdateError) throw songUpdateError;
+      let targetSongId = editingSongId;
 
-      const { error: deleteError } = await supabase
-        .from("song_sections")
-        .delete()
-        .eq("song_id", editingSongId);
+      // ✅ SURGICAL FIX: Branching logic for Create vs. Update
+      if (editingSongId === "new") {
+        // 1. INSERT NEW SONG
+        const { data: newSong, error: insertSongError } = await supabase
+          .from("songs")
+          .insert({ ...songPayload, team_id: userTeamId })
+          .select("id")
+          .single();
 
-      if (deleteError) throw deleteError;
+        if (insertSongError) throw insertSongError;
+        targetSongId = newSong.id; // Grab the newly generated UUID!
+      } else {
+        // 2. UPDATE EXISTING SONG
+        const { error: songUpdateError } = await supabase
+          .from("songs")
+          .update(songPayload)
+          .eq("id", targetSongId);
 
+        if (songUpdateError) throw songUpdateError;
+
+        // Wipe out old sections before writing the new ones
+        const { error: deleteError } = await supabase
+          .from("song_sections")
+          .delete()
+          .eq("song_id", targetSongId);
+
+        if (deleteError) throw deleteError;
+      }
+
+      // 3. INSERT SECTIONS (Works for both new and existing songs!)
       const sectionsToInsert = formSections.map((sec, index) => ({
-        song_id: editingSongId,
+        song_id: targetSongId,
         section_name: sec.type,
         content: sec.content || "",
         sequence_order: index
@@ -481,8 +532,10 @@ export default function SongEditPage() {
 
       setHasUnsavedChanges(false);
       router.push("/songs");
-    } catch (err) {
-      console.error("Database connection failure drop crash:", err);
+    } catch (err: any) {
+      const errorMessage = err?.message || JSON.stringify(err);
+      console.error("Database connection failure drop crash:", errorMessage);
+      alert(`Failed to save: ${errorMessage}`);
     } finally {
       setLoading(false);
     }
@@ -560,6 +613,7 @@ export default function SongEditPage() {
 
   const uniqueContentSectionsList = formSections.reduce((acc: SongSectionBlock[], curr) => { if (!acc.some(item => item.type === curr.type)) acc.push(curr); return acc; }, []);
   const filteredThemeCatalogSuggestions = CHRISTIAN_THEMES_PRESETS.filter(th => th.toLowerCase().includes(themeInputSearchValue.toLowerCase()) && !formThemes.includes(th));
+  const filteredArtistSuggestions = knownArtists.filter(a => a.toLowerCase().includes(formArtist.toLowerCase()));
   const filteredEnclosurePopupCatalog = ENCLOSURE_POPUP_CATALOG.filter(item => item.display.toLowerCase().includes(sectionSearchTerm.toLowerCase()));
   const isChordInputBlank = customChordInputValue.trim() === ""; 
   const isCommentInputBlank = customCommentInputValue.trim() === "";
@@ -641,7 +695,7 @@ export default function SongEditPage() {
       {/* FULL-BLEED WORKSPACE CANVAS */}
       <div className="flex-1 overflow-y-auto p-4 md:p-8 pb-20 custom-scrollbar space-y-3 w-full">
         {editorActiveTab === "details" && (
-          <div className="w-full animate-in fade-in">
+          <div className="w-full animate-in fade-in relative z-[200]">
             <div className="bg-white p-4 md:p-6 rounded-xl md:rounded-2xl border border-zinc-200 space-y-4 shadow-sm">
               <div><label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Track Title Signature *</label><input type="text" value={formTitle} className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-2.5 text-xs font-bold text-zinc-800 bg-zinc-50/50 outline-none" onChange={e => { setHasUnsavedChanges(true); setFormTitle(e.target.value); }} /></div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -655,9 +709,32 @@ export default function SongEditPage() {
                 </div>
               </div>
               
-              <div>
+              {/* ✅ SURGICAL FIX: Autofill Artist Dropdown UI */}
+              <div className="relative">
                 <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Artist / Author Label Signature *</label>
-                <input type="text" value={formArtist} onChange={e => { setHasUnsavedChanges(true); setFormArtist(e.target.value); }} className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-2.5 text-xs outline-none" />
+                <input 
+                  type="text" 
+                  value={formArtist} 
+                  autoComplete="off" // ✅ SURGICAL FIX: S
+                  onFocus={() => setIsArtistDropdownFocused(true)}
+                  onBlur={() => setTimeout(() => setIsArtistDropdownFocused(false), 200)}
+                  onChange={e => { setHasUnsavedChanges(true); setFormArtist(e.target.value); }} 
+                  className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-2.5 text-xs font-bold text-zinc-800 bg-zinc-50/50 outline-none" 
+                />
+                {isArtistDropdownFocused && filteredArtistSuggestions.length > 0 && (
+                  <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-zinc-200 rounded-xl max-h-40 overflow-y-auto z-[3000] shadow-xl">
+                    {filteredArtistSuggestions.map(artist => (
+                      <button 
+                        key={artist} 
+                        type="button" 
+                        className="w-full px-3 py-2 text-left text-xs font-bold block border-b border-zinc-100 last:border-0 hover:bg-zinc-50 transition-colors" 
+                        onClick={() => { setHasUnsavedChanges(true); setFormArtist(artist); setIsArtistDropdownFocused(false); }}
+                      >
+                        {artist}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
               <div className="relative">
                 <label className="text-[9px] font-black text-zinc-400 uppercase tracking-wider block mb-1">Themes / Set Categories</label>
@@ -785,7 +862,7 @@ export default function SongEditPage() {
                         </div>
                       </div>
 
-                      {simulatedRole === "admin" && (
+                      {activeRole === "admin" && (
                         <button type="button" className="w-6 h-6 rounded-lg bg-zinc-50 text-zinc-400 text-xs border flex items-center justify-center" onClick={() => { setHasUnsavedChanges(true); setFormSections(prev => prev.filter(x => x.id !== sec.id)); }}>✕</button>
                       )}
                     </div>
@@ -884,7 +961,7 @@ export default function SongEditPage() {
                 );
               })}
             </div>
-            {simulatedRole === "admin" && (
+            {activeRole === "admin" && (
               <button type="button" className="w-full border border-dashed py-3 text-center rounded-xl text-blue-600 font-black text-xs uppercase tracking-wider block hover:bg-zinc-50 transition-colors" onClick={() => setIsSectionSelectorOpen(true)}>＋ Add New Section Enclosures</button>
             )}
           </div>
@@ -901,13 +978,13 @@ export default function SongEditPage() {
                   const isSelectedNode = selectedSequenceId === sec.id;
 
                   return (
-                    <div key={sec.id} draggable={simulatedRole === "admin"} onDragStart={() => setDraggedStructureIndex(idx)} onDragOver={(e) => { e.preventDefault(); if (dragOverStructureIndex !== idx) setDragOverStructureIndex(idx); }} onDragLeave={() => { if (dragOverStructureIndex === idx) setDragOverStructureIndex(null); }} onDragEnd={() => { setDraggedStructureIndex(null); setDragOverStructureIndex(null); }} onDrop={(e) => handleStructureDropOverride(e, idx)} onClick={() => setSelectedSequenceId(isSelectedNode ? null : sec.id)} className={`flex items-center justify-between p-3.5 border rounded-xl transition-all duration-150 ${isBeingDragged ? "opacity-30 bg-zinc-150 border-zinc-300 cursor-grabbing" : isHoveredTarget ? "border-blue-500 bg-blue-50/50 scale-[1.01] ring-2 ring-blue-400/20 shadow-md cursor-pointer" : isSelectedNode ? "border-blue-600 bg-blue-50/80 scale-[1.005] ring-2 ring-blue-500/30 shadow-md cursor-pointer" : "bg-white border-zinc-200/80 shadow-sm cursor-grab hover:bg-zinc-50"}`}>
+                    <div key={sec.id} draggable={activeRole === "admin"} onDragStart={() => setDraggedStructureIndex(idx)} onDragOver={(e) => { e.preventDefault(); if (dragOverStructureIndex !== idx) setDragOverStructureIndex(idx); }} onDragLeave={() => { if (dragOverStructureIndex === idx) setDragOverStructureIndex(null); }} onDragEnd={() => { setDraggedStructureIndex(null); setDragOverStructureIndex(null); }} onDrop={(e) => handleStructureDropOverride(e, idx)} onClick={() => setSelectedSequenceId(isSelectedNode ? null : sec.id)} className={`flex items-center justify-between p-3.5 border rounded-xl transition-all duration-150 ${isBeingDragged ? "opacity-30 bg-zinc-150 border-zinc-300 cursor-grabbing" : isHoveredTarget ? "border-blue-500 bg-blue-50/50 scale-[1.01] ring-2 ring-blue-400/20 shadow-md cursor-pointer" : isSelectedNode ? "border-blue-600 bg-blue-50/80 scale-[1.005] ring-2 ring-blue-500/30 shadow-md cursor-pointer" : "bg-white border-zinc-200/80 shadow-sm cursor-grab hover:bg-zinc-50"}`}>
                       <div className="flex items-center gap-2.5 min-w-0">
                         <span className="text-[11px] text-zinc-400 font-mono font-bold shrink-0">#{idx + 1}</span>
                         <span className="text-xs font-black uppercase tracking-wider text-zinc-700 truncate">{sec.type}</span>
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
-                        {simulatedRole === "admin" && (
+                        {activeRole === "admin" && (
                           <button type="button" onClick={(e) => { e.stopPropagation(); setHasUnsavedChanges(true); setFormSections(prev => prev.filter(x => x.id !== sec.id)); if (isSelectedNode) setSelectedSequenceId(null); }} className="text-[10px] font-bold text-zinc-400 hover:text-red-500 px-1 transition-colors cursor-pointer">✕ Remove</button>
                         )}
                         <span className="text-zinc-300 text-sm font-bold select-none">☰</span>
@@ -953,7 +1030,7 @@ export default function SongEditPage() {
             </div>
           )}
 
-          {!(editorActiveTab === "content" && (isAddChordsModeActive || isAddNotesModeActive)) && editingSongId && simulatedRole === "admin" && (
+          {!(editorActiveTab === "content" && (isAddChordsModeActive || isAddNotesModeActive)) && editingSongId && activeRole === "admin" && (
             <button 
               type="button" 
               className="px-3 py-2 rounded-xl bg-red-50 text-red-600 font-bold text-[10px] uppercase border border-red-200 hover:bg-red-100 transition-all cursor-pointer shadow-sm"
@@ -1002,7 +1079,8 @@ export default function SongEditPage() {
 
           return (
             <div className="shrink-0">
-              {(simulatedRole === "admin" || simulatedRole === "member") && (
+              {/* ✅ SURGICAL FIX: Only show the save button to actual admins, not members! */}
+              {activeRole === "admin" && (
                 <button 
                   type="button" 
                   disabled={isSaveDisabled}
