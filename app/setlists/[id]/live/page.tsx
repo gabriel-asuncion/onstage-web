@@ -315,6 +315,75 @@ export default function SetlistPerformanceRoomPage() {
 
   // Interface Synchronization Control States
   const [isPlayingFlow, setIsPlayingFlow] = useState(false);
+
+  // ✅ SURGICAL ADDITION: Quick Jump Scrubber States & Engine
+  const [isScrubberActive, setIsScrubberActive] = useState(false);
+  const [scrubberHoverIndex, setScrubberHoverIndex] = useState<number | null>(null);
+
+  const handleScrubberPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    setIsScrubberActive(true);
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    handleScrubberPointerMove(e);
+  };
+
+  const handleScrubberPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    // If the user isn't holding down, don't do anything
+    if (e.buttons === 0 && e.pointerType === "mouse") {
+      setIsScrubberActive(false);
+      return;
+    }
+    
+    // Find the exact HTML element currently sitting under the user's thumb
+    const element = document.elementFromPoint(e.clientX, e.clientY);
+    const indexStr = element?.getAttribute("data-scrubber-index");
+    
+    if (indexStr !== null && indexStr !== undefined) {
+      setScrubberHoverIndex(parseInt(indexStr, 10));
+    }
+  };
+
+  const handleScrubberPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    setIsScrubberActive(false);
+    (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+    
+    // ✅ SURGICAL FIX: Scroll the view to the section instead of changing the active playhead!
+    if (scrubberHoverIndex !== null) {
+      const targetSection = sections[scrubberHoverIndex];
+      if (targetSection) {
+        const targetElement = sectionRefs.current[targetSection.id];
+        if (targetElement) {
+          // Pause the auto-scroll engine briefly so it doesn't fight the user
+          isAutoScrollingRef.current = true;
+          if ((window as any)._autoScrollTimeout) clearTimeout((window as any)._autoScrollTimeout);
+
+          targetElement.scrollIntoView({ behavior: "smooth", block: "center" });
+          setShowSyncBack(true); // Pop up the Sync Back button
+
+          (window as any)._autoScrollTimeout = setTimeout(() => {
+            isAutoScrollingRef.current = false;
+          }, 1500); // Give them 1.5 seconds to look at it before the engine is allowed to snap back
+        }
+      }
+      setScrubberHoverIndex(null);
+    }
+  };
+
+  // ✅ SURGICAL ADDITION: Broadcast playmode state to the global Sidebar to hide it
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("onpraise-playmode", { detail: isPlayingFlow }));
+    }
+  }, [isPlayingFlow]);
+
+  // Failsafe: Ensure nav comes back if user unmounts/leaves the page while playing
+  useEffect(() => {
+    return () => {
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("onpraise-playmode", { detail: false }));
+      }
+    };
+  }, []);
+
   const [currentSectionIndex, setCurrentSectionIndex] = useState<number>(0);
   const [currentBeat, setCurrentBeat] = useState<number>(1);
   
@@ -1954,6 +2023,69 @@ export default function SetlistPerformanceRoomPage() {
                 Understood
               </button>
             </div>
+          </div>
+        </div>
+      )}
+      {/* ======================================================= */}
+      {/* ✅ SURGICAL ADDITION: QUICK JUMP SCRUBBER OVERLAY         */}
+      {/* ======================================================= */}
+      {sections.length > 0 && (
+        <div
+          onPointerDown={handleScrubberPointerDown}
+          onPointerMove={isScrubberActive ? handleScrubberPointerMove : undefined}
+          onPointerUp={handleScrubberPointerUp}
+          onPointerCancel={handleScrubberPointerUp}
+          className={`fixed right-0 top-[15%] bottom-[15%] z-[90000] flex flex-col justify-center py-4 pl-12 pr-1 md:pr-4 touch-none transition-all duration-300 select-none ${
+            isScrubberActive ? "w-64" : "w-10"
+          }`}
+        >
+          {/* ✅ The Smooth Fade-in Black Gradient Backdrop */}
+          <div 
+            className={`absolute inset-0 bg-gradient-to-l from-zinc-950 via-zinc-950/80 to-transparent pointer-events-none transition-opacity duration-300 rounded-l-[2rem] ${
+              isScrubberActive ? "opacity-10" : "opacity-0"
+            }`}
+          />
+
+          <div className="relative z-10 flex flex-col items-end gap-5 py-4 transition-all duration-300">
+            {sections.map((sec, idx) => {
+              const isHovered = scrubberHoverIndex === idx;
+              const isActive = currentSectionIndex === idx;
+
+              return (
+                <div
+                  key={`scrub-${sec.id}`}
+                  data-scrubber-index={idx}
+                  className={`flex items-center justify-end gap-4 transition-all duration-200 w-full text-right ${
+                    isHovered ? "scale-110 -translate-x-3" : isScrubberActive ? "cursor-crosshair" : "cursor-pointer"
+                  }`}
+                >
+                  {/* The Section Name Text (Inverted to light text for the dark background) */}
+                  <span 
+                    data-scrubber-index={idx}
+                    className={`text-xs font-black uppercase tracking-wider transition-all duration-200 drop-shadow-md ${
+                      !isScrubberActive ? "hidden" :
+                      isHovered ? "text-blue-400 opacity-100 scale-110" : 
+                      isActive ? "text-white opacity-100" : 
+                      "text-zinc-400 opacity-80"
+                    }`}
+                  >
+                    {sec.section_name}
+                  </span>
+                  
+                  {/* The Interactive Dot (Smart colors adapt to the dark/light background) */}
+                  <div
+                    data-scrubber-index={idx}
+                    className={`rounded-full transition-all duration-300 shrink-0 shadow-sm ${
+                      isHovered
+                        ? "w-6 h-6 bg-blue-500 shadow-lg ring-4 ring-blue-500/40"
+                        : isActive
+                        ? `w-4 h-4 ${isScrubberActive ? "bg-white ring-4 ring-white/20" : "bg-zinc-900 ring-4 ring-zinc-900/10"}`
+                        : `w-2.5 h-2.5 ${isScrubberActive ? "bg-zinc-600" : "bg-zinc-300 hover:bg-zinc-400"}`
+                    }`}
+                  />
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

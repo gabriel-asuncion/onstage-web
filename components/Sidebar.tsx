@@ -48,6 +48,46 @@ export default function Sidebar() {
   const [isJoining, setIsJoining] = useState(false);
   const [copyText, setCopyText] = useState("Copy Code");
 
+  // ✅ SURGICAL ADDITION: Mobile Nav Visibility States
+  const [isNavVisible, setIsNavVisible] = useState(true);
+  const [isPlaymodeActive, setIsPlaymodeActive] = useState(false);
+
+  useEffect(() => {
+    let lastScrollY = 0;
+    let ticking = false;
+
+    const handleScroll = (e: Event) => {
+      // Capture scroll from window or specific scrolling containers (like the live page flex-1 div)
+      const target = (e.target as Document).scrollingElement || (e.target as HTMLElement);
+      const currentScrollY = target.scrollTop || window.scrollY || 0;
+
+      if (!ticking) {
+        window.requestAnimationFrame(() => {
+          if (currentScrollY > lastScrollY && currentScrollY > 50) {
+            setIsNavVisible(false); // Scrolling down -> Hide
+          } else if (currentScrollY < lastScrollY) {
+            setIsNavVisible(true);  // Scrolling up -> Show
+          }
+          lastScrollY = currentScrollY;
+          ticking = false;
+        });
+        ticking = true;
+      }
+    };
+
+    // Use capture: true to catch scrolls from inner divs (like our live page)
+    window.addEventListener("scroll", handleScroll, { capture: true, passive: true });
+    
+    // Listen for the custom Playmode event from the Live page
+    const handlePlaymodeSignal = (e: any) => setIsPlaymodeActive(e.detail);
+    window.addEventListener("onpraise-playmode", handlePlaymodeSignal);
+
+    return () => {
+      window.removeEventListener("scroll", handleScroll, { capture: true });
+      window.removeEventListener("onpraise-playmode", handlePlaymodeSignal);
+    };
+  }, []);
+
   // ✅ PHASE 3 FIX: For Lone Wolves to join a team directly from the sidebar
   async function handleJoinFromProfile() {
     if (!modalJoinCode.trim() || !simulatedUserId) return;
@@ -236,10 +276,13 @@ export default function Sidebar() {
       {/* ======================================================= */}
       {/* 2. MOBILE VIEWPORT BOTTOM TRAY NAV BAR (Hidden on Desktop) */}
       {/* ======================================================= */}
-      <nav className="fixed bottom-0 left-0 right-0 h-16 bg-white/95 backdrop-blur-md border-t border-zinc-200/80 flex items-center justify-around px-4 pb-safe shadow-lg md:hidden z-[100000] select-none">
-        {navItems.map((item) => {
+      <nav className={`fixed bottom-0 left-0 right-0 h-16 bg-white/95 backdrop-blur-md border-t border-zinc-200/80 flex items-center justify-around px-2 pb-safe shadow-lg md:hidden z-[100000] select-none transition-transform duration-300 ease-in-out ${
+        (!isNavVisible || isPlaymodeActive) ? "translate-y-full" : "translate-y-0"
+      }`}>
+        {navItems.map((item, idx) => {
           const isActive = pathname.startsWith(item.activePattern);
-          return (
+          
+          const navNode = (
             <Link
               key={item.href}
               href={item.href}
@@ -248,14 +291,30 @@ export default function Sidebar() {
               }`}
             >
               {isActive && (
-                <span className="absolute top-1 w-12 h-[3px] bg-blue-600 rounded-b-full" />
+                <span className="absolute top-1 w-10 h-[3px] bg-blue-600 rounded-b-full" />
               )}
               <img src={item.icon} className="w-5 h-5 object-contain" alt="" />
             </Link>
           );
+
+          // ✅ SURGICAL ADDITION: Inject the logo perfectly in the 3rd position (index 2)
+          if (idx === 2) {
+            return [
+              <Link 
+                key="mobile-center-logo" 
+                href="/dashboard" 
+                className="flex flex-col items-center justify-center flex-1 h-full transition-transform active:scale-95"
+              >
+                <img src="/assets/logo.svg" className="w-8 h-8 object-contain drop-shadow-sm" alt="Logo" />
+              </Link>,
+              navNode
+            ];
+          }
+
+          return navNode;
         })}
 
-        {/* PROFILE BUBBLE MERGED AS THE 4TH TRIGGER OPTION INSIDE PORTRAIT VIEWPORTS */}
+        {/* PROFILE BUBBLE MERGED AS THE 5TH TRIGGER OPTION INSIDE PORTRAIT VIEWPORTS */}
         <div className="flex-1 flex items-center justify-center h-full">
           <button 
             type="button"
