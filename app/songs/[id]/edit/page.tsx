@@ -42,17 +42,23 @@ interface SectionTimingMap {
   };
 }
 
-const ENCLOSURE_POPUP_CATALOG = [
-  { id: "IN", baseType: "Intro", display: "Intro" },
-  { id: "V1", baseType: "Verse", display: "Verse" },
-  { id: "P",  baseType: "Pre-Chorus", display: "Pre-Chorus" },
-  { id: "C1", baseType: "Chorus", display: "Chorus" },
-  { id: "R",  baseType: "Refrain", display: "Refrain" },
-  { id: "PC", baseType: "Post-Chorus", display: "Post-Chorus" },
-  { id: "B",  baseType: "Bridge", display: "Bridge" },
-  { id: "I",  baseType: "Instrumental", display: "Instrumental" },
-  { id: "O",  baseType: "Outro", display: "Outro" },
-  { id: "AD", baseType: "Ad Lib", display: "Ad Lib" }
+// ✅ SURGICAL REPLACEMENT: Strict Native Section Catalog with UI Styling
+const SECTION_CATALOG = [
+  { id: "V1", display: "Verse 1", abbr: "V", color: "text-sky-500 border-sky-300 bg-sky-50" },
+  { id: "V2", display: "Verse 2", abbr: "V", color: "text-sky-500 border-sky-300 bg-sky-50" },
+  { id: "V3", display: "Verse 3", abbr: "V", color: "text-sky-500 border-sky-300 bg-sky-50" },
+  { id: "V4", display: "Verse 4", abbr: "V", color: "text-sky-500 border-sky-300 bg-sky-50" },
+  { id: "PC", display: "Pre-Chorus", abbr: "PC", color: "text-orange-500 border-orange-300 bg-orange-50" },
+  { id: "C",  display: "Chorus", abbr: "C", color: "text-orange-500 border-orange-300 bg-orange-50" },
+  { id: "PoC", display: "Post-Chorus", abbr: "PoC", color: "text-orange-500 border-orange-300 bg-orange-50" },
+  { id: "R",  display: "Refrain", abbr: "R", color: "text-orange-500 border-orange-300 bg-orange-50" },
+  { id: "B",  display: "Bridge", abbr: "B", color: "text-blue-500 border-blue-300 bg-blue-50" },
+  { id: "IN", display: "Intro", abbr: "IN", color: "text-emerald-500 border-emerald-300 bg-emerald-50" },
+  { id: "I",  display: "Instrumental", abbr: "I", color: "text-emerald-500 border-emerald-300 bg-emerald-50" },
+  { id: "IT", display: "Interlude", abbr: "IT", color: "text-emerald-500 border-emerald-300 bg-emerald-50" },
+  { id: "O",  display: "Outro", abbr: "O", color: "text-purple-500 border-purple-300 bg-purple-50" },
+  { id: "T",  display: "Tag", abbr: "T", color: "text-amber-500 border-amber-300 bg-amber-50" },
+  { id: "AD", display: "Ad Lib", abbr: "AL", color: "text-rose-500 border-rose-300 bg-rose-50" }
 ];
 
 const CHRISTIAN_THEMES_PRESETS = [
@@ -98,7 +104,7 @@ export default function SongEditPage() {
   const editingSongId = params.id as string;
 
   const editorContentContainerRef = useRef<HTMLDivElement | null>(null);
-  const { activeRole, userTeamId } = useEngine();
+  const { activeRole, simulatedUserId } = useEngine();
 
   // Primary Hydration States
   const [loading, setLoading] = useState(true);
@@ -113,23 +119,6 @@ export default function SongEditPage() {
   const [formThemes, setFormThemes] = useState<string[]>([]);
   const [themeInputSearchValue, setThemeInputSearchValue] = useState("");
   const [isArtistDropdownFocused, setIsArtistDropdownFocused] = useState(false);
-  const [knownArtists, setKnownArtists] = useState<string[]>([]);
-
-  useEffect(() => {
-    const fetchGlobalArtists = async () => {
-      const { data: allSongs } = await supabase
-        .from("songs")
-        .select("artist");
-        
-      if (allSongs) {
-        const uniqueArtists = Array.from(new Set(allSongs.map(s => s.artist).filter(Boolean)));
-        setKnownArtists(uniqueArtists as string[]);
-      }
-    };
-    
-    fetchGlobalArtists();
-  }, [supabase]);
-
   const [isThemeDropdownFocused, setIsThemeDropdownFocused] = useState(false);
   const [formSections, setFormSections] = useState<SongSectionBlock[]>([]);
   const [sectionTimings, setSectionTimings] = useState<SectionTimingMap>({});
@@ -139,9 +128,37 @@ export default function SongEditPage() {
   const [modalKeyRoot, setModalKeyRoot] = useState("G");
   const [modalKeyAccidental, setModalKeyAccidental] = useState<"" | "#" | "b">("");
 
-  const [isSectionSelectorOpen, setIsSectionSelectorOpen] = useState(false);
   const [isRealtimePreviewActive, setIsRealtimePreviewActive] = useState(false);
-  const [sectionSearchTerm, setSectionSearchTerm] = useState("");
+
+  // ✅ SURGICAL ADDITION: Unified Section Assignment Modal States
+  const [sectionModalConfig, setSectionModalConfig] = useState<{ isOpen: boolean, mode: "add" | "reassign", targetId?: string }>({ isOpen: false, mode: "add" });
+  const [sectionModalSearch, setSectionModalSearch] = useState("");
+  const [sectionModalSelected, setSectionModalSelected] = useState<string | null>(null);
+
+  const handleSectionModalSubmit = () => {
+    if (!sectionModalSelected) return;
+    const tmpl = SECTION_CATALOG.find(x => x.id === sectionModalSelected);
+    if (!tmpl) return;
+
+    if (sectionModalConfig.mode === "add") {
+      setHasUnsavedChanges(true);
+      setFormSections([...formSections, { 
+        id: `sec-add-${Date.now()}-${Math.random()}`, 
+        type: tmpl.display, 
+        label: tmpl.display, 
+        content: "", 
+        repetitions: 1 
+      }]);
+    } else if (sectionModalConfig.mode === "reassign" && sectionModalConfig.targetId) {
+      setHasUnsavedChanges(true);
+      setFormSections(formSections.map(item => 
+        item.id === sectionModalConfig.targetId 
+          ? { ...item, type: tmpl.display, label: tmpl.display } 
+          : item
+      ));
+    }
+    setSectionModalConfig({ isOpen: false, mode: "add" });
+  };
 
   const [isAddChordsModeActive, setIsAddChordsModeActive] = useState(false);
   const [isAddNotesModeActive, setIsAddNotesModeActive] = useState(false); 
@@ -154,7 +171,7 @@ export default function SongEditPage() {
 
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [pastedRawLyricsText, setPastedRawLyricsText] = useState("");
-  const [activeReassignSectionId, setActiveReassignSectionId] = useState<string | null>(null);
+
   const [selectedSequenceId, setSelectedSequenceId] = useState<string | null>(null);
   
   const [draggedStructureIndex, setDraggedStructureIndex] = useState<number | null>(null);
@@ -164,11 +181,6 @@ export default function SongEditPage() {
   useEffect(() => {
     const hydrateArrangementWorkspace = async () => {
       if (!editingSongId) return;
-      
-      if (editingSongId === "new") {
-        setLoading(false);
-        return; 
-      }
       try {
         setLoading(true);
         const { data: song, error: songFetchError } = await supabase
@@ -208,9 +220,8 @@ export default function SongEditPage() {
         } else {
           setFormSections([{ id: "sec-1", type: "Verse 1", label: "Verse 1", content: "", repetitions: 1 }]);
         }
-      } catch (err: any) {
-        // ✅ SURGICAL FIX: Stringify the hydration error so it doesn't hide
-        console.error("Tracking hydration synced drop failure:", err?.message || JSON.stringify(err));
+      } catch (err) {
+        console.error("Tracking hydration synced drop failure:", err);
       } finally {
         setLoading(false);
         setHasUnsavedChanges(false);
@@ -451,12 +462,6 @@ export default function SongEditPage() {
 
   const handleCommitSongChangesToDB = async () => {
     if (!editingSongId) return;
-
-    if (activeRole !== "admin") {
-      alert("Permission denied: Only admins can save arrangement modifications.");
-      return;
-    }
-
     setLoading(true);
 
     try {
@@ -473,51 +478,29 @@ export default function SongEditPage() {
         };
       });
 
-      const songPayload = {
-        title: formTitle,
-        artist: formArtist,
-        tempo: parseInt(formTempo, 10) || 75,
-        original_key: formKey,
-        themes: formThemes.join(", "),
-        section_timings: updatedSectionTimings,
-        // ✅ SURGICAL FIX: Pass an empty string to satisfy the database's strict NOT NULL constraint!
-        chordpro_content: "" 
-      };
+      const { error: songUpdateError } = await supabase
+        .from("songs")
+        .update({ 
+          title: formTitle,
+          artist: formArtist,
+          tempo: parseInt(formTempo, 10) || 75,
+          original_key: formKey,
+          themes: formThemes.join(", "),
+          section_timings: updatedSectionTimings 
+        })
+        .eq("id", editingSongId);
 
-      let targetSongId = editingSongId;
+      if (songUpdateError) throw songUpdateError;
 
-      // ✅ SURGICAL FIX: Branching logic for Create vs. Update
-      if (editingSongId === "new") {
-        // 1. INSERT NEW SONG
-        const { data: newSong, error: insertSongError } = await supabase
-          .from("songs")
-          .insert({ ...songPayload, team_id: userTeamId })
-          .select("id")
-          .single();
+      const { error: deleteError } = await supabase
+        .from("song_sections")
+        .delete()
+        .eq("song_id", editingSongId);
 
-        if (insertSongError) throw insertSongError;
-        targetSongId = newSong.id; // Grab the newly generated UUID!
-      } else {
-        // 2. UPDATE EXISTING SONG
-        const { error: songUpdateError } = await supabase
-          .from("songs")
-          .update(songPayload)
-          .eq("id", targetSongId);
+      if (deleteError) throw deleteError;
 
-        if (songUpdateError) throw songUpdateError;
-
-        // Wipe out old sections before writing the new ones
-        const { error: deleteError } = await supabase
-          .from("song_sections")
-          .delete()
-          .eq("song_id", targetSongId);
-
-        if (deleteError) throw deleteError;
-      }
-
-      // 3. INSERT SECTIONS (Works for both new and existing songs!)
       const sectionsToInsert = formSections.map((sec, index) => ({
-        song_id: targetSongId,
+        song_id: editingSongId,
         section_name: sec.type,
         content: sec.content || "",
         sequence_order: index
@@ -532,10 +515,8 @@ export default function SongEditPage() {
 
       setHasUnsavedChanges(false);
       router.push("/songs");
-    } catch (err: any) {
-      const errorMessage = err?.message || JSON.stringify(err);
-      console.error("Database connection failure drop crash:", errorMessage);
-      alert(`Failed to save: ${errorMessage}`);
+    } catch (err) {
+      console.error("Database connection failure drop crash:", err);
     } finally {
       setLoading(false);
     }
@@ -613,8 +594,7 @@ export default function SongEditPage() {
 
   const uniqueContentSectionsList = formSections.reduce((acc: SongSectionBlock[], curr) => { if (!acc.some(item => item.type === curr.type)) acc.push(curr); return acc; }, []);
   const filteredThemeCatalogSuggestions = CHRISTIAN_THEMES_PRESETS.filter(th => th.toLowerCase().includes(themeInputSearchValue.toLowerCase()) && !formThemes.includes(th));
-  const filteredArtistSuggestions = knownArtists.filter(a => a.toLowerCase().includes(formArtist.toLowerCase()));
-  const filteredEnclosurePopupCatalog = ENCLOSURE_POPUP_CATALOG.filter(item => item.display.toLowerCase().includes(sectionSearchTerm.toLowerCase()));
+  // const filteredEnclosurePopupCatalog = ENCLOSURE_POPUP_CATALOG.filter(item => item.display.toLowerCase().includes(sectionSearchTerm.toLowerCase()));
   const isChordInputBlank = customChordInputValue.trim() === ""; 
   const isCommentInputBlank = customCommentInputValue.trim() === "";
 
@@ -695,7 +675,7 @@ export default function SongEditPage() {
       {/* FULL-BLEED WORKSPACE CANVAS */}
       <div className="flex-1 overflow-y-auto p-4 md:p-8 pb-20 custom-scrollbar space-y-3 w-full">
         {editorActiveTab === "details" && (
-          <div className="w-full animate-in fade-in relative z-[200]">
+          <div className="w-full animate-in fade-in">
             <div className="bg-white p-4 md:p-6 rounded-xl md:rounded-2xl border border-zinc-200 space-y-4 shadow-sm">
               <div><label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Track Title Signature *</label><input type="text" value={formTitle} className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-2.5 text-xs font-bold text-zinc-800 bg-zinc-50/50 outline-none" onChange={e => { setHasUnsavedChanges(true); setFormTitle(e.target.value); }} /></div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -709,32 +689,9 @@ export default function SongEditPage() {
                 </div>
               </div>
               
-              {/* ✅ SURGICAL FIX: Autofill Artist Dropdown UI */}
-              <div className="relative">
+              <div>
                 <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Artist / Author Label Signature *</label>
-                <input 
-                  type="text" 
-                  value={formArtist} 
-                  autoComplete="off" // ✅ SURGICAL FIX: S
-                  onFocus={() => setIsArtistDropdownFocused(true)}
-                  onBlur={() => setTimeout(() => setIsArtistDropdownFocused(false), 200)}
-                  onChange={e => { setHasUnsavedChanges(true); setFormArtist(e.target.value); }} 
-                  className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-2.5 text-xs font-bold text-zinc-800 bg-zinc-50/50 outline-none" 
-                />
-                {isArtistDropdownFocused && filteredArtistSuggestions.length > 0 && (
-                  <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-zinc-200 rounded-xl max-h-40 overflow-y-auto z-[3000] shadow-xl">
-                    {filteredArtistSuggestions.map(artist => (
-                      <button 
-                        key={artist} 
-                        type="button" 
-                        className="w-full px-3 py-2 text-left text-xs font-bold block border-b border-zinc-100 last:border-0 hover:bg-zinc-50 transition-colors" 
-                        onClick={() => { setHasUnsavedChanges(true); setFormArtist(artist); setIsArtistDropdownFocused(false); }}
-                      >
-                        {artist}
-                      </button>
-                    ))}
-                  </div>
-                )}
+                <input type="text" value={formArtist} onChange={e => { setHasUnsavedChanges(true); setFormArtist(e.target.value); }} className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-2.5 text-xs outline-none" />
               </div>
               <div className="relative">
                 <label className="text-[9px] font-black text-zinc-400 uppercase tracking-wider block mb-1">Themes / Set Categories</label>
@@ -827,25 +784,20 @@ export default function SongEditPage() {
                   <div key={sec.id} className={`border rounded-xl p-3.5 space-y-2 relative transition-all shadow-sm ${isRealtimePreviewActive && isSectionMismatched ? "bg-amber-50/40 border-amber-300 ring-4 ring-amber-500/5" : "bg-white border-zinc-200"}`}>
                     <div className="flex items-center justify-between gap-2 flex-wrap">
                       <div className="flex flex-wrap items-center gap-1.5">
+                        {/* ✅ SURGICAL FIX: Triggers the new unified assignment modal */}
                         <div className="relative">
-                          <button type="button" className="px-2.5 py-1 bg-cyan-100 hover:bg-cyan-200 text-cyan-800 font-black text-[9px] rounded-full uppercase tracking-wider block shadow-sm flex items-center gap-1" onClick={() => setActiveReassignSectionId(activeReassignSectionId === sec.id ? null : sec.id)}>
+                          <button 
+                            type="button" 
+                            className="px-2.5 py-1 bg-cyan-100 hover:bg-cyan-200 text-cyan-800 font-black text-[10px] rounded-full uppercase tracking-wider block shadow-sm flex items-center gap-1 transition-colors" 
+                            onClick={() => {
+                              setSectionModalSearch("");
+                              setSectionModalSelected(null);
+                              setSectionModalConfig({ isOpen: true, mode: "reassign", targetId: sec.id });
+                            }}
+                          >
                             <span>{sec.type}</span>
                             <span className="text-[8px] opacity-60">▼</span>
                           </button>
-                          {activeReassignSectionId === sec.id && (
-                            <div className="absolute top-full left-0 mt-1 bg-zinc-950 text-white rounded-xl border max-h-40 w-36 overflow-y-auto z-[5000] p-1">
-                              {ENCLOSURE_POPUP_CATALOG.map(tmpl => (
-                                <button key={tmpl.id} type="button" className="w-full text-left px-3 py-2 text-[11px] font-bold rounded-xl block border-b border-zinc-900 last:border-0" onClick={() => {
-                                  const existingNumbers = formSections.filter(x => x.type.toLowerCase().startsWith(tmpl.baseType.toLowerCase())).map(x => { const match = x.type.match(/\d+/); return match ? parseInt(match[0], 10) : 0; });
-                                  const nextNum = existingNumbers.length > 0 ? Math.max(...existingNumbers) + 1 : 1;
-                                  const dynamicTypeString = `${tmpl.baseType} ${nextNum}`;
-                                  setHasUnsavedChanges(true);
-                                  setFormSections(formSections.map(item => item.id === sec.id ? { ...item, type: dynamicTypeString, label: tmpl.display } : item));
-                                  setActiveReassignSectionId(null);
-                                }}>{tmpl.display}</button>
-                              ))}
-                            </div>
-                          )}
                         </div>
 
                         <div className="flex items-center gap-1 bg-zinc-50 border rounded-lg px-2 py-0.5 text-[10px] font-bold text-zinc-600 shadow-inner">
@@ -962,7 +914,17 @@ export default function SongEditPage() {
               })}
             </div>
             {activeRole === "admin" && (
-              <button type="button" className="w-full border border-dashed py-3 text-center rounded-xl text-blue-600 font-black text-xs uppercase tracking-wider block hover:bg-zinc-50 transition-colors" onClick={() => setIsSectionSelectorOpen(true)}>＋ Add New Section Enclosures</button>
+              <button 
+                type="button" 
+                className="w-full border border-dashed py-3.5 text-center rounded-2xl text-blue-600 font-black text-xs uppercase tracking-wider block hover:bg-zinc-50 transition-colors shadow-sm bg-white" 
+                onClick={() => {
+                  setSectionModalSearch("");
+                  setSectionModalSelected(null);
+                  setSectionModalConfig({ isOpen: true, mode: "add" });
+                }}
+              >
+                ＋ Add New Section Enclosures
+              </button>
             )}
           </div>
         )}
@@ -1079,8 +1041,7 @@ export default function SongEditPage() {
 
           return (
             <div className="shrink-0">
-              {/* ✅ SURGICAL FIX: Only show the save button to actual admins, not members! */}
-              {activeRole === "admin" && (
+              {(activeRole === "admin" || activeRole === "member") && (
                 <button 
                   type="button" 
                   disabled={isSaveDisabled}
@@ -1111,27 +1072,80 @@ export default function SongEditPage() {
         </div>
       )}
 
-      {/* ADD SECTION DIALOG BLOCK */}
-      {isSectionSelectorOpen && (
-        <div className="fixed inset-0 bg-zinc-950/60 backdrop-blur-sm z-[11000] flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl p-4 w-full max-w-xs shadow-2xl border space-y-3 animate-in zoom-in-95">
-            <div className="flex justify-between items-center border-b pb-1.5">
-              <h4 className="font-black text-zinc-900 text-xs">Add Section block</h4>
-              <button type="button" className="text-zinc-400 text-xs font-bold" onClick={() => setIsSectionSelectorOpen(false)}>Close</button>
+      {/* ======================================================= */}
+      {/* ✅ SURGICAL ADDITION: NATIVE SECTION ASSIGNMENT MODAL     */}
+      {/* ======================================================= */}
+      {sectionModalConfig.isOpen && (
+        <div className="fixed inset-0 z-[12000] flex items-end md:items-center justify-center md:p-4 bg-zinc-950/50 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full bg-[#f2f2f6] md:bg-white rounded-t-3xl md:rounded-3xl h-[85vh] md:h-[600px] max-w-lg flex flex-col shadow-2xl animate-in slide-in-from-bottom-full md:slide-in-from-bottom-0 md:zoom-in-95 duration-200 overflow-hidden">
+            
+            {/* Header */}
+            <div className="relative flex items-center justify-center p-4 md:p-5 border-b border-zinc-200/60 bg-white shrink-0">
+              <button 
+                type="button" 
+                onClick={() => setSectionModalConfig({ isOpen: false, mode: "add" })} 
+                className="absolute left-4 md:left-auto md:right-4 w-8 h-8 flex items-center justify-center rounded-full bg-zinc-100 text-zinc-500 hover:bg-zinc-200 transition-colors"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+              </button>
+              <h3 className="text-base font-black text-zinc-900 tracking-tight">
+                {sectionModalConfig.mode === "add" ? "Add New Sections" : "Reassign Section"}
+              </h3>
             </div>
-            <input type="text" placeholder="Filter templates..." value={sectionSearchTerm} className="w-full bg-zinc-50 border rounded-xl px-2.5 py-1.5 text-xs font-bold outline-none" onChange={e => setSectionSearchTerm(e.target.value)} />
-            <div className="grid grid-cols-2 gap-1.5 max-h-36 overflow-y-auto custom-scrollbar">
-              {filteredEnclosurePopupCatalog.map(tmpl => (
-                <button key={tmpl.id} type="button" className="px-3 py-2 hover:bg-zinc-50 text-left border rounded-lg text-[11px] font-bold text-zinc-700 transition-colors" onClick={() => {
-                  const existingNumbers = formSections.filter(x => x.type.toLowerCase().startsWith(tmpl.baseType.toLowerCase())).map(x => { const match = x.type.match(/\d+/); return match ? parseInt(match[0], 10) : 0; });
-                  const nextNum = existingNumbers.length > 0 ? Math.max(...existingNumbers) + 1 : 1;
-                  const blockTypeString = `${tmpl.baseType} ${nextNum}`;
-                  setHasUnsavedChanges(true);
-                  setFormSections([...formSections, { id: `sec-add-${Date.now()}-${Math.random()}`, type: blockTypeString, label: tmpl.display, content: "", repetitions: 1 }]);
-                  setIsSectionSelectorOpen(false); setSectionSearchTerm("");
-                }}>{tmpl.display}</button>
-              ))}
+
+            {/* Sticky Search Bar */}
+            <div className="p-4 bg-[#f2f2f6] md:bg-white shrink-0">
+              <div className="relative flex items-center w-full">
+                <svg className="absolute left-3 w-4 h-4 text-zinc-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
+                <input 
+                  type="text" 
+                  placeholder="Search for a new section" 
+                  value={sectionModalSearch}
+                  onChange={e => setSectionModalSearch(e.target.value)}
+                  className="w-full bg-zinc-200/50 md:bg-zinc-100/80 rounded-xl py-2.5 pl-9 pr-4 text-[13px] font-bold text-zinc-800 placeholder:text-zinc-500 outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+                />
+              </div>
             </div>
+
+            {/* Scrollable Radio List */}
+            <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-2.5 custom-scrollbar bg-[#f2f2f6] md:bg-white">
+              {SECTION_CATALOG.filter(tmpl => tmpl.display.toLowerCase().includes(sectionModalSearch.toLowerCase())).map(tmpl => {
+                const isSelected = sectionModalSelected === tmpl.id;
+                return (
+                  <button 
+                    key={tmpl.id} 
+                    type="button" 
+                    onClick={() => setSectionModalSelected(tmpl.id)}
+                    className={`w-full flex items-center justify-between p-3 rounded-2xl transition-all ${isSelected ? "bg-white ring-2 ring-blue-500 shadow-sm" : "bg-white hover:bg-zinc-50/80 border border-transparent shadow-sm md:border-zinc-200/60"}`}
+                  >
+                    <div className="flex items-center gap-3.5">
+                      <div className={`w-8 h-8 rounded-full border-2 flex items-center justify-center text-[10px] font-black ${tmpl.color}`}>
+                        {tmpl.abbr}
+                      </div>
+                      <span className="text-[14px] font-bold text-zinc-900 tracking-tight">{tmpl.display}</span>
+                    </div>
+                    
+                    {/* Native iOS style Radio indicator */}
+                    <div className={`w-5 h-5 rounded-full border-[2.5px] flex items-center justify-center transition-colors ${isSelected ? "border-blue-500" : "border-zinc-300"}`}>
+                      {isSelected && <div className="w-2.5 h-2.5 rounded-full bg-blue-500" />}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Sticky Action Footer */}
+            <div className="p-4 bg-[#f2f2f6] md:bg-white border-t border-zinc-200/50 shrink-0 pb-safe">
+              <button 
+                type="button" 
+                disabled={!sectionModalSelected}
+                onClick={handleSectionModalSubmit}
+                className={`w-full py-3.5 rounded-xl text-[14px] font-black tracking-wide transition-all ${sectionModalSelected ? "bg-zinc-900 text-white shadow-md active:scale-[0.98]" : "bg-zinc-300 text-zinc-500 cursor-not-allowed"}`}
+              >
+                {sectionModalConfig.mode === "add" ? "Add" : "Select"}
+              </button>
+            </div>
+
           </div>
         </div>
       )}

@@ -6,11 +6,14 @@ import { createClient } from "../../utils/supabase/client";
 import { useEngine } from "../context/EngineContext";
 import { getAllSongs } from "../../utils/supabase/actions";
 
+// ✅ SURGICAL FIX: Standardized Discord-Style Tokens
 const KEYWORD_SUGGESTIONS_CATALOG = [
-  { token: ":artist:", hint: "Filter by author or band name" },
-  { token: ":key:", hint: "Filter by core song key signature" },
-  { token: ":lyrics:", hint: "Scan song line rows for exact phrases" },
-  { token: ":theme:", hint: "Filter by set categories or presets themes" }
+  { token: "artist:", hint: "Filter by author or band name" },
+  { token: "key:", hint: "Filter by core song key signature (e.g., G, C#m)" },
+  { token: "bpm:", hint: "Filter by exact tempo (e.g., 74)" },
+  { token: "bpm-range:", hint: "Filter by tempo range (e.g., 70-90)" },
+  { token: "theme:", hint: "Filter by set categories or preset themes" },
+  { token: "lyrics:", hint: "Scan song line rows for exact phrases" }
 ];
 
 export default function SongsListPage() {
@@ -239,7 +242,7 @@ export default function SongsListPage() {
     {/* ========================================= */}
     {/* 2. SCROLLING GRID CONTENT                 */}
     {/* ========================================= */}
-    <main className="flex-1 overflow-y-auto p-4 md:p-8 custom-scrollbar pb-24 w-full">
+    <main className="flex-1 overflow-y-auto p-4 md:p-8 custom-scrollbar w-full">
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 content-start w-full">
         {filteredSongs.map(song => {
           const isBookmarked = bookmarkedSongIds.includes(song.id);

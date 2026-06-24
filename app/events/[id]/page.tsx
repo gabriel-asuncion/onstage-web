@@ -792,7 +792,7 @@ export default function EventCockpitPage() {
               <button type="button" onClick={handleStartRehearsal} disabled={stagedSetlistSongs.length === 0} className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 font-black text-white text-xs uppercase tracking-widest shadow-md rounded-xl disabled:opacity-40">🚀 Start Rehearsal</button>
             </div>
             
-            <div className="p-6 bg-zinc-50/50 space-y-4 overflow-y-auto custom-scrollbar">
+            <div className="p-3 bg-zinc-50/50 space-y-4 overflow-y-auto custom-scrollbar">
               {parentBlockRowsRenderer(treeBlocks, isEditingSetlist)}
             </div>
 

@@ -81,6 +81,7 @@ const normalizeSectionNameToAudioFile = (rawSectionName: string): string | null 
   if (lowerName.includes("intro")) return "Intro";
   if (lowerName.includes("outro")) return "Outro";
   if (lowerName.includes("refrain")) return "Refrain";
+  if (lowerName.includes("tag")) return "Tag"; // ✅ Added Tag Cue
   if (lowerName.includes("ad lib")) return "Ad Lib";
   if (lowerName.includes("interlude")) return "Interlude";
   if (lowerName.includes("instrumental") || lowerName.includes("inst")) return "Instrumental";
@@ -91,6 +92,32 @@ const normalizeSectionNameToAudioFile = (rawSectionName: string): string | null 
   
   // Return null if it's a completely custom name that doesn't have a matching .wav file
   return null; 
+};
+
+// ✅ SURGICAL ADDITION: Smart Section Abbreviator for the Scrubber Dot
+const getSectionAbbreviation = (name: string): string => {
+  if (!name) return "";
+  const lower = name.toLowerCase();
+  
+  if (lower.includes('verse')) {
+    const match = lower.match(/\d+/);
+    return match ? `V${match[0]}` : 'V';
+  }
+  if (lower.includes('pre')) return 'Pr';
+  if (lower.includes('post')) return 'Po';
+  if (lower.includes('chorus')) {
+    const match = lower.match(/\d+/);
+    return match ? `C${match[0]}` : 'C';
+  }
+  if (lower.includes('bridge')) return 'Br';
+  if (lower.includes('intro')) return 'In';
+  if (lower.includes('outro')) return 'Ou';
+  if (lower.includes('tag')) return 'Tg'; // ✅ Added Tag Abbreviation
+  if (lower.includes('inst')) return 'In';
+  if (lower.includes('ad lib')) return 'AL';
+  
+  // Default to the first letter of the first two words
+  return name.split(' ').slice(0, 2).map(w => w[0]).join('').toUpperCase();
 };
 
 // ✅ SURGICAL PERFORMANCE FIX: O(1) Memoized Rendering
@@ -195,6 +222,7 @@ const transposeSingleNote = (note: string, semitones: number): string => {
   return CHROMATIC_SCALE[(idx + semitones + 12) % 12];
 };
 
+
 export default function SetlistPerformanceRoomPage() {
   const router = useRouter();
   const params = useParams();
@@ -202,6 +230,7 @@ export default function SetlistPerformanceRoomPage() {
 
   // Consume active profile states from your context simulation layer
   const { simulatedUserId, simulatedRole } = useEngine();
+  
 
   // Master Setlist Tracking States
   const [loading, setLoading] = useState(true);
@@ -214,10 +243,52 @@ export default function SetlistPerformanceRoomPage() {
   const [activeSong, setActiveSong] = useState<SongRecord | null>(null);
   const [sections, setSections] = useState<ArrangementSection[]>([]);
   const [activeDisplayKey, setActiveDisplayKey] = useState<string>("G");
+
+  // ✅ SURGICAL ADDITION: Dynamic Title Overflow Detection
+  const [isTitleOverflowing, setIsTitleOverflowing] = useState(false);
+  const titleContainerRef = useRef<HTMLDivElement>(null);
+  const titleTextRef = useRef<HTMLHeadingElement>(null);
+
+  useEffect(() => {
+    const checkTitleOverflow = () => {
+      if (titleContainerRef.current && titleTextRef.current) {
+        const container = titleContainerRef.current;
+        const textElement = titleTextRef.current;
+        
+        // Temporarily force the text to NOT truncate so we can measure its true physical width
+        textElement.classList.remove("truncate");
+        textElement.style.whiteSpace = "nowrap";
+
+        const containerWidth = container.clientWidth;
+        const textWidth = textElement.scrollWidth;
+        
+        const isOverflowing = textWidth > containerWidth;
+        setIsTitleOverflowing(isOverflowing);
+        
+        if (isOverflowing) {
+          // Pass the exact visible width to our CSS animation so it knows exactly how far to slide
+          container.style.setProperty('--marquee-container-width', `${containerWidth}px`);
+        } else {
+          // If it fits, put truncate back just in case
+          textElement.classList.add("truncate");
+        }
+      }
+    };
+
+    // Run measurement slightly after render to ensure fonts are fully painted
+    const timer = setTimeout(checkTitleOverflow, 100);
+    window.addEventListener('resize', checkTitleOverflow);
+    
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('resize', checkTitleOverflow);
+    };
+  }, [activeSong?.title]);
   
   // Accessibility & Layout Preference Configurations
   const [lyricsFontSize, setLyricsFontSize] = useState<number>(16);
   const [showChords, setShowChords] = useState<boolean>(true); 
+  const [isMetronomeSoundEnabled, setIsMetronomeSoundEnabled] = useState<boolean>(false); // ✅ Metronome Toggle State
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false); 
   const [lineSpacing, setLineSpacing] = useState<number>(16); 
   const [isMdLockModalOpen, setIsMdLockModalOpen] = useState<boolean>(false); // ✅ SURGICAL FIX: Added modal state
@@ -256,6 +327,28 @@ export default function SetlistPerformanceRoomPage() {
         el.classList.add("bg-white", "text-zinc-200", "border-zinc-100");
       }
     });
+  };
+
+  // ✅ SURGICAL ADDITION: High-Performance Audio Engine for the Metronome
+  const metronomeAudioRefs = useRef<{ beat1: HTMLAudioElement | null, beatOther: HTMLAudioElement | null }>({ beat1: null, beatOther: null });
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const b1 = new Audio("/sound_files/metronome_blip_1.wav");
+      const b2 = new Audio("/sound_files/metronome_blip_2.wav");
+      b1.preload = "auto";
+      b2.preload = "auto";
+      metronomeAudioRefs.current = { beat1: b1, beatOther: b2 };
+    }
+  }, []);
+
+  const triggerMetronomeSound = (beatNum: number) => {
+    if (!isMetronomeSoundEnabled) return;
+    const targetAudio = beatNum === 1 ? metronomeAudioRefs.current.beat1 : metronomeAudioRefs.current.beatOther;
+    if (targetAudio) {
+      targetAudio.currentTime = 0; // Instantly reset for zero-latency rapid fire
+      targetAudio.play().catch(() => {});
+    }
   };
  
   // Floating scroll state anchors tracking fields
@@ -374,6 +467,47 @@ export default function SetlistPerformanceRoomPage() {
       window.dispatchEvent(new CustomEvent("onpraise-playmode", { detail: isPlayingFlow }));
     }
   }, [isPlayingFlow]);
+
+  // ✅ SURGICAL ADDITION: Screen Wake Lock Engine
+  // Prevents iPads and phones from going to sleep while on stage
+  useEffect(() => {
+    let wakeLock: any = null;
+
+    const requestWakeLock = async () => {
+      try {
+        // Only request if the browser natively supports it
+        if ("wakeLock" in navigator) {
+          wakeLock = await (navigator as any).wakeLock.request("screen");
+          console.log("Wake Lock active: Screen will not sleep.");
+          
+          wakeLock.addEventListener("release", () => {
+            console.log("Wake Lock released (Tab hidden or battery critical).");
+          });
+        }
+      } catch (err: any) {
+        console.warn(`Wake lock failed (likely low battery mode): ${err.message}`);
+      }
+    };
+
+    requestWakeLock();
+
+    // FAILSAFE: Mobile OS's aggressively kill the wake lock if the user swipes down the 
+    // control center or minimizes the browser. We MUST re-acquire it when they come back.
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        requestWakeLock();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    // Clean up and release the OS hardware lock when they leave the live page
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      if (wakeLock !== null) {
+        wakeLock.release().catch(console.error);
+      }
+    };
+  }, []);
 
   // Failsafe: Ensure nav comes back if user unmounts/leaves the page while playing
   useEffect(() => {
@@ -508,7 +642,7 @@ export default function SetlistPerformanceRoomPage() {
 
           currentSectionIndexRef.current = payload.sectionIndex;
           setCurrentSectionIndex(payload.sectionIndex);
-          lastBeatRef.current = 1;
+          lastBeatRef.current = 0;
           updateMetronomeUI(1, true); // ✅ FAST DOM MUTATION
           
           // Reset lines tracking
@@ -534,7 +668,7 @@ export default function SetlistPerformanceRoomPage() {
           currentSectionIndexRef.current = payload.sectionIndex;
           setCurrentSectionIndex(payload.sectionIndex);
           
-          lastBeatRef.current = 1;
+          lastBeatRef.current = 0;
           updateMetronomeUI(1, true); // ✅ FAST DOM MUTATION
           activeLineIndexRef.current = 0;
           setActiveLineIndex(0);
@@ -578,7 +712,7 @@ export default function SetlistPerformanceRoomPage() {
     if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     
     currentSectionIndexRef.current = 0;
-    lastBeatRef.current = 1;
+    lastBeatRef.current = 0;
     activeLineIndexRef.current = 0;
     
     setCurrentSectionIndex(0);
@@ -862,7 +996,7 @@ export default function SetlistPerformanceRoomPage() {
     } else {
       sectionStartTimeRef.current = performance.now();
     }
-    lastBeatRef.current = 1;
+    lastBeatRef.current = 0;
 
     const clockExecutionTick = (timestamp: number) => {
       if (!isPlayingRef.current || !activeSongRef.current || sectionsRef.current.length === 0) return;
@@ -928,15 +1062,19 @@ export default function SetlistPerformanceRoomPage() {
         elapsedMs = Date.now() - mdSectionStartTimeRef.current;
       }
       
-      const progressRatio = Math.min(1, elapsedMs / totalDurationMs);
+      // ✅ SURGICAL FIX: Prevent negative clock drift from breaking the progress bar and metronome
+      const safeElapsedMs = Math.max(0, elapsedMs);
+      const progressRatio = Math.min(1, safeElapsedMs / totalDurationMs);
 
       if (backdropProgressRef.current) backdropProgressRef.current.style.transform = `scaleX(${progressRatio})`;
       if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = `scaleX(${progressRatio})`;
 
-      const currentBeatPulse = Math.floor(elapsedMs / beatSpeedMsCurrent) % 4 + 1;
+      const currentBeatPulse = Math.floor(safeElapsedMs / beatSpeedMsCurrent) % 4 + 1;
+
       if (currentBeatPulse !== lastBeatRef.current) {
         lastBeatRef.current = currentBeatPulse;
         updateMetronomeUI(currentBeatPulse, true); // ✅ FAST DOM MUTATION
+        triggerMetronomeSound(currentBeatPulse);
       }
       
       // ✅ SURGICAL ADDITION: Guide Cue Engine (Scenarios 1 & 3)
@@ -1063,7 +1201,7 @@ export default function SetlistPerformanceRoomPage() {
 
           hasPlayedCueRef.current = false;
           
-          lastBeatRef.current = 1;
+          lastBeatRef.current = 0;
           updateMetronomeUI(1, true); // ✅ FAST DOM MUTATION
 
           // ✅ SURGICAL FIX 2: Both viewers and MDs transition instantly. 
@@ -1252,7 +1390,7 @@ export default function SetlistPerformanceRoomPage() {
     currentSectionIndexRef.current = index;
     setCurrentSectionIndex(index);
     
-    lastBeatRef.current = 1;
+    lastBeatRef.current = 0;
     updateMetronomeUI(1, isPlayingRef.current); // ✅ FAST DOM MUTATION
     
     activeLineIndexRef.current = 0;
@@ -1496,8 +1634,32 @@ export default function SetlistPerformanceRoomPage() {
 
   return (
     <div className="absolute inset-0 flex flex-col bg-[#f8f9fa] overflow-hidden select-none">
-      <style dangerouslySetInnerHTML={{__html: `@import url('https://fonts.googleapis.com/css2?family=Nothing+You+Could+Do&display=swap');`}} />
-
+      <style dangerouslySetInnerHTML={{__html: `
+        @import url('https://fonts.googleapis.com/css2?family=Nothing+You+Could+Do&display=swap');
+        
+        /* ✅ SURGICAL FIX: Unidirectional loop for Tab Titles */
+        @keyframes marquee-alt {
+          0%, 15% { transform: translateX(0); } /* Hold at start */
+          80%, 100% { transform: translateX(calc(-100% + 65px)); } /* Slide and hold at end */
+        }
+        .animate-marquee-alt {
+          display: inline-block;
+          /* Removed "alternate", both set to exactly 9s to perfectly sync! */
+          animation: marquee-alt 9s ease-in-out infinite; 
+        }
+        
+        /* ✅ SURGICAL FIX: Unidirectional loop for Header Title */
+        @keyframes marquee-dynamic {
+          0%, 15% { transform: translateX(0); } /* Hold at start */
+          80%, 100% { transform: translateX(calc(-100% + var(--marquee-container-width, 100%))); } /* Slide and hold at end */
+        }
+        .animate-marquee-dynamic {
+          display: inline-block;
+          white-space: nowrap;
+          /* Removed "alternate", both set to exactly 9s to perfectly sync! */
+          animation: marquee-dynamic 9s ease-in-out infinite; 
+        }
+      `}} />
       {/* FULL-WIDTH CONSOLE NAVBAR HEADER */}
       <div id="fixed-live-header" className="w-full bg-white border-b border-zinc-200 flex-shrink-0 z-50 shadow-sm px-4 md:px-8 py-3.5 relative overflow-hidden">
         <div 
@@ -1509,126 +1671,140 @@ export default function SetlistPerformanceRoomPage() {
           className="absolute bottom-0 left-0 h-[3px] bg-blue-600 pointer-events-none z-35 origin-left w-full"
         />
 
-        <div className="max-w-5xl mx-auto flex flex-col gap-2.5 relative">
-          <div className="relative z-10 flex items-center justify-between gap-2 w-full">
-            <div className="flex items-center gap-3 min-w-0 flex-1">
-              <button 
-                type="button" 
-                onClick={() => router.back()} 
-                className="w-7 h-7 rounded-lg bg-zinc-50 border border-zinc-200 text-zinc-500 font-black text-xs flex items-center justify-center shrink-0 cursor-pointer"
-              >
-                ‹
-              </button>
-              <div className="min-w-0 leading-none space-y-1.5">
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="bg-zinc-950 text-white font-mono font-black text-[8px] tracking-wider px-1.5 py-0.5 rounded">
-                    SUBSCRIBED
-                  </span>
-                  <span className="bg-blue-50 text-blue-600 font-mono font-black text-[8px] px-1.5 py-0.5 rounded">
-                    ⏱{activeSong?.tempo || "--"}
-                  </span>
-                  <div className="bg-zinc-50 text-zinc-600 rounded border font-mono font-black text-[8px] px-1.5 py-0.5 flex items-center gap-0.5">
-                    K:<span className="text-blue-600 font-black">{activeDisplayKey}</span>
-                  </div>
-                </div>
-
-                <div className="flex flex-col gap-1.5">
-                  <h1 className="text-base font-black tracking-tight text-zinc-950 truncate max-w-[140px] sm:max-w-xs leading-none">
-                    {activeSong?.title || "Loading..."}
-                  </h1>
-
-                  <div className="flex items-center gap-1">
-                    <div className="flex -space-x-1.5 overflow-hidden py-0.5">
-                      {displayedOnlineUsers.map((user, idx) => (
-                        <div 
-                          key={`${user.connectionId || user.id}-${idx}`} 
-                          title={user.name} 
-                          className="w-5 h-5 rounded-full ring-2 ring-white overflow-hidden shadow-sm shrink-0 select-none bg-zinc-100 flex items-center justify-center relative"
-                        >
-                          {user.avatar ? (
-                            <img src={user.avatar} alt="" className="w-full h-full object-cover" />
-                          ) : (
-                            <div className={`w-full h-full ${user.bg || 'bg-blue-600'} text-white font-mono font-black text-[7px] flex items-center justify-center`}>
-                              {user.initials}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                    <span className="text-[9px] font-bold text-zinc-400 ml-1 lowercase">online now</span>
-                  </div>
-                </div>
-              </div>
+        <div className="max-w-5xl mx-auto flex flex-col gap-2 relative z-10">
+          
+          {/* ROW 1: System Badges */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="bg-zinc-950 text-white font-mono font-black text-[8px] tracking-wider px-1.5 py-0.5 rounded">
+              SUBSCRIBED
+            </span>
+            <span className="bg-blue-50 text-blue-600 font-mono font-black text-[8px] px-1.5 py-0.5 rounded">
+              ⏱{activeSong?.tempo || "--"}
+            </span>
+            <div className="bg-zinc-50 text-zinc-600 rounded border font-mono font-black text-[8px] px-1.5 py-0.5 flex items-center gap-0.5">
+              K:<span className="text-blue-600 font-black">{activeDisplayKey}</span>
             </div>
+          </div>
 
-            <div className="flex items-center gap-1 bg-zinc-50 p-1 rounded-lg border border-zinc-200 shadow-inner shrink-0">
-              {[1, 2, 3, 4].map((beatNum) => (
-                <div
-                  key={beatNum}
-                  // ✅ SURGICAL FIX: Attach the DOM pointer
-                  ref={(el) => { metronomeRefs.current[beatNum - 1] = el; }}
-                  className={`w-6 h-6 flex items-center justify-center font-mono font-black text-[10px] rounded border transition-all duration-75 select-none ${
-                    isPlayingFlow && currentBeat === beatNum
-                      ? beatNum === 4 ? "bg-[#faba37] text-white border-[#e0a22b]" : "bg-blue-600 text-white border-blue-500"
-                      : "bg-white text-zinc-200 border-zinc-100"
-                  }`}
-                >
-                  {beatNum}
-                </div>
-              ))}
+          {/* ROW 2: Title & Core Controls */}
+          <div className="flex items-center justify-between gap-2 w-full">
+            <div 
+              ref={titleContainerRef} 
+              className="flex-1 min-w-0 overflow-hidden relative flex items-center h-10" // ✅ Locked height prevents jumping
+              style={{ 
+                maskImage: isTitleOverflowing ? "linear-gradient(to right, black 85%, transparent 100%)" : "none", 
+                WebkitMaskImage: isTitleOverflowing ? "linear-gradient(to right, black 85%, transparent 100%)" : "none" 
+              }}
+            >
+              <h1 
+                ref={titleTextRef}
+                className={`text-2xl md:text-3xl font-black tracking-tight text-zinc-950 leading-none ${
+                  isTitleOverflowing ? 'animate-marquee-dynamic pr-8' : 'truncate'
+                }`}
+              >
+                {activeSong?.title || "Loading..."}
+              </h1>
             </div>
 
             <div className="flex items-center gap-1.5 shrink-0 ml-1">
+              <div className="flex items-center gap-1 bg-zinc-50 p-1 rounded-lg border border-zinc-200 shadow-inner shrink-0 mr-1">
+                {[1, 2, 3, 4].map((beatNum) => (
+                  <div
+                    key={beatNum}
+                    ref={(el) => { metronomeRefs.current[beatNum - 1] = el; }}
+                    className={`w-6 h-6 flex items-center justify-center font-mono font-black text-[10px] rounded border transition-all duration-75 select-none ${
+                      isPlayingFlow && currentBeat === beatNum
+                        ? beatNum === 4 ? "bg-[#faba37] text-white border-[#e0a22b]" : "bg-blue-600 text-white border-blue-500"
+                        : "bg-white text-zinc-200 border-zinc-100"
+                    }`}
+                  >
+                    {beatNum}
+                  </div>
+                ))}
+              </div>
+
               <button
                 type="button"
                 onClick={() => setIsSettingsModalOpen(true)}
                 className="h-8 w-8 rounded-lg bg-zinc-50 border border-zinc-200 text-zinc-600 font-extrabold text-xs flex items-center justify-center shadow-sm cursor-pointer hover:bg-zinc-100"
               >
-                <img src="/assets/settings.svg" alt="Locked" className="w-3 h-3 opacity-60" /> 
+                <img src="/assets/settings.svg" alt="Settings" className="w-3 h-3 opacity-60" /> 
               </button>
 
               <button
                 type="button"
                 onClick={handleToggleFlowPlaybackState}
-                className={`h-8 px-3 rounded-lg border text-[9px] font-black uppercase tracking-wider transition-all flex items-center gap-1.5 ${
+                className={`h-8 px-5 rounded-lg border text-[11px] font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 ${
                   !localPresenceUser?.isMD
                     ? "bg-zinc-100 border-zinc-200 text-zinc-500 cursor-pointer shadow-inner"
                     : isPlayingFlow 
-                      ? "bg-purple-600 border-purple-500 text-white ring-2 ring-purple-500/10 cursor-pointer" 
+                      ? "bg-red-600 border-red-500 text-white ring-2 ring-red-500/20 cursor-pointer shadow-md" 
                       : "bg-blue-600 border-blue-500 text-white shadow-sm cursor-pointer"
                 }`}
               >
                 {!localPresenceUser?.isMD ? (
                   <>
                     <img src="/assets/lock.svg" alt="Locked" className="w-3 h-3 opacity-60" /> 
-                    <span>Play Locked</span>
+                    <span>Locked</span>
                   </>
                 ) : isPlayingFlow ? (
-                  playbackNextButtonText 
+                  "⏹"
                 ) : (
-                  `▶ ${highlightedTargetSectionName}`
+                  "▶"
                 )}
               </button>
             </div>
           </div>
 
-          <div className="w-full border-t border-zinc-100 pt-2 flex items-center overflow-x-auto overflow-y-hidden flex-nowrap gap-1.5 scrollbar-none relative z-10 select-none pb-0.5 scroll-smooth">
-            {tracksList.map((track, trackIdx) => (
-              <button
-                key={track.id}
-                type="button"
-                onClick={(e) => handleSongTabNavigationClick(e, trackIdx)}
-                className={`px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-wider whitespace-nowrap shrink-0 border transition-all cursor-pointer ${
-                  currentTrackIndex === trackIdx
-                    ? "bg-blue-600 border-blue-500 text-white shadow-sm"
-                    : "bg-zinc-50 border-zinc-200 text-zinc-600 hover:bg-zinc-100"
-                }`}
-              >
-                {trackIdx + 1}. {track.songs?.title || "Song"}{" "}
-                <span className="font-mono opacity-50 font-bold ml-0.5">({track.custom_key || track.songs?.original_key})</span>
-              </button>
-            ))}
+          {/* ROW 3: Active Presence Lobby */}
+          <div className="flex items-center gap-1">
+            <div className="flex -space-x-1.5 overflow-hidden py-0.5">
+              {displayedOnlineUsers.map((user, idx) => (
+                <div 
+                  key={`${user.connectionId || user.id}-${idx}`} 
+                  title={user.name} 
+                  className="w-5 h-5 rounded-full ring-2 ring-white overflow-hidden shadow-sm shrink-0 select-none bg-zinc-100 flex items-center justify-center relative"
+                >
+                  {user.avatar ? (
+                    <img src={user.avatar} alt="" className="w-full h-full object-cover" />
+                  ) : (
+                    <div className={`w-full h-full ${user.bg || 'bg-blue-600'} text-white font-mono font-black text-[7px] flex items-center justify-center`}>
+                      {user.initials}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+            <span className="text-[9px] font-bold text-zinc-400 ml-1 lowercase">online now</span>
           </div>
+
+          {/* TRACK LIST TRAY WITH SCROLLING MARQUEE */}
+          <div className="w-full border-t border-zinc-100 pt-2.5 mt-1 flex items-center overflow-x-auto overflow-y-hidden flex-nowrap gap-1.5 scrollbar-none select-none pb-0.5 scroll-smooth">
+            {tracksList.map((track, trackIdx) => {
+              const title = track.songs?.title || "Song";
+              const needsScroll = title.length > 10;
+              return (
+                <button
+                  key={track.id}
+                  type="button"
+                  onClick={(e) => handleSongTabNavigationClick(e, trackIdx)}
+                  className={`px-2.5 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-wider shrink-0 border transition-all cursor-pointer flex items-center gap-1 ${
+                    currentTrackIndex === trackIdx
+                      ? "bg-blue-600 border-blue-500 text-white shadow-sm"
+                      : "bg-zinc-50 border-zinc-200 text-zinc-600 hover:bg-zinc-100"
+                  }`}
+                >
+                  <div className="overflow-hidden w-[65px] relative flex items-center">
+                    <span className={`whitespace-nowrap ${needsScroll ? "animate-marquee-alt" : "truncate"}`}>
+                      {title}
+                    </span>
+                  </div>
+                  <span className="font-mono opacity-50 font-bold ml-0.5 shrink-0">({track.custom_key || track.songs?.original_key})</span>
+                </button>
+              );
+            })}
+          </div>
+
         </div>
       </div>
 
@@ -1752,7 +1928,7 @@ export default function SetlistPerformanceRoomPage() {
 
       {isSettingsModalOpen && (
         <div className="fixed inset-0 bg-zinc-950/50 backdrop-blur-sm z-[150000] flex items-center justify-center p-4 select-none animate-in fade-in duration-100">
-          <div className="bg-[#f8f9fa] border border-zinc-200 rounded-[2.5rem] shadow-2xl p-6 max-w-sm w-full space-y-5 animate-in zoom-in-95 duration-100 text-left relative">
+          <div className="bg-[#f8f9fa] border border-zinc-200 rounded-[1rem] shadow-2xl p-6 max-w-sm w-full space-y-5 animate-in zoom-in-95 duration-100 text-left relative">
             <button 
               type="button" 
               onClick={() => setIsSettingsModalOpen(false)} 
@@ -1762,8 +1938,8 @@ export default function SetlistPerformanceRoomPage() {
             </button>
             
             <div className="space-y-0.5">
-              <h3 className="text-lg font-black text-zinc-900 tracking-tight">Console Preferences</h3>
-              <p className="text-[11px] font-bold text-zinc-400">Tweak user accessibility and dynamic track constraints.</p>
+              <h3 className="text-lg font-black text-zinc-900 tracking-tight">Setlist Settings</h3>
+              <p className="text-[11px] font-bold text-zinc-400">Tweak accessibility and dynamic track.</p>
             </div>
             
             <div className="space-y-2">
@@ -1803,6 +1979,30 @@ export default function SetlistPerformanceRoomPage() {
                   }`}
                 >
                   🙈 Hide Chords
+                </button>
+              </div>
+            </div>
+            {/* ✅ SURGICAL ADDITION: Metronome Sound Toggle */}
+            <div className="space-y-2 pt-1">
+              <label className="text-[10px] font-black text-zinc-400 uppercase tracking-wider block">Audible Metronome Click</label>
+              <div className="grid grid-cols-2 gap-1 bg-white border p-1 rounded-xl shadow-inner">
+                <button
+                  type="button"
+                  onClick={() => setIsMetronomeSoundEnabled(true)}
+                  className={`py-2 text-center rounded-lg font-black text-[10px] uppercase transition-all cursor-pointer ${
+                    isMetronomeSoundEnabled ? "bg-zinc-900 text-white shadow-md" : "text-zinc-500 hover:text-zinc-800 bg-zinc-50/20"
+                  }`}
+                >
+                  🔊 Click ON
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsMetronomeSoundEnabled(false)}
+                  className={`py-2 text-center rounded-lg font-black text-[10px] uppercase transition-all cursor-pointer ${
+                    !isMetronomeSoundEnabled ? "bg-zinc-900 text-white shadow-md" : "text-zinc-500 hover:text-zinc-800 bg-zinc-50/20"
+                  }`}
+                >
+                  🔇 Click OFF
                 </button>
               </div>
             </div>
@@ -2035,54 +2235,61 @@ export default function SetlistPerformanceRoomPage() {
           onPointerMove={isScrubberActive ? handleScrubberPointerMove : undefined}
           onPointerUp={handleScrubberPointerUp}
           onPointerCancel={handleScrubberPointerUp}
-          className={`fixed right-0 top-[15%] bottom-[15%] z-[90000] flex flex-col justify-center py-4 pl-12 pr-1 md:pr-4 touch-none transition-all duration-300 select-none ${
-            isScrubberActive ? "w-64" : "w-10"
+          className={`fixed right-0 top-[15%] bottom-[15%] z-[90000] flex flex-col justify-center py-4 pl-12 pr-1 md:pr-3 touch-none transition-all duration-300 select-none ${
+            isScrubberActive ? "w-48" : "w-10"
           }`}
         >
-          {/* ✅ The Smooth Fade-in Black Gradient Backdrop */}
-          <div 
-            className={`absolute inset-0 bg-gradient-to-l from-zinc-950 via-zinc-950/80 to-transparent pointer-events-none transition-opacity duration-300 rounded-l-[2rem] ${
-              isScrubberActive ? "opacity-10" : "opacity-0"
-            }`}
-          />
+          {/* GRADIENT COMPLETELY REMOVED */}
 
-          <div className="relative z-10 flex flex-col items-end gap-5 py-4 transition-all duration-300">
+          <div className="relative z-10 flex flex-col items-end gap-3.5 py-4 transition-all duration-300">
             {sections.map((sec, idx) => {
               const isHovered = scrubberHoverIndex === idx;
               const isActive = currentSectionIndex === idx;
+              
+              // ✅ SURGICAL ADDITION: Next and Queued State Logic
+              const isQueued = queuedTrackIndex === currentTrackIndex && queuedSectionIndex === idx;
+              const isNext = isPlayingFlow && !isQueued && (queuedTrackIndex === null || queuedTrackIndex !== currentTrackIndex) && (idx === currentSectionIndex + 1);
+              
+              const abbr = getSectionAbbreviation(sec.section_name);
 
               return (
                 <div
                   key={`scrub-${sec.id}`}
                   data-scrubber-index={idx}
-                  className={`flex items-center justify-end gap-4 transition-all duration-200 w-full text-right ${
-                    isHovered ? "scale-110 -translate-x-3" : isScrubberActive ? "cursor-crosshair" : "cursor-pointer"
+                  className={`flex items-center justify-end gap-3 transition-all duration-200 w-full text-right ${
+                    isHovered ? "-translate-x-1" : isScrubberActive ? "cursor-crosshair" : "cursor-pointer"
                   }`}
                 >
-                  {/* The Section Name Text (Inverted to light text for the dark background) */}
+                  {/* The Section Name Text */}
                   <span 
                     data-scrubber-index={idx}
-                    className={`text-xs font-black uppercase tracking-wider transition-all duration-200 drop-shadow-md ${
-                      !isScrubberActive ? "hidden" :
-                      isHovered ? "text-blue-400 opacity-100 scale-110" : 
-                      isActive ? "text-white opacity-100" : 
-                      "text-zinc-400 opacity-80"
+                    className={`font-black uppercase tracking-wider transition-all duration-200 ${
+                      !isScrubberActive ? "hidden opacity-0" :
+                      isHovered 
+                        ? "text-[16px] text-black opacity-100 scale-105 drop-shadow-[0_4px_4px_rgba(0,0,0,0.5)]" 
+                        : "text-[12px] text-black opacity-90"
                     }`}
                   >
                     {sec.section_name}
                   </span>
                   
-                  {/* The Interactive Dot (Smart colors adapt to the dark/light background) */}
+                  {/* ✅ SURGICAL FIX: The Interactive Dot (Now shows abbreviations for Queued & Next) */}
                   <div
                     data-scrubber-index={idx}
-                    className={`rounded-full transition-all duration-300 shrink-0 shadow-sm ${
-                      isHovered
-                        ? "w-6 h-6 bg-blue-500 shadow-lg ring-4 ring-blue-500/40"
-                        : isActive
-                        ? `w-4 h-4 ${isScrubberActive ? "bg-white ring-4 ring-white/20" : "bg-zinc-900 ring-4 ring-zinc-900/10"}`
-                        : `w-2.5 h-2.5 ${isScrubberActive ? "bg-zinc-600" : "bg-zinc-300 hover:bg-zinc-400"}`
+                    className={`rounded-full transition-all duration-300 shrink-0 shadow-sm flex items-center justify-center overflow-hidden ${
+                      isActive
+                        ? "w-6 h-6 bg-blue-600 ring-2 ring-blue-500/20 text-white font-black text-[9px] shadow-md"
+                        : isQueued
+                        ? `bg-purple-500 ring-2 ring-purple-500/20 text-white font-black text-[8px] ${isHovered ? "w-6 h-6" : "w-5 h-5"}`
+                        : isNext
+                        ? `bg-blue-400/80 ring-2 ring-blue-400/10 text-white font-black text-[8px] ${isHovered ? "w-6 h-6" : "w-5 h-5"}`
+                        : isHovered
+                        ? "w-3 h-3 bg-blue-400 ring-4 ring-blue-400/20"
+                        : "w-1.5 h-1.5 bg-zinc-400/80 hover:bg-zinc-500"
                     }`}
-                  />
+                  >
+                    {(isActive || isQueued || isNext) && <span className="pt-[1px]">{abbr}</span>}
+                  </div>
                 </div>
               );
             })}
