@@ -65,8 +65,6 @@ const STRUCTURE_CATALOG_PRESETS = [
   "Intro", "Verse 1", "Verse 2", "Verse 3", "Pre-Chorus", "Chorus 1", "Chorus 2", "Bridge", "Instrumental", "Outro"
 ];
 
-// ✅ SURGICAL ADDITION: Global Memory Cache for zero-latency playback
-const audioCache: Record<string, HTMLAudioElement> = {};
 
 // ✅ SURGICAL REFACTOR: Centralized normalizer for smart scanning
 const normalizeSectionNameToAudioFile = (rawSectionName: string): string | null => {
@@ -178,22 +176,55 @@ const MemoizedLyricLine = React.memo(({
 });
 MemoizedLyricLine.displayName = "MemoizedLyricLine";
 
-const playGuideCue = (rawSectionName: string) => {
-  if (typeof window === "undefined" || !rawSectionName) return;
-  
-  const cleanName = normalizeSectionNameToAudioFile(rawSectionName);
-  if (!cleanName) return; // Bypass silently if no matching audio file exists
+// ✅ SURGICAL ADDITION: Web Audio API Engine for Zero-Latency Playback
+let globalAudioContext: AudioContext | null = null;
+const audioBufferCache: Record<string, AudioBuffer> = {};
 
-  if (!audioCache[cleanName]) {
-    const audio = new Audio(`/sound_files/${cleanName}.wav`);
-    audio.preload = "auto";
-    audio.volume = 0.85;
-    audioCache[cleanName] = audio;
+const initAudioContext = () => {
+  if (typeof window !== "undefined" && !globalAudioContext) {
+    globalAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
   }
+  if (globalAudioContext && globalAudioContext.state === 'suspended') {
+    globalAudioContext.resume();
+  }
+};
 
-  const targetAudio = audioCache[cleanName];
-  targetAudio.currentTime = 0; 
-  targetAudio.play().catch(e => console.warn(`Silent guide cue bypass: ${cleanName}.wav`));
+const fetchAndDecodeAudio = async (url: string, key: string) => {
+  if (audioBufferCache[key]) return;
+  initAudioContext();
+  try {
+    const response = await fetch(url);
+    const arrayBuffer = await response.arrayBuffer();
+    if (globalAudioContext) {
+      const audioBuffer = await globalAudioContext.decodeAudioData(arrayBuffer);
+      audioBufferCache[key] = audioBuffer;
+    }
+  } catch (err) {
+    console.warn(`Failed to decode audio: ${url}`);
+  }
+};
+
+const playZeroLatencyAudio = (key: string, volume: number = 1.0) => {
+  if (!globalAudioContext || !audioBufferCache[key]) return;
+  
+  // Creates a temporary hardware node that plays instantly and destroys itself
+  const source = globalAudioContext.createBufferSource();
+  source.buffer = audioBufferCache[key];
+  
+  const gainNode = globalAudioContext.createGain();
+  gainNode.gain.value = volume;
+  
+  source.connect(gainNode);
+  gainNode.connect(globalAudioContext.destination);
+  source.start(0);
+};
+
+const playGuideCue = (rawSectionName: string) => {
+  if (!rawSectionName) return;
+  const cleanName = normalizeSectionNameToAudioFile(rawSectionName);
+  if (cleanName) {
+    playZeroLatencyAudio(cleanName, 0.85);
+  }
 };
 
 const normalizeKeyNote = (note: string): string => {
@@ -329,26 +360,18 @@ export default function SetlistPerformanceRoomPage() {
     });
   };
 
-  // ✅ SURGICAL ADDITION: High-Performance Audio Engine for the Metronome
-  const metronomeAudioRefs = useRef<{ beat1: HTMLAudioElement | null, beatOther: HTMLAudioElement | null }>({ beat1: null, beatOther: null });
-
+  // ✅ SURGICAL ADDITION: High-Performance Web Audio Metronome
   useEffect(() => {
     if (typeof window !== "undefined") {
-      const b1 = new Audio("/sound_files/metronome_blip_1.wav");
-      const b2 = new Audio("/sound_files/metronome_blip_2.wav");
-      b1.preload = "auto";
-      b2.preload = "auto";
-      metronomeAudioRefs.current = { beat1: b1, beatOther: b2 };
+      fetchAndDecodeAudio("/sound_files/metronome_blip_1.wav", "metronome_1");
+      fetchAndDecodeAudio("/sound_files/metronome_blip_2.wav", "metronome_2");
     }
   }, []);
 
   const triggerMetronomeSound = (beatNum: number) => {
     if (!isMetronomeSoundEnabled) return;
-    const targetAudio = beatNum === 1 ? metronomeAudioRefs.current.beat1 : metronomeAudioRefs.current.beatOther;
-    if (targetAudio) {
-      targetAudio.currentTime = 0; // Instantly reset for zero-latency rapid fire
-      targetAudio.play().catch(() => {});
-    }
+    const targetKey = beatNum === 1 ? "metronome_1" : "metronome_2";
+    playZeroLatencyAudio(targetKey, 1.0);
   };
  
   // Floating scroll state anchors tracking fields
@@ -368,13 +391,12 @@ export default function SetlistPerformanceRoomPage() {
   const queuedSectionIndexRef = useRef<number | null>(null);
   const clickTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // ✅ SURGICAL REFACTOR: Smart dynamic preloader scans the setlist layout
+  // ✅ SURGICAL REFACTOR: Smart dynamic preloader decodes directly to RAM
   useEffect(() => {
     if (typeof window === "undefined" || tracksList.length === 0) return;
     
     const uniqueRequiredFiles = new Set<string>();
 
-    // 1. Scan the AST tree of every song in the setlist
     tracksList.forEach(track => {
       const structure = track.custom_structure || [];
       structure.forEach(section => {
@@ -383,17 +405,11 @@ export default function SetlistPerformanceRoomPage() {
       });
     });
 
-    // 2. Silently fetch only the required files for this specific event
     uniqueRequiredFiles.forEach(fileName => {
-      if (!audioCache[fileName]) {
-        const audio = new Audio(`/sound_files/${fileName}.wav`);
-        audio.preload = "auto";
-        audio.volume = 0.85;
-        audioCache[fileName] = audio;
-      }
+      fetchAndDecodeAudio(`/sound_files/${fileName}.wav`, fileName);
     });
     
-  }, [tracksList]); // Triggers dynamically whenever the setlist is loaded or modified
+  }, [tracksList]);
 
   // Advanced Drag and Drop Interactive Feedback States
   const [isStructureModalOpen, setIsStructureModalOpen] = useState(false);
@@ -1237,6 +1253,7 @@ export default function SetlistPerformanceRoomPage() {
   }, [isPlayingFlow]);
 
   function handleToggleFlowPlaybackState() {
+    initAudioContext();
     if (!localPresenceUser?.isMD) {
       setIsMdLockModalOpen(true);
       return;

@@ -114,6 +114,11 @@ export default function SongEditPage() {
   
   const [formTitle, setFormTitle] = useState("");
   const [formTempo, setFormTempo] = useState("");
+
+  // ✅ SURGICAL ADDITION: Tap BPM States
+  const [isTapBpmModalOpen, setIsTapBpmModalOpen] = useState(false);
+  const [tapTimestamps, setTapTimestamps] = useState<number[]>([]);
+
   const [formKey, setFormKey] = useState("G");
   const [formArtist, setFormArtist] = useState("");
   const [formThemes, setFormThemes] = useState<string[]>([]);
@@ -181,6 +186,14 @@ export default function SongEditPage() {
   useEffect(() => {
     const hydrateArrangementWorkspace = async () => {
       if (!editingSongId) return;
+      
+      // ✅ SURGICAL FIX: Prevent DB fetch crash if this is a brand new song
+      if (editingSongId === "new") {
+        setFormSections([{ id: "sec-1", type: "Verse 1", label: "Verse 1", content: "", repetitions: 1 }]);
+        setLoading(false);
+        return;
+      }
+
       try {
         setLoading(true);
         const { data: song, error: songFetchError } = await supabase
@@ -462,6 +475,12 @@ export default function SongEditPage() {
 
   const handleCommitSongChangesToDB = async () => {
     if (!editingSongId) return;
+
+    if (!formTitle.trim()) {
+      alert("⚠️ Track Title is required before saving.");
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -478,29 +497,73 @@ export default function SongEditPage() {
         };
       });
 
-      const { error: songUpdateError } = await supabase
-        .from("songs")
-        .update({ 
-          title: formTitle,
-          artist: formArtist,
+      // ✅ SURGICAL FIX: Compile all sections into a single block for the database constraint 
+      // and so your global Search Bar "lyrics:" filter can read it!
+      const compiledChordPro = formSections
+        .map((sec) => `[${sec.type}]\n${sec.content || ""}`)
+        .join("\n\n");
+
+      let finalSongId = editingSongId;
+      const isNewSong = editingSongId === "new";
+
+      if (isNewSong) {
+        const { data: { user } } = await supabase.auth.getUser();
+        let currentTeamId = null;
+        
+        if (user) {
+          const { data: profile } = await supabase.from("profiles").select("team_id").eq("id", user.id).single();
+          currentTeamId = profile?.team_id;
+        }
+
+        const insertPayload: any = {
+          title: formTitle.trim(),
+          artist: formArtist.trim() || "Unknown Artist",
           tempo: parseInt(formTempo, 10) || 75,
           original_key: formKey,
           themes: formThemes.join(", "),
-          section_timings: updatedSectionTimings 
-        })
-        .eq("id", editingSongId);
+          section_timings: updatedSectionTimings,
+          chordpro_content: compiledChordPro // 👈 Added here!
+        };
 
-      if (songUpdateError) throw songUpdateError;
+        if (currentTeamId) {
+          insertPayload.team_id = currentTeamId;
+        }
 
-      const { error: deleteError } = await supabase
-        .from("song_sections")
-        .delete()
-        .eq("song_id", editingSongId);
+        const { data: newSong, error: insertError } = await supabase
+          .from("songs")
+          .insert(insertPayload)
+          .select("id")
+          .single();
 
-      if (deleteError) throw deleteError;
+        if (insertError) throw insertError;
+        finalSongId = newSong.id; 
+
+      } else {
+        const { error: songUpdateError } = await supabase
+          .from("songs")
+          .update({ 
+            title: formTitle.trim(),
+            artist: formArtist.trim() || "Unknown Artist",
+            tempo: parseInt(formTempo, 10) || 75,
+            original_key: formKey,
+            themes: formThemes.join(", "),
+            section_timings: updatedSectionTimings,
+            chordpro_content: compiledChordPro // 👈 Added here!
+          })
+          .eq("id", finalSongId);
+
+        if (songUpdateError) throw songUpdateError;
+
+        const { error: deleteError } = await supabase
+          .from("song_sections")
+          .delete()
+          .eq("song_id", finalSongId);
+
+        if (deleteError) throw deleteError;
+      }
 
       const sectionsToInsert = formSections.map((sec, index) => ({
-        song_id: editingSongId,
+        song_id: finalSongId,
         section_name: sec.type,
         content: sec.content || "",
         sequence_order: index
@@ -515,8 +578,10 @@ export default function SongEditPage() {
 
       setHasUnsavedChanges(false);
       router.push("/songs");
-    } catch (err) {
-      console.error("Database connection failure drop crash:", err);
+    } catch (err: any) {
+      const errorMessage = err?.message || err?.details || err?.hint || JSON.stringify(err);
+      console.error("FATAL DB ERROR DETAILS:", errorMessage, err);
+      alert(`Database Error: ${errorMessage}\n\nPlease check your permissions or network connection.`);
     } finally {
       setLoading(false);
     }
@@ -679,7 +744,25 @@ export default function SongEditPage() {
             <div className="bg-white p-4 md:p-6 rounded-xl md:rounded-2xl border border-zinc-200 space-y-4 shadow-sm">
               <div><label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Track Title Signature *</label><input type="text" value={formTitle} className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-2.5 text-xs font-bold text-zinc-800 bg-zinc-50/50 outline-none" onChange={e => { setHasUnsavedChanges(true); setFormTitle(e.target.value); }} /></div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div><label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block mb-1">BPM Tempo Count</label><input type="number" value={formTempo} className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-2.5 text-xs outline-none" onChange={e => { setHasUnsavedChanges(true); setFormTempo(e.target.value); }} /></div>
+                {/* ✅ SURGICAL FIX: Upgraded BPM Input with Inline TAP Trigger */}
+                <div>
+                  <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block mb-1">BPM Tempo Count</label>
+                  <div className="relative flex items-center">
+                    <input 
+                      type="number" 
+                      value={formTempo} 
+                      className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-2.5 text-xs outline-none pr-16 bg-zinc-50/50" 
+                      onChange={e => { setHasUnsavedChanges(true); setFormTempo(e.target.value); }} 
+                    />
+                    <button 
+                      type="button" 
+                      onClick={() => { setTapTimestamps([]); setIsTapBpmModalOpen(true); }} 
+                      className="absolute right-1.5 px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 text-white rounded-lg text-[9px] font-black uppercase tracking-wider transition-colors shadow-sm"
+                    >
+                      TAP
+                    </button>
+                  </div>
+                </div>
                 <div>
                   <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Original Target Key Signature *</label>
                   <button type="button" onClick={() => handleOpenKeySelectionPopup()} className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-2.5 text-xs font-bold text-zinc-800 bg-zinc-50/50 text-left flex justify-between items-center outline-none">
@@ -1183,6 +1266,84 @@ export default function SongEditPage() {
               <button type="submit" className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-black text-xs uppercase tracking-widest rounded-xl shadow-md text-center">Save Key Change</button>
             </div>
           </form>
+        </div>
+      )}
+      {/* ======================================================= */}
+      {/* ✅ SURGICAL ADDITION: TAP TEMPO CALCULATOR MODAL          */}
+      {/* ======================================================= */}
+      {isTapBpmModalOpen && (
+        <div className="fixed inset-0 bg-zinc-950/60 backdrop-blur-sm z-[200000] flex items-center justify-center p-4 animate-in fade-in duration-100 select-none">
+          <div className="bg-[#f8f9fa] border border-zinc-200 rounded-2xl shadow-2xl max-w-sm w-full p-6 space-y-6 animate-in zoom-in-95 duration-100 text-center">
+            
+            <div className="space-y-1">
+              <h3 className="text-xl font-black text-zinc-900 tracking-tight">Tap Tempo</h3>
+              <p className="text-[11px] font-bold text-zinc-500">Tap the button to the beat to calculate the exact BPM.</p>
+            </div>
+            
+            {/* Visualizer Display */}
+            <div className="bg-white border rounded-xl p-4 shadow-inner min-h-[4rem] flex items-center justify-center overflow-hidden whitespace-pre-wrap">
+              {tapTimestamps.length === 0 ? (
+                <span className="text-zinc-400 text-sm font-bold italic">Start tapping...</span>
+              ) : (
+                <span className="text-blue-600 font-black text-2xl tracking-widest animate-in fade-in duration-75">
+                  {/* Keep only the last 16 taps so the modal doesn't overflow */}
+                  {tapTimestamps.slice(-16).map((_, i) => (
+                    <span key={i}>{((i + 1) % 4 === 0) ? "*\u00A0\u00A0\u00A0" : "*\u00A0"}</span>
+                  ))}
+                </span>
+              )}
+            </div>
+
+            {/* Live Readout */}
+            <div className="text-5xl font-black text-zinc-900 tracking-tighter">
+              {formTempo || "--"} <span className="text-sm font-bold text-zinc-400 tracking-normal">BPM</span>
+            </div>
+
+            {/* The Giant Tap Target */}
+            <button 
+              type="button" 
+              onClick={(e) => {
+                e.preventDefault();
+                const now = Date.now();
+                setTapTimestamps(prev => {
+                  // If it's been more than 2.5 seconds since the last tap, clear the array and start over
+                  if (prev.length > 0 && now - prev[prev.length - 1] > 2500) {
+                    return [now];
+                  }
+                  
+                  const newTaps = [...prev, now];
+                  
+                  // Need at least 2 taps to calculate an interval
+                  if (newTaps.length >= 2) {
+                    const intervals = [];
+                    for (let i = 1; i < newTaps.length; i++) {
+                      intervals.push(newTaps[i] - newTaps[i - 1]);
+                    }
+                    // Calculate the rolling average of intervals
+                    const averageInterval = intervals.reduce((sum, val) => sum + val, 0) / intervals.length;
+                    const calculatedBpm = Math.round(60000 / averageInterval);
+                    
+                    setFormTempo(calculatedBpm.toString());
+                    setHasUnsavedChanges(true);
+                  }
+                  return newTaps;
+                });
+              }} 
+              className="w-full h-32 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-black text-3xl uppercase tracking-widest rounded-3xl shadow-[0_8px_30px_rgb(37,99,235,0.3)] active:scale-[0.96] active:shadow-md transition-all select-none flex items-center justify-center"
+            >
+              TAP
+            </button>
+
+            {/* Exit Control */}
+            <button 
+              type="button" 
+              onClick={() => setIsTapBpmModalOpen(false)} 
+              className="w-full py-3.5 bg-zinc-200 hover:bg-zinc-300 text-zinc-700 font-black text-[11px] uppercase tracking-widest rounded-xl transition-colors shadow-sm"
+            >
+              Confirm & Close
+            </button>
+            
+          </div>
         </div>
       )}
     </div>
