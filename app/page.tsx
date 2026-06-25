@@ -2,8 +2,14 @@
 
 import React, { useState, useEffect } from 'react';
 import { createClient } from '../utils/supabase/client';
-import { Player } from '@lottiefiles/react-lottie-player';
 
+import dynamic from 'next/dynamic';
+
+// ✅ SURGICAL FIX: Force the Lottie Player to only load on the client side (browser)
+const Player = dynamic(
+  () => import('@lottiefiles/react-lottie-player').then((mod) => mod.Player),
+  { ssr: false } // This tells Next.js to skip this during the server build!
+);
 // ============================================================================
 // ✅ SURGICAL ADDITION: REUSABLE BLOB COMPONENT FOR CLEAN JSX
 // ============================================================================
