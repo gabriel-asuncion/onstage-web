@@ -111,6 +111,20 @@ export default function SongEditPage() {
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [isConfirmExitModalOpen, setIsConfirmExitModalOpen] = useState(false);
   const [editorActiveTab, setEditorActiveTab] = useState<"details" | "content" | "structure">("details");
+
+  const [isScrollingDown, setIsScrollingDown] = useState(false);
+  const lastScrollY = useRef(0);
+
+  const handleCanvasScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const currentScrollY = e.currentTarget.scrollTop;
+    // 5px threshold prevents jittering
+    if (currentScrollY > lastScrollY.current + 5) {
+      setIsScrollingDown(true);
+    } else if (currentScrollY < lastScrollY.current - 5) {
+      setIsScrollingDown(false);
+    }
+    lastScrollY.current = currentScrollY;
+  };
   
   const [formTitle, setFormTitle] = useState("");
   const [formTempo, setFormTempo] = useState("");
@@ -121,6 +135,13 @@ export default function SongEditPage() {
 
   const [formKey, setFormKey] = useState("G");
   const [formArtist, setFormArtist] = useState("");
+
+  // ✅ SURGICAL ADDITION: Artist Database State & Filtering
+  const [availableArtists, setAvailableArtists] = useState<string[]>([]);
+  const filteredArtistSuggestions = availableArtists
+    .filter(a => a.toLowerCase().includes(formArtist.toLowerCase()) && a.toLowerCase() !== formArtist.toLowerCase())
+    .slice(0, 6); // Keep UI clean by limiting to 6 results
+
   const [formThemes, setFormThemes] = useState<string[]>([]);
   const [themeInputSearchValue, setThemeInputSearchValue] = useState("");
   const [isArtistDropdownFocused, setIsArtistDropdownFocused] = useState(false);
@@ -182,6 +203,22 @@ export default function SongEditPage() {
   const [draggedStructureIndex, setDraggedStructureIndex] = useState<number | null>(null);
   const [dragOverStructureIndex, setDragOverStructureIndex] = useState<number | null>(null);
 
+  // ✅ SURGICAL FIX: Standalone Artist Dictionary Fetcher (Runs even on brand new songs!)
+  useEffect(() => {
+    const fetchArtistDictionary = async () => {
+      try {
+        const { data } = await supabase.from("songs").select("artist").not("artist", "is", null);
+        if (data) {
+          const uniqueArtists = Array.from(new Set(data.map(s => s.artist.trim()))).filter(Boolean);
+          setAvailableArtists(uniqueArtists as string[]);
+        }
+      } catch (err) {
+        console.error("Failed to fetch artists", err);
+      }
+    };
+    fetchArtistDictionary();
+  }, [supabase]);
+
   // Data Hydration Stream
   useEffect(() => {
     const hydrateArrangementWorkspace = async () => {
@@ -203,13 +240,15 @@ export default function SongEditPage() {
           .single();
 
         if (songFetchError || !song) throw songFetchError;
-
+        
         setFormTitle(song.title || "");
         setFormTempo(song.tempo || "");
         setFormKey(song.original_key || "G");
         setFormArtist(song.artist || "");
         setFormThemes(song.themes ? song.themes.split(",").map((t: string) => t.trim()).filter(Boolean) : []);
         setSectionTimings(song.section_timings || {});
+
+        
 
         const sectionsRaw = await getSongChordChart(editingSongId);
         if (sectionsRaw && sectionsRaw.length > 0) {
@@ -738,7 +777,10 @@ export default function SongEditPage() {
       </header>
 
       {/* FULL-BLEED WORKSPACE CANVAS */}
-      <div className="flex-1 overflow-y-auto p-4 md:p-8 pb-20 custom-scrollbar space-y-3 w-full">
+      <div 
+        className="flex-1 overflow-y-auto p-4 md:p-8 pb-32 custom-scrollbar space-y-3 w-full"
+        onScroll={handleCanvasScroll}
+      >
         {editorActiveTab === "details" && (
           <div className="w-full animate-in fade-in">
             <div className="bg-white p-4 md:p-6 rounded-xl md:rounded-2xl border border-zinc-200 space-y-4 shadow-sm">
@@ -772,9 +814,35 @@ export default function SongEditPage() {
                 </div>
               </div>
               
-              <div>
+              {/* ✅ SURGICAL FIX: Artist Input with Auto-Suggest Dropdown */}
+              <div className="relative">
                 <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Artist / Author Label Signature *</label>
-                <input type="text" value={formArtist} onChange={e => { setHasUnsavedChanges(true); setFormArtist(e.target.value); }} className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-2.5 text-xs outline-none" />
+                <input 
+                  type="text" 
+                  value={formArtist} 
+                  onFocus={() => setIsArtistDropdownFocused(true)}
+                  onBlur={() => setTimeout(() => setIsArtistDropdownFocused(false), 200)}
+                  onChange={e => { setHasUnsavedChanges(true); setFormArtist(e.target.value); }} 
+                  className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-2.5 text-xs font-bold text-zinc-800 bg-zinc-50/50 outline-none transition-all" 
+                  placeholder="e.g. Hillsong Worship"
+                />
+                {isArtistDropdownFocused && filteredArtistSuggestions.length > 0 && (
+                  <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-zinc-200 rounded-xl max-h-36 overflow-y-auto z-[3000] shadow-xl custom-scrollbar">
+                    {filteredArtistSuggestions.map(artist => (
+                      <button 
+                        key={artist} 
+                        type="button" 
+                        className="w-full px-3 py-2 text-left text-xs font-bold block border-b border-zinc-100 last:border-0 hover:bg-zinc-50 transition-colors text-zinc-700" 
+                        onClick={() => { 
+                          setHasUnsavedChanges(true); 
+                          setFormArtist(artist); 
+                        }}
+                      >
+                        {artist}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
               <div className="relative">
                 <label className="text-[9px] font-black text-zinc-400 uppercase tracking-wider block mb-1">Themes / Set Categories</label>
@@ -1055,88 +1123,103 @@ export default function SongEditPage() {
         )}
       </div>
 
-      {/* STICKY BOTTOM DECK CONTROLS (Stretches cleanly full-bleed to base layout) */}
-      <div className="absolute bottom-0 left-0 right-0 h-16 bg-white border-t px-4 md:px-8 flex items-center justify-between z-50 shadow-md flex-shrink-0 select-none w-full">
-        <div className="flex items-center gap-2 flex-1 min-w-0 pr-2">
-          {editorActiveTab === "content" && isAddChordsModeActive && (
-            <div className="flex items-center gap-1 bg-amber-50/40 border border-amber-200/60 p-1 rounded-xl animate-in slide-in-from-bottom-1 max-w-full overflow-x-auto">
-              <span className="text-[8px] font-black uppercase text-amber-600 tracking-tight shrink-0 px-1">🎸 Notation</span>
-              <select value={selectedChordRoot} className="bg-white border rounded-md px-1.5 py-0.5 text-[10px] font-bold outline-none" onChange={e => { const r = e.target.value; setSelectedChordRoot(r); const m = activeScaleDiatonicDeck.find(o => o.root === r); setCustomChordInputValue(`${r}${m ? m.suffix : ""}`); }}>{activeScaleDiatonicDeck.map((opt, i) => <option key={i} value={opt.root}>{opt.root}{opt.suffix}</option>)}</select>
-              <input type="text" value={customChordInputValue} className="border bg-white rounded-md px-1.5 py-0.5 text-center w-14 text-[10px] font-black outline-none" onChange={e => setCustomChordInputValue(e.target.value)} />
-              <button type="button" className={`px-2.5 py-1 rounded-md font-black text-[9px] uppercase tracking-wide text-white shrink-0 ${isChordInputBlank ? 'bg-red-600' : 'bg-blue-600'}`} onClick={() => executeChordInjectionAtIndex(customChordInputValue)}>{isChordInputBlank ? "Clear" : "Add"}</button>
-            </div>
-          )}
+      {/* ======================================================= */}
+      {/* ✅ SURGICAL FIX: SMART-DOCKING FLOATING BOTTOM DECK       */}
+      {/* ======================================================= */}
+      <div 
+        className={`fixed left-0 right-0 z-[100] px-4 md:px-8 transition-all duration-300 ease-out flex justify-center pointer-events-none ${
+          hasUnsavedChanges || (editorActiveTab === "content" && (isAddChordsModeActive || isAddNotesModeActive))
+            ? (isScrollingDown ? "bottom-6 opacity-100" : "bottom-[85px] opacity-100") // 85px clears the global bottom nav
+            : "-bottom-24 opacity-0"
+        }`}
+      >
+        <div className="bg-white/95 backdrop-blur-md border border-zinc-200/80 shadow-[0_12px_40px_rgb(0,0,0,0.12)] p-2 md:p-2.5 rounded-2xl flex items-center justify-between w-full max-w-4xl pointer-events-auto">
+          
+          <div className="flex items-center gap-2 flex-1 min-w-0 pr-2">
+            {editorActiveTab === "content" && isAddChordsModeActive && (
+              <div className="flex items-center gap-1 bg-amber-50/40 border border-amber-200/60 p-1 rounded-xl animate-in slide-in-from-bottom-1 max-w-full overflow-x-auto">
+                <span className="text-[8px] font-black uppercase text-amber-600 tracking-tight shrink-0 px-1">🎸 Notation</span>
+                <select value={selectedChordRoot} className="bg-white border rounded-md px-1.5 py-0.5 text-[10px] font-bold outline-none" onChange={e => { const r = e.target.value; setSelectedChordRoot(r); const m = activeScaleDiatonicDeck.find(o => o.root === r); setCustomChordInputValue(`${r}${m ? m.suffix : ""}`); }}>{activeScaleDiatonicDeck.map((opt, i) => <option key={i} value={opt.root}>{opt.root}{opt.suffix}</option>)}</select>
+                <input type="text" value={customChordInputValue} className="border bg-white rounded-md px-1.5 py-0.5 text-center w-14 text-[10px] font-black outline-none" onChange={e => setCustomChordInputValue(e.target.value)} />
+                <button type="button" className={`px-2.5 py-1 rounded-md font-black text-[9px] uppercase tracking-wide text-white shrink-0 ${isChordInputBlank ? 'bg-red-600' : 'bg-blue-600'}`} onClick={() => executeChordInjectionAtIndex(customChordInputValue)}>{isChordInputBlank ? "Clear" : "Add"}</button>
+              </div>
+            )}
 
-          {editorActiveTab === "content" && isAddNotesModeActive && (
-            <div className="flex items-center gap-1.5 bg-purple-50/40 border border-purple-200/60 p-1 rounded-xl flex-1 max-w-md animate-in slide-in-from-bottom-1">
-              <span className="text-[8px] font-black uppercase text-purple-600 tracking-tight shrink-0 px-1">📝 Note</span>
-              <input type="text" value={customCommentInputValue} placeholder="Type row comment..." className="border bg-white rounded-md px-2 py-0.5 text-[10px] font-bold flex-1 outline-none" onChange={e => setCustomCommentInputValue(e.target.value)} />
-              <button type="button" className={`px-2.5 py-1 rounded-md font-black text-[9px] uppercase tracking-wide text-white shrink-0 ${isCommentInputBlank ? 'bg-red-600' : 'bg-purple-600'}`} onClick={() => executeLineCommentInjection(customCommentInputValue)}>{isCommentInputBlank ? "Clear" : "Save"}</button>
-            </div>
-          )}
+            {editorActiveTab === "content" && isAddNotesModeActive && (
+              <div className="flex items-center gap-1.5 bg-purple-50/40 border border-purple-200/60 p-1 rounded-xl flex-1 max-w-md animate-in slide-in-from-bottom-1">
+                <span className="text-[8px] font-black uppercase text-purple-600 tracking-tight shrink-0 px-1">📝 Note</span>
+                <input type="text" value={customCommentInputValue} placeholder="Type row comment..." className="border bg-white rounded-md px-2 py-0.5 text-[10px] font-bold flex-1 outline-none" onChange={e => setCustomCommentInputValue(e.target.value)} />
+                <button type="button" className={`px-2.5 py-1 rounded-md font-black text-[9px] uppercase tracking-wide text-white shrink-0 ${isCommentInputBlank ? 'bg-red-600' : 'bg-purple-600'}`} onClick={() => executeLineCommentInjection(customCommentInputValue)}>{isCommentInputBlank ? "Clear" : "Save"}</button>
+              </div>
+            )}
 
-          {!(editorActiveTab === "content" && (isAddChordsModeActive || isAddNotesModeActive)) && editingSongId && activeRole === "admin" && (
-            <button 
-              type="button" 
-              className="px-3 py-2 rounded-xl bg-red-50 text-red-600 font-bold text-[10px] uppercase border border-red-200 hover:bg-red-100 transition-all cursor-pointer shadow-sm"
-              onClick={async () => {
-                if (confirm("Are you sure you want to delete this arrangement permanently?")) {
-                  setLoading(true);
-                  const { error } = await supabase.from("songs").delete().eq("id", editingSongId);
-                  if (!error) router.push("/songs");
-                  else setLoading(false);
-                }
-              }} 
-            >
-              🗑️ Delete Song
-            </button>
-          )}
+            {!(editorActiveTab === "content" && (isAddChordsModeActive || isAddNotesModeActive)) && editingSongId && activeRole === "admin" && (
+              <button 
+                type="button" 
+                className="px-4 py-2.5 rounded-xl bg-red-50/80 text-red-600 font-black text-[10px] uppercase border border-red-200 hover:bg-red-100 transition-all cursor-pointer flex items-center gap-1.5"
+                onClick={async () => {
+                  if (confirm("Are you sure you want to delete this arrangement permanently?")) {
+                    setLoading(true);
+                    const { error } = await supabase.from("songs").delete().eq("id", editingSongId);
+                    if (!error) router.push("/songs");
+                    else setLoading(false);
+                  }
+                }} 
+              >
+                <span className="text-sm">🗑️</span> Delete Song
+              </button>
+            )}
+          </div>
+
+          {(() => {
+            const isAnySectionMismatchedAcrossModal = formSections.some((checkSec) => {
+              const checkTuple = getCentralizedMetricsTuple(checkSec.type);
+              const checkLines = checkSec.content.split("\n").map(l => l.replace(/\[[^\]]+\]/g, "").trim()).filter(l => l.length > 0);
+              if (checkLines.length === 0) return false;
+
+              const checkRepeats = checkTuple.repeats || 0;
+              const totalCheckPasses = checkRepeats + 1; 
+              const totalLineSegments = checkLines.length * totalCheckPasses;
+              const targetAbsoluteBeats = (checkTuple.measures * 4) + checkTuple.beats;
+
+              const checkSpreadMeasures = Math.floor(checkTuple.measures / totalLineSegments);
+              const checkRemainderMeasures = checkTuple.measures % totalLineSegments;
+              const checkSpreadBeats = Math.floor(checkTuple.beats / totalLineSegments);
+              const checkRemainderBeats = checkTuple.beats % totalLineSegments;
+
+              const calculatedBeatsSum = checkLines.reduce((sum, _, lineIndex) => {
+                const lineOverride = (lineOverrides as any)?.[checkSec.type]?.[lineIndex];
+                const measures = lineOverride?.measures ?? (checkSpreadMeasures + (lineIndex < checkRemainderMeasures ? 1 : 0));
+                const beats = lineOverride?.beats ?? (checkSpreadBeats + (lineIndex < checkRemainderBeats ? 1 : 0));
+                return sum + (measures * 4) + beats;
+              }, 0) * totalCheckPasses;
+
+              return calculatedBeatsSum !== targetAbsoluteBeats;
+            });
+
+            const isSaveDisabled = isRealtimePreviewActive && isAnySectionMismatchedAcrossModal;
+
+            return (
+              <div className="shrink-0">
+                {(activeRole === "admin" || activeRole === "member") && (
+                  <button 
+                    type="button" 
+                    disabled={isSaveDisabled}
+                    className={`px-5 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-wider transition-all ${
+                      isSaveDisabled 
+                        ? "bg-zinc-100 text-zinc-400 border border-zinc-200 shadow-none cursor-not-allowed opacity-80" 
+                        : "bg-blue-600 hover:bg-blue-700 text-white shadow-md active:scale-[0.97] cursor-pointer"
+                    }`}
+                    onClick={handleCommitSongChangesToDB} 
+                  >
+                    {isSaveDisabled ? "🔒 Calculations Mismatched" : "Save Arrangement"}
+                  </button>
+                )}
+              </div>
+            );
+          })()}
+          
         </div>
-
-        {(() => {
-          const isAnySectionMismatchedAcrossModal = formSections.some((checkSec) => {
-            const checkTuple = getCentralizedMetricsTuple(checkSec.type);
-            const checkLines = checkSec.content.split("\n").map(l => l.replace(/\[[^\]]+\]/g, "").trim()).filter(l => l.length > 0);
-            if (checkLines.length === 0) return false;
-
-            const checkRepeats = checkTuple.repeats || 0;
-            const totalCheckPasses = checkRepeats + 1; 
-            const totalLineSegments = checkLines.length * totalCheckPasses;
-            const targetAbsoluteBeats = (checkTuple.measures * 4) + checkTuple.beats;
-
-            const checkSpreadMeasures = Math.floor(checkTuple.measures / totalLineSegments);
-            const checkRemainderMeasures = checkTuple.measures % totalLineSegments;
-            const checkSpreadBeats = Math.floor(checkTuple.beats / totalLineSegments);
-            const checkRemainderBeats = checkTuple.beats % totalLineSegments;
-
-            const calculatedBeatsSum = checkLines.reduce((sum, _, lineIndex) => {
-              // ✅ SURGICAL FIX: Validate via checkSec.type
-              const lineOverride = (lineOverrides as any)?.[checkSec.type]?.[lineIndex];
-              const measures = lineOverride?.measures ?? (checkSpreadMeasures + (lineIndex < checkRemainderMeasures ? 1 : 0));
-              const beats = lineOverride?.beats ?? (checkSpreadBeats + (lineIndex < checkRemainderBeats ? 1 : 0));
-              return sum + (measures * 4) + beats;
-            }, 0) * totalCheckPasses;
-
-            return calculatedBeatsSum !== targetAbsoluteBeats;
-          });
-
-          const isSaveDisabled = isRealtimePreviewActive && isAnySectionMismatchedAcrossModal;
-
-          return (
-            <div className="shrink-0">
-              {(activeRole === "admin" || activeRole === "member") && (
-                <button 
-                  type="button" 
-                  disabled={isSaveDisabled}
-                  className={`px-5 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-wider transition-all ${isSaveDisabled ? "bg-zinc-200 text-zinc-400 border border-zinc-300 shadow-none cursor-not-allowed opacity-60" : "bg-blue-600 hover:bg-blue-700 text-white shadow-md active:scale-95 cursor-pointer"}`}
-                  onClick={handleCommitSongChangesToDB} 
-                >
-                  {isSaveDisabled ? "🔒 Calculations Mismatched" : "Save Arrangement"}
-                </button>
-              )}
-            </div>
-          );
-        })()}
       </div>
 
       {/* DISCARD OVERLAY MODAL */}
