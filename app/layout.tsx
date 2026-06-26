@@ -1,8 +1,27 @@
 import { EngineProvider } from "./context/EngineContext";
 import ClientLayoutWrapper from "../components/ClientLayoutWrapper";
+// ✅ SURGICAL ADDITION: Import the new iOS prompt component
+import IOSInstallPrompt from "../components/IOSInstallPrompt"; 
 import "./globals.css";
+import type { Metadata, Viewport } from "next";
 
-// You can safely keep your export const metadata = { ... } here if you have one!
+export const metadata: Metadata = {
+  title: "Worship Matrix",
+  description: "Live Setlist and Worship Management",
+  appleWebApp: {
+    capable: true,
+    title: "Matrix",
+    statusBarStyle: "black-translucent",
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#ffffff",
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false, 
+};
 
 export default function RootLayout({
   children,
@@ -16,11 +35,13 @@ export default function RootLayout({
           suppressHydrationWarning
         >
           <EngineProvider>
-            {/* ✅ SURGICAL FIX: Let the Client Wrapper handle the rest */}
             <ClientLayoutWrapper>
-            {children}
-          </ClientLayoutWrapper>
-        </EngineProvider>
+              {children}
+            </ClientLayoutWrapper>
+          </EngineProvider>
+
+          {/* ✅ SURGICAL ADDITION: The Global iOS Prompt */}
+          <IOSInstallPrompt />
       </body>
     </html>
   );
