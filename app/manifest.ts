@@ -2,8 +2,8 @@ import { MetadataRoute } from 'next';
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: 'Worship Matrix',
-    short_name: 'Matrix',
+    name: 'OnPraise-Online',
+    short_name: 'OPOnline',
     description: 'Live Setlist and Worship Management',
     start_url: '/',
     display: 'standalone',
