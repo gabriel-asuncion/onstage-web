@@ -714,17 +714,23 @@ export default function SetlistPerformanceRoomPage() {
 
           if (payload.mdSectionStartTime) mdSectionStartTimeRef.current = payload.mdSectionStartTime;
 
-          const networkLatencyOffset = Date.now() - (payload.mdSectionStartTime || Date.now());
-          sectionStartTimeRef.current = performance.now() - networkLatencyOffset;
+          // ✅ SURGICAL FIX 1: Smart Latency Detection
+          const apparentLatency = Date.now() - (payload.mdSectionStartTime || Date.now());
+          if (Math.abs(apparentLatency) < 2000) {
+            // It's a live press! Ignore device clock drift and snap exactly to 0 for a perfect Beat 1 start.
+            sectionStartTimeRef.current = performance.now();
+          } else {
+            // Late joiner catching up to a song midway through. Accept the offset.
+            sectionStartTimeRef.current = performance.now() - apparentLatency;
+          }
 
           currentSectionIndexRef.current = payload.sectionIndex;
           setCurrentSectionIndex(payload.sectionIndex);
           lastBeatRef.current = 0;
-          lastAudioBeatRef.current = 0;  // ✅ SURGICAL FIX: Reset Audio Beat
-          lastVisualBeatRef.current = 0; // ✅ SURGICAL FIX: Reset Visual Beat
+          lastAudioBeatRef.current = 0; 
+          lastVisualBeatRef.current = 0; 
           updateMetronomeUI(1, true); // FAST DOM MUTATION
           
-          // Reset lines tracking
           activeLineIndexRef.current = 0;
           setActiveLineIndex(0);
 
@@ -748,8 +754,8 @@ export default function SetlistPerformanceRoomPage() {
           setCurrentSectionIndex(payload.sectionIndex);
           
           lastBeatRef.current = 0;
-          lastAudioBeatRef.current = 0;  // ✅ SURGICAL FIX: Reset Audio Beat
-          lastVisualBeatRef.current = 0; // ✅ SURGICAL FIX: Reset Visual Beat
+          lastAudioBeatRef.current = 0; 
+          lastVisualBeatRef.current = 0; 
           updateMetronomeUI(1, true); // FAST DOM MUTATION
           activeLineIndexRef.current = 0;
           setActiveLineIndex(0);
@@ -758,8 +764,13 @@ export default function SetlistPerformanceRoomPage() {
           if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = "scaleX(0)";
           
           if (isPlayingRef.current) {
-            const latencyOffset = Date.now() - (payload.mdSectionStartTime || Date.now());
-            sectionStartTimeRef.current = performance.now() - latencyOffset;
+            // ✅ SURGICAL FIX 2: Apply the same smart latency logic to section jumps
+            const apparentLatency = Date.now() - (payload.mdSectionStartTime || Date.now());
+            if (Math.abs(apparentLatency) < 2000) {
+              sectionStartTimeRef.current = performance.now();
+            } else {
+              sectionStartTimeRef.current = performance.now() - apparentLatency;
+            }
           }
         }
         else if (payload.action === "TRACK_CHANGE") {
@@ -1136,17 +1147,14 @@ export default function SetlistPerformanceRoomPage() {
       // ==========================================
       // 2. ABSOLUTE CLOCK ELAPSED MATH
       // ==========================================
+      
+      // ✅ SURGICAL FIX 3: Everyone uses the smooth timestamp now. Removed the Date.now() clock-drift trap!
       let elapsedMs = timestamp - sectionStartTimeRef.current;
       
-      if (isCurrentlyMD || mdSectionStartTimeRef.current === null) {
-        elapsedMs = timestamp - sectionStartTimeRef.current;
-      } else {
-        elapsedMs = Date.now() - mdSectionStartTimeRef.current;
-      }
-      
-      // ✅ SURGICAL FIX: Split Audio (Real) Time and Visual (Delayed) Time
+      // Split Audio (Real) Time and Visual (Delayed) Time
       const trueElapsedMs = Math.max(0, elapsedMs);
       const visualElapsedMs = Math.max(0, elapsedMs - audioLatencyOffsetMs);
+      
       
       // 1. PROGRESS BAR (Runs on delayed Visual Time)
       const progressRatio = Math.min(1, visualElapsedMs / totalDurationMs);
