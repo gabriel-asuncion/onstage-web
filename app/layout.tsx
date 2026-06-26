@@ -23,25 +23,31 @@ export const viewport: Viewport = {
   userScalable: false, 
 };
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-      <html lang="en" suppressHydrationWarning>
-        <body 
-          className="bg-[#f8f9fa] min-h-screen text-zinc-950 antialiased" 
-          suppressHydrationWarning
-        >
-          <EngineProvider>
-            <ClientLayoutWrapper>
-              {children}
-            </ClientLayoutWrapper>
-          </EngineProvider>
+    <html lang="en" suppressHydrationWarning>
+      <body className="bg-[#f8f9fa] min-h-screen text-zinc-950 antialiased" suppressHydrationWarning>
+        
+        {/* ✅ SURGICAL ADDITION: Register the Service Worker */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              if ('serviceWorker' in navigator) {
+                window.addEventListener('load', function() {
+                  navigator.serviceWorker.register('/sw.js');
+                });
+              }
+            `,
+          }}
+        />
 
-          {/* ✅ SURGICAL ADDITION: The Global iOS Prompt */}
-          <IOSInstallPrompt />
+        <EngineProvider>
+          <ClientLayoutWrapper>
+            {children}
+          </ClientLayoutWrapper>
+        </EngineProvider>
+
+        <IOSInstallPrompt />
       </body>
     </html>
   );
