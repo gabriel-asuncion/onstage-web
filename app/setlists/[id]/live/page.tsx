@@ -720,7 +720,9 @@ export default function SetlistPerformanceRoomPage() {
           currentSectionIndexRef.current = payload.sectionIndex;
           setCurrentSectionIndex(payload.sectionIndex);
           lastBeatRef.current = 0;
-          updateMetronomeUI(1, true); // ✅ FAST DOM MUTATION
+          lastAudioBeatRef.current = 0;  // ✅ SURGICAL FIX: Reset Audio Beat
+          lastVisualBeatRef.current = 0; // ✅ SURGICAL FIX: Reset Visual Beat
+          updateMetronomeUI(1, true); // FAST DOM MUTATION
           
           // Reset lines tracking
           activeLineIndexRef.current = 0;
@@ -746,7 +748,9 @@ export default function SetlistPerformanceRoomPage() {
           setCurrentSectionIndex(payload.sectionIndex);
           
           lastBeatRef.current = 0;
-          updateMetronomeUI(1, true); // ✅ FAST DOM MUTATION
+          lastAudioBeatRef.current = 0;  // ✅ SURGICAL FIX: Reset Audio Beat
+          lastVisualBeatRef.current = 0; // ✅ SURGICAL FIX: Reset Visual Beat
+          updateMetronomeUI(1, true); // FAST DOM MUTATION
           activeLineIndexRef.current = 0;
           setActiveLineIndex(0);
 
@@ -754,7 +758,6 @@ export default function SetlistPerformanceRoomPage() {
           if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = "scaleX(0)";
           
           if (isPlayingRef.current) {
-            // ✅ SURGICAL FIX: Apply network latency compensation so the clock isn't wiped out by transmission ping
             const latencyOffset = Date.now() - (payload.mdSectionStartTime || Date.now());
             sectionStartTimeRef.current = performance.now() - latencyOffset;
           }
