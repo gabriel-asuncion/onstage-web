@@ -323,9 +323,67 @@ export default function SetlistPerformanceRoomPage() {
   const [lyricsFontSize, setLyricsFontSize] = useState<number>(16);
   const [showChords, setShowChords] = useState<boolean>(true); 
   const [isMetronomeSoundEnabled, setIsMetronomeSoundEnabled] = useState<boolean>(false); // ✅ Metronome Toggle State
+
+  const isMetronomeSoundEnabledRef = useRef<boolean>(false);
+  useEffect(() => {
+    isMetronomeSoundEnabledRef.current = isMetronomeSoundEnabled;
+  }, [isMetronomeSoundEnabled]);
+
+  // ✅ SURGICAL ADDITION: Latency Offset & Test Engine States
+  const [audioLatencyOffsetMs, setAudioLatencyOffsetMs] = useState<number>(0);
+  const [isTestingSync, setIsTestingSync] = useState<boolean>(false);
+  const [testVisualBeat, setTestVisualBeat] = useState<number>(1);
+  
+  // ✅ SURGICAL FIX: Split the clock engine so audio and visuals can run on different timelines!
+  const lastAudioBeatRef = useRef<number>(1);
+  const lastVisualBeatRef = useRef<number>(1);
+
+  
+
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false); 
   const [lineSpacing, setLineSpacing] = useState<number>(16); 
   const [isMdLockModalOpen, setIsMdLockModalOpen] = useState<boolean>(false); // ✅ SURGICAL FIX: Added modal state
+
+  // ✅ SURGICAL ADDITION: Background loop for the Settings Modal Test Sync
+  useEffect(() => {
+    let reqId: number;
+    const testAudioRef = { current: 1 };
+    const testVisualRef = { current: 1 };
+    
+    if (isTestingSync) {
+      initAudioContext();
+      const startTime = performance.now();
+      
+      const tick = (timestamp: number) => {
+        const elapsed = timestamp - startTime;
+        
+        // Audio runs on exact real-time (Simulating a standard 120 BPM test click)
+        const audioBeat = Math.floor(elapsed / 500) % 4 + 1; 
+        if (audioBeat !== testAudioRef.current) {
+           testAudioRef.current = audioBeat;
+           triggerMetronomeSound(audioBeat);
+        }
+
+        // Visuals run on delayed offset time
+        const visElapsed = elapsed - audioLatencyOffsetMs;
+        const visBeat = Math.floor(Math.max(0, visElapsed) / 500) % 4 + 1;
+        if (visBeat !== testVisualRef.current) {
+           testVisualRef.current = visBeat;
+           setTestVisualBeat(visBeat);
+        }
+        reqId = requestAnimationFrame(tick);
+      };
+      reqId = requestAnimationFrame(tick);
+    } else {
+       setTestVisualBeat(1);
+    }
+    return () => { if (reqId) cancelAnimationFrame(reqId); };
+  }, [isTestingSync, audioLatencyOffsetMs, isMetronomeSoundEnabled]);
+
+  // Safety: Stop the test engine immediately if the user closes the modal
+  useEffect(() => {
+    if (!isSettingsModalOpen) setIsTestingSync(false);
+  }, [isSettingsModalOpen]);
 
   // ✅ SURGICAL ADDITION: Prevents the vocal cue from stuttering/repeating
   const hasPlayedCueRef = useRef<boolean>(false);
@@ -372,7 +430,7 @@ export default function SetlistPerformanceRoomPage() {
   }, []);
 
   const triggerMetronomeSound = (beatNum: number) => {
-    if (!isMetronomeSoundEnabled) return;
+    if (!isMetronomeSoundEnabledRef.current) return;
     const targetKey = beatNum === 1 ? "metronome_1" : "metronome_2";
     playZeroLatencyAudio(targetKey, 1.0);
   };
@@ -1083,23 +1141,31 @@ export default function SetlistPerformanceRoomPage() {
         elapsedMs = Date.now() - mdSectionStartTimeRef.current;
       }
       
-      // ✅ SURGICAL FIX: Prevent negative clock drift from breaking the progress bar and metronome
-      const safeElapsedMs = Math.max(0, elapsedMs);
-      const progressRatio = Math.min(1, safeElapsedMs / totalDurationMs);
-
+      // ✅ SURGICAL FIX: Split Audio (Real) Time and Visual (Delayed) Time
+      const trueElapsedMs = Math.max(0, elapsedMs);
+      const visualElapsedMs = Math.max(0, elapsedMs - audioLatencyOffsetMs);
+      
+      // 1. PROGRESS BAR (Runs on delayed Visual Time)
+      const progressRatio = Math.min(1, visualElapsedMs / totalDurationMs);
       if (backdropProgressRef.current) backdropProgressRef.current.style.transform = `scaleX(${progressRatio})`;
       if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = `scaleX(${progressRatio})`;
 
-      const currentBeatPulse = Math.floor(safeElapsedMs / beatSpeedMsCurrent) % 4 + 1;
+      // 2. AUDIO METRONOME & CUES (Runs on true, exact Time)
+      const currentAudioBeatPulse = Math.floor(trueElapsedMs / beatSpeedMsCurrent) % 4 + 1;
+      if (currentAudioBeatPulse !== lastAudioBeatRef.current) {
+        lastAudioBeatRef.current = currentAudioBeatPulse;
+        triggerMetronomeSound(currentAudioBeatPulse);
+      }
 
-      if (currentBeatPulse !== lastBeatRef.current) {
-        lastBeatRef.current = currentBeatPulse;
-        updateMetronomeUI(currentBeatPulse, true); // ✅ FAST DOM MUTATION
-        triggerMetronomeSound(currentBeatPulse);
+      // 3. VISUAL METRONOME UI (Runs on delayed Visual Time)
+      const currentVisualBeatPulse = Math.floor(visualElapsedMs / beatSpeedMsCurrent) % 4 + 1;
+      if (currentVisualBeatPulse !== lastVisualBeatRef.current) {
+        lastVisualBeatRef.current = currentVisualBeatPulse;
+        updateMetronomeUI(currentVisualBeatPulse, true); // ✅ FAST DOM MUTATION
       }
       
-      // ✅ SURGICAL ADDITION: Guide Cue Engine (Scenarios 1 & 3)
-      const remainingBeats = (totalDurationMs - elapsedMs) / beatSpeedMsCurrent;
+      // Guide Cues trigger based on True Time
+      const remainingBeats = (totalDurationMs - trueElapsedMs) / beatSpeedMsCurrent;
       
       // If we are in the last 4 beats, and haven't played the cue yet
       if (remainingBeats <= 4.05 && remainingBeats > 0 && !hasPlayedCueRef.current) {
@@ -2021,6 +2087,60 @@ export default function SetlistPerformanceRoomPage() {
                 </button>
               </div>
             </div>
+
+            {/* ✅ SURGICAL ADDITION: Universal Bluetooth Offset UI (Only shows when click is ON) */}
+            {isMetronomeSoundEnabled && (
+              <div className="bg-zinc-50 border border-zinc-200 rounded-xl p-3 mt-1.5 animate-in slide-in-from-top-2 duration-200 shadow-inner">
+                <div className="flex items-center justify-between mb-2.5">
+                  <label className="text-[10px] font-black text-zinc-500 uppercase tracking-wider block">Bluetooth Sync Offset</label>
+                  <div className="flex items-center gap-1 bg-white border border-zinc-200 rounded-lg px-2 py-1 shadow-sm">
+                    <input 
+                      type="number" 
+                      min={0}
+                      max={2000}
+                      value={audioLatencyOffsetMs}
+                      onChange={(e) => setAudioLatencyOffsetMs(parseInt(e.target.value) || 0)}
+                      className="w-10 bg-transparent text-center font-black text-xs text-zinc-700 outline-none"
+                    />
+                    <span className="text-[9px] font-bold text-zinc-400">ms</span>
+                  </div>
+                </div>
+                
+                <div className="flex items-center gap-2">
+                  {/* Mini Visualizer */}
+                  <div className="flex items-center gap-1 bg-white p-1.5 rounded-lg border border-zinc-200 shadow-inner flex-1 justify-center">
+                    {[1, 2, 3, 4].map((beatNum) => (
+                      <div
+                        key={`test-${beatNum}`}
+                        className={`w-5 h-5 flex items-center justify-center font-mono font-black text-[9px] rounded border transition-all duration-75 select-none ${
+                          isTestingSync && testVisualBeat === beatNum
+                            ? beatNum === 4 ? "bg-[#faba37] text-white border-[#e0a22b]" : "bg-blue-600 text-white border-blue-500"
+                            : "bg-zinc-100 text-zinc-300 border-transparent"
+                        }`}
+                      >
+                        {beatNum}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Sync Test Trigger */}
+                  <button
+                    type="button"
+                    onClick={() => setIsTestingSync(!isTestingSync)}
+                    className={`px-3 py-2 rounded-lg text-[9px] font-black uppercase tracking-wider transition-all flex items-center justify-center shadow-sm w-24 ${
+                      isTestingSync 
+                        ? "bg-red-500 text-white border border-red-600" 
+                        : "bg-zinc-900 text-white border border-zinc-800 hover:bg-zinc-800"
+                    }`}
+                  >
+                    {isTestingSync ? "⏹ STOP" : "▶ TEST SYNC"}
+                  </button>
+                </div>
+                <p className="text-[9px] font-bold text-zinc-400 mt-2 leading-tight">
+                  If the sound hits your ears later than the visual dot, increase this offset to delay the visuals until they match.
+                </p>
+              </div>
+            )}
 
             <div className="space-y-2">
               <label className="text-[10px] font-black text-zinc-400 uppercase tracking-wider block">Lyrics Font Display Size</label>
