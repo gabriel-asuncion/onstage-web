@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { createClient } from "../../utils/supabase/client";
 import { useEngine } from "../context/EngineContext";
 import { getAllSongs } from "../../utils/supabase/actions";
+import GlobalLoader from '../../components/GlobalLoader';
+
 
 // ✅ SURGICAL FIX: Standardized Discord-Style Tokens
 const KEYWORD_SUGGESTIONS_CATALOG = [
@@ -145,13 +147,9 @@ export default function SongsListPage() {
     setSongSearchQuery(prev => prev.replace(targetMatchPattern, "").trim());
   };
 
-  if (loading && allDatabaseSongs.length === 0) {
-    return (
-      <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#f8f9fa] text-center select-none animate-pulse">
-        <div className="text-[10px] font-mono font-black uppercase text-blue-600 tracking-widest">Loading Songs Library...</div>
-      </div>
-    );
-  }
+  if (loading) {
+  return <GlobalLoader message="LOADING SONGS LIBRARY..." />;
+}
 
   return (
   /* SURGICAL DE-CONTAINERIZATION: Bounding cards, rounded frame parameters, and absolute centrations removed */

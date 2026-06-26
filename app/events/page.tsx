@@ -6,6 +6,7 @@ import { createClient } from "../../utils/supabase/client";
 import Link from "next/link"; 
 import { useEngine } from "../context/EngineContext";
 import { getUserTeam, getAllProfiles } from "../../utils/supabase/actions";
+import GlobalLoader from '../../components/GlobalLoader';
 
 interface EventItem { 
   id: string; 
@@ -208,7 +209,10 @@ export default function EventsManagerPage() {
     setFilterPlanStatus("Active");
   }
 
-  if (loading) return <div className="p-8 text-center text-xs font-bold uppercase tracking-widest animate-pulse">Loading Events Matrix Router Hub...</div>;
+
+  if (loading) {
+  return <GlobalLoader message="LOADING EVENTS LIST..." />;
+}
 
   return (
     <div className="h-[calc(100dvh-4rem)] md:h-screen w-full flex flex-col bg-[#f8f9fa] relative animate-in fade-in duration-200">

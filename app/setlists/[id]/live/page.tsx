@@ -4,6 +4,7 @@ import React, { useEffect, useState, useRef, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { createClient } from "../../../../utils/supabase/client";
 import { useEngine } from "../../../context/EngineContext"; 
+import GlobalLoader from '../../../../components/GlobalLoader';
 
 // HOISTED TO GLOBAL SCOPE: Instantiates exactly once per tab instance to protect the WebSocket stream!
 const supabase = createClient();
@@ -19,8 +20,10 @@ interface SongRecord {
       measures: number; 
       beats: number;
       repeats?: number;
+      // ✅ SURGICAL ADDITION: Include Head and Tail types
+      head_m?: number;
+      tail_m?: number;
       line_timings?: {
-        // ✅ Added repeats here
         [lineIndex: string]: { measures: number; beats: number; repeats?: number }
       };
     };
@@ -1034,14 +1037,15 @@ export default function SetlistPerformanceRoomPage() {
       // 1. CALCULATE TRUE SECTION & LOOP TIMINGS
       // ==========================================
       const beatSpeedMsCurrent = (60 / (song.tempo || 75)) * 1000;
-      const timings = song.section_timings?.[currentSection.section_name] || { measures: 4, beats: 0, repeats: 0 };
+      const timings = song.section_timings?.[currentSection.section_name] || { measures: 4, beats: 0, repeats: 0, head_m: 0, tail_m: 0 };
       
       const sectionMultiplier = (timings.repeats || 0) + 1; // e.g., repeats: 4 means play 5 times total
 
-      // Start by assuming the provided top-level measures/beats is the TOTAL duration
+      // ✅ SURGICAL FIX: Extract head and tail bounds (converting measures to beats)
+      const headBeats = (timings.head_m || 0) * 4;
+      const tailBeats = (timings.tail_m || 0) * 4;
+
       let totalBeats = (timings.measures * 4) + (timings.beats || 0);
-      
-      // ✅ SURGICAL FIX: The length of ONE loop is the Total divided by how many times it plays
       let loopBeats = totalBeats / sectionMultiplier;
 
       const lineTimingsObj = timings.line_timings;
@@ -1060,11 +1064,12 @@ export default function SetlistPerformanceRoomPage() {
         }
         if (calculatedLoopBeats > 0) {
           loopBeats = calculatedLoopBeats;
-          // Override total beats to strictly match our exact line math multiplied out
           totalBeats = loopBeats * sectionMultiplier; 
         }
       }
 
+      // ✅ SURGICAL FIX: Add the head and tail padding to the absolute section duration
+      totalBeats += headBeats + tailBeats;
       const totalDurationMs = totalBeats * beatSpeedMsCurrent;
       
       // ==========================================
@@ -1134,11 +1139,16 @@ export default function SetlistPerformanceRoomPage() {
       const safeDuration = Math.max(1, totalDurationMs);
       const cappedElapsedMs = Math.max(0, Math.min(elapsedMs, safeDuration - 1));
       const sectionAbsoluteBeat = Math.floor(cappedElapsedMs / beatSpeedMsCurrent);
+      
+      // ✅ SURGICAL FIX: Offset the cursor to hold during Head, loop normally, and hold during Tail
+      const coreAbsoluteBeat = Math.max(0, sectionAbsoluteBeat - headBeats);
+      const maxCoreBeats = loopBeats * sectionMultiplier;
+      const cappedCoreBeat = Math.min(coreAbsoluteBeat, Math.max(0, maxCoreBeats - 1));
+
       let targetLineIdx = 0;
 
       if (calculatedLoopBeats > 0) {
-        // Modulo math snaps the beat cursor back to 0 whenever a loop finishes
-        const beatWithinCurrentLoop = sectionAbsoluteBeat % loopBeats;
+        const beatWithinCurrentLoop = cappedCoreBeat % loopBeats;
         
         let beatAccumulator = 0;
         for (let i = 0; i < parsedLinesCount; i++) {
@@ -1150,9 +1160,8 @@ export default function SetlistPerformanceRoomPage() {
           targetLineIdx = i; // Fallback so it holds on the last line
         }
       } else {
-        // ✅ SURGICAL FIX: Fallback equally split logic based on the LOOP length, not total length
         const beatsPerLine = loopBeats / parsedLinesCount;
-        const beatWithinCurrentLoop = sectionAbsoluteBeat % loopBeats;
+        const beatWithinCurrentLoop = cappedCoreBeat % loopBeats;
         targetLineIdx = Math.floor(beatWithinCurrentLoop / beatsPerLine);
         if (targetLineIdx >= parsedLinesCount) targetLineIdx = parsedLinesCount - 1;
       }
@@ -1424,8 +1433,8 @@ export default function SetlistPerformanceRoomPage() {
       sectionStartTimeRef.current = performance.now();
       const activeSection = sections[index];
       if (activeSection) {
-        const timings = activeSong.section_timings?.[activeSection.section_name] || { measures: 4, beats: 0 };
-        totalBeatsRef.current = (timings.measures * 4) + timings.beats || 16;
+        const timings = activeSong.section_timings?.[activeSection.section_name] || { measures: 4, beats: 0, head_m: 0, tail_m: 0 };
+        totalBeatsRef.current = (timings.measures * 4) + (timings.beats || 0) + ((timings.head_m || 0) * 4) + ((timings.tail_m || 0) * 4);
       }
     } else {
       if (backdropProgressRef.current) backdropProgressRef.current.style.transform = "scaleX(0)";
@@ -1610,19 +1619,8 @@ export default function SetlistPerformanceRoomPage() {
   }, [onlineUsers, localPresenceUser]);
 
   if (loading) {
-    return (
-      <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#f8f9fa] p-4 text-center select-none">
-        <div className="w-full max-w-xs space-y-3">
-          <div className="text-[10px] font-black uppercase text-blue-600 tracking-widest animate-pulse">
-            Syncing Live Deck...
-          </div>
-          <div className="bg-white border border-zinc-200 rounded-xl p-3 text-[10px] font-mono font-bold text-zinc-400 leading-normal shadow-sm">
-            Status: {loadingStatus}
-          </div>
-        </div>
-      </div>
-    );
-  }
+  return <GlobalLoader message="LOADING SETLIST..." />;
+}
 
   const highlightedTargetSectionName = sections[currentSectionIndex]?.section_name || "FLOW";
   const upcomingTrackItem = tracksList[currentTrackIndex + 1] || null;

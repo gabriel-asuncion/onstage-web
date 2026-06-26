@@ -5,6 +5,7 @@ import { useRouter, useParams } from "next/navigation";
 import { createClient } from "../../../../utils/supabase/client";
 import { useEngine } from "../../../context/EngineContext";
 import { getSongChordChart } from "../../../../utils/supabase/actions";
+import GlobalLoader from '../../../../components/GlobalLoader';
 
 // =======================================================
 // --- TRANSPOSTITION & DIATONIC CONSTANT BLUEPRINTS -----
@@ -26,6 +27,21 @@ const DIATONIC_MODES_MAP: { [key: string]: { root: string; suffix: string }[] } 
   "Bm": [{root:"B",suffix:"m"}, {root:"C#",suffix:"dim"},{root:"D",suffix:""}, {root:"E",suffix:"m"}, {root:"F#",suffix:"m"},{root:"G",suffix:""}, {root:"A",suffix:""}]
 };
 
+const Blob = ({ 
+  color, w, hasEyes, animClass, delay, top, left, right, bottom 
+}: { 
+  color: string, w: string, hasEyes: boolean, animClass: string, delay: string, top?: string, left?: string, right?: string, bottom?: string 
+}) => (
+  <div className={`absolute z-0 opacity-70 ${animClass}`} style={{ animationDelay: delay, top, left, right, bottom, width: w }}>
+    <svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+      <path fill={color} d="M45.7,-76.3C58.9,-69.3,69.1,-55.3,77.5,-41.1C85.9,-26.9,92.5,-12.4,90.4,1.4C88.4,15.2,77.7,28.3,67.6,40.4C57.5,52.5,48,63.6,35.5,70.5C23,77.4,7.5,80.1,-6.9,78C-21.3,75.9,-34.5,69.1,-46.8,60.8C-59.1,52.5,-70.5,42.7,-78.6,30.3C-86.7,17.9,-91.5,2.9,-88.4,-10.8C-85.3,-24.5,-74.3,-36.9,-62,-46.1C-49.7,-55.3,-36.1,-61.3,-23.1,-68.2C-10.1,-75.1,2.3,-82.9,16.4,-82.6C30.5,-82.3,46,-73.9,45.7,-76.3Z" transform="translate(100 100)" />
+      {hasEyes && (
+        <><circle cx="85" cy="90" r="8" fill="white" className="animate-blink" /><circle cx="115" cy="90" r="8" fill="white" className="animate-blink" /></>
+      )}
+    </svg>
+  </div>
+);
+
 interface SongSectionBlock {
   id: string;
   type: string;     
@@ -39,15 +55,14 @@ interface SectionTimingMap {
     measures: number;
     beats: number;
     repeats?: number;
+    // ✅ SURGICAL ADDITION: Head and Tail padding measures
+    head_m?: number;
+    tail_m?: number;
   };
 }
-
-// ✅ SURGICAL REPLACEMENT: Strict Native Section Catalog with UI Styling
-const SECTION_CATALOG = [
-  { id: "V1", display: "Verse 1", abbr: "V", color: "text-sky-500 border-sky-300 bg-sky-50" },
-  { id: "V2", display: "Verse 2", abbr: "V", color: "text-sky-500 border-sky-300 bg-sky-50" },
-  { id: "V3", display: "Verse 3", abbr: "V", color: "text-sky-500 border-sky-300 bg-sky-50" },
-  { id: "V4", display: "Verse 4", abbr: "V", color: "text-sky-500 border-sky-300 bg-sky-50" },
+// ✅ SURGICAL REPLACEMENT: Dynamic Base Section Catalog
+const SECTION_BASE_CATALOG = [
+  { id: "V", display: "Verse", abbr: "V", color: "text-sky-500 border-sky-300 bg-sky-50" },
   { id: "PC", display: "Pre-Chorus", abbr: "PC", color: "text-orange-500 border-orange-300 bg-orange-50" },
   { id: "C",  display: "Chorus", abbr: "C", color: "text-orange-500 border-orange-300 bg-orange-50" },
   { id: "PoC", display: "Post-Chorus", abbr: "PoC", color: "text-orange-500 border-orange-300 bg-orange-50" },
@@ -112,6 +127,10 @@ export default function SongEditPage() {
   const [isConfirmExitModalOpen, setIsConfirmExitModalOpen] = useState(false);
   const [editorActiveTab, setEditorActiveTab] = useState<"details" | "content" | "structure">("details");
 
+  // ✅ SURGICAL ADDITION: Save Engine States
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
+  const [saveErrorMessage, setSaveErrorMessage] = useState("");
+
   const [isScrollingDown, setIsScrollingDown] = useState(false);
   const lastScrollY = useRef(0);
 
@@ -132,6 +151,16 @@ export default function SongEditPage() {
   // ✅ SURGICAL ADDITION: Tap BPM States
   const [isTapBpmModalOpen, setIsTapBpmModalOpen] = useState(false);
   const [tapTimestamps, setTapTimestamps] = useState<number[]>([]);
+
+  // Automatically clear the tap visualizer if inactive for 3 seconds
+  useEffect(() => {
+    if (tapTimestamps.length > 0) {
+      const idleTimer = setTimeout(() => {
+        setTapTimestamps([]);
+      }, 3000);
+      return () => clearTimeout(idleTimer);
+    }
+  }, [tapTimestamps]);
 
   const [formKey, setFormKey] = useState("G");
   const [formArtist, setFormArtist] = useState("");
@@ -161,17 +190,41 @@ export default function SongEditPage() {
   const [sectionModalSearch, setSectionModalSearch] = useState("");
   const [sectionModalSelected, setSectionModalSelected] = useState<string | null>(null);
 
+  // ✅ SURGICAL ADDITION: Computes the next available auto-incremented number for each section type
+  const dynamicCatalogOptions = useMemo(() => {
+    return SECTION_BASE_CATALOG.map(base => {
+      // Find highest existing number for this exact base type in the current arrangement
+      const regex = new RegExp(`^${base.display}\\s+(\\d+)$`, 'i');
+      let maxNum = 0;
+      formSections.forEach(sec => {
+        const match = sec.type.match(regex);
+        if (match) {
+          const num = parseInt(match[1], 10);
+          if (num > maxNum) maxNum = num;
+        }
+      });
+      const nextName = `${base.display} ${maxNum + 1}`;
+      return {
+        ...base,
+        computedId: nextName, // Uses "Verse 2" as the unique ID
+        computedDisplay: nextName
+      };
+    });
+  }, [formSections]);
+
   const handleSectionModalSubmit = () => {
     if (!sectionModalSelected) return;
-    const tmpl = SECTION_CATALOG.find(x => x.id === sectionModalSelected);
+    
+    // Look up against our newly generated dynamic list instead of the static catalog
+    const tmpl = dynamicCatalogOptions.find(x => x.computedId === sectionModalSelected);
     if (!tmpl) return;
 
     if (sectionModalConfig.mode === "add") {
       setHasUnsavedChanges(true);
       setFormSections([...formSections, { 
         id: `sec-add-${Date.now()}-${Math.random()}`, 
-        type: tmpl.display, 
-        label: tmpl.display, 
+        type: tmpl.computedDisplay, 
+        label: tmpl.computedDisplay, 
         content: "", 
         repetitions: 1 
       }]);
@@ -179,7 +232,7 @@ export default function SongEditPage() {
       setHasUnsavedChanges(true);
       setFormSections(formSections.map(item => 
         item.id === sectionModalConfig.targetId 
-          ? { ...item, type: tmpl.display, label: tmpl.display } 
+          ? { ...item, type: tmpl.computedDisplay, label: tmpl.computedDisplay } 
           : item
       ));
     }
@@ -378,19 +431,22 @@ export default function SongEditPage() {
     handleSelectNewKeySignature(nextKeyComputedName);
   };
 
+  // ✅ SURGICAL FIX: Include head_m and tail_m in the tuple
   const getCentralizedMetricsTuple = (sectionType: string) => {
     const savedMetrics = sectionTimings[sectionType];
     return {
       measures: savedMetrics?.measures ?? 4,
       beats: savedMetrics?.beats ?? 0,
-      repeats: savedMetrics?.repeats ?? 0
+      repeats: savedMetrics?.repeats ?? 0,
+      head_m: savedMetrics?.head_m ?? 0,
+      tail_m: savedMetrics?.tail_m ?? 0
     };
   };
 
-  const handleUpdateCentralizedMetrics = (sectionType: string, field: "measures" | "beats" | "repeats", value: number) => {
+  const handleUpdateCentralizedMetrics = (sectionType: string, field: "measures" | "beats" | "repeats" | "head_m" | "tail_m", value: number) => {
     setHasUnsavedChanges(true);
     setSectionTimings(prev => {
-      const currentTuple = prev[sectionType] || { measures: 4, beats: 0, repeats: 0 };
+      const currentTuple = prev[sectionType] || { measures: 4, beats: 0, repeats: 0, head_m: 0, tail_m: 0 };
       return { ...prev, [sectionType]: { ...currentTuple, [field]: value } };
     });
   };
@@ -520,24 +576,24 @@ export default function SongEditPage() {
       return;
     }
 
-    setLoading(true);
+    // ✅ SURGICAL FIX: Lock the UI and trigger the save overlay
+    setSaveStatus("saving");
 
     try {
       const updatedSectionTimings: Record<string, any> = {};
       formSections.forEach((sec) => {
         const metricsTuple = getCentralizedMetricsTuple(sec.type);
         const specificRowOverrides = lineOverrides?.[sec.type] || null;
-
         updatedSectionTimings[sec.type] = {
           measures: metricsTuple.measures,
           beats: metricsTuple.beats,
           repeats: metricsTuple.repeats,
+          head_m: metricsTuple.head_m,  // 👈 Added here
+          tail_m: metricsTuple.tail_m,  // 👈 Added here
           line_timings: specificRowOverrides 
         };
       });
 
-      // ✅ SURGICAL FIX: Compile all sections into a single block for the database constraint 
-      // and so your global Search Bar "lyrics:" filter can read it!
       const compiledChordPro = formSections
         .map((sec) => `[${sec.type}]\n${sec.content || ""}`)
         .join("\n\n");
@@ -548,7 +604,6 @@ export default function SongEditPage() {
       if (isNewSong) {
         const { data: { user } } = await supabase.auth.getUser();
         let currentTeamId = null;
-        
         if (user) {
           const { data: profile } = await supabase.from("profiles").select("team_id").eq("id", user.id).single();
           currentTeamId = profile?.team_id;
@@ -561,43 +616,28 @@ export default function SongEditPage() {
           original_key: formKey,
           themes: formThemes.join(", "),
           section_timings: updatedSectionTimings,
-          chordpro_content: compiledChordPro // 👈 Added here!
+          chordpro_content: compiledChordPro
         };
 
-        if (currentTeamId) {
-          insertPayload.team_id = currentTeamId;
-        }
+        if (currentTeamId) insertPayload.team_id = currentTeamId;
 
-        const { data: newSong, error: insertError } = await supabase
-          .from("songs")
-          .insert(insertPayload)
-          .select("id")
-          .single();
-
+        const { data: newSong, error: insertError } = await supabase.from("songs").insert(insertPayload).select("id").single();
         if (insertError) throw insertError;
         finalSongId = newSong.id; 
 
       } else {
-        const { error: songUpdateError } = await supabase
-          .from("songs")
-          .update({ 
+        const { error: songUpdateError } = await supabase.from("songs").update({ 
             title: formTitle.trim(),
             artist: formArtist.trim() || "Unknown Artist",
             tempo: parseInt(formTempo, 10) || 75,
             original_key: formKey,
             themes: formThemes.join(", "),
             section_timings: updatedSectionTimings,
-            chordpro_content: compiledChordPro // 👈 Added here!
-          })
-          .eq("id", finalSongId);
-
+            chordpro_content: compiledChordPro 
+          }).eq("id", finalSongId);
         if (songUpdateError) throw songUpdateError;
 
-        const { error: deleteError } = await supabase
-          .from("song_sections")
-          .delete()
-          .eq("song_id", finalSongId);
-
+        const { error: deleteError } = await supabase.from("song_sections").delete().eq("song_id", finalSongId);
         if (deleteError) throw deleteError;
       }
 
@@ -609,20 +649,31 @@ export default function SongEditPage() {
       }));
 
       if (sectionsToInsert.length > 0) {
-        const { error: insertError } = await supabase
-          .from("song_sections")
-          .insert(sectionsToInsert);
+        const { error: insertError } = await supabase.from("song_sections").insert(sectionsToInsert);
         if (insertError) throw insertError;
       }
 
       setHasUnsavedChanges(false);
-      router.push("/songs");
+      
+      // ✅ SURGICAL FIX: Trigger Success Overlay
+      setSaveStatus("success");
+      
+      // Keep the overlay up for 1.5s, then close it and stay on the page!
+      setTimeout(() => {
+        if (isNewSong) {
+          // Soft-redirect to update the URL to the new ID, so further saves UPDATE instead of INSERT
+          router.replace(`/songs/${finalSongId}/edit`);
+        } else {
+          setSaveStatus("idle");
+        }
+      }, 1500);
+
     } catch (err: any) {
       const errorMessage = err?.message || err?.details || err?.hint || JSON.stringify(err);
       console.error("FATAL DB ERROR DETAILS:", errorMessage, err);
-      alert(`Database Error: ${errorMessage}\n\nPlease check your permissions or network connection.`);
-    } finally {
-      setLoading(false);
+      // ✅ SURGICAL FIX: Trigger Error Overlay
+      setSaveErrorMessage(errorMessage);
+      setSaveStatus("error");
     }
   };
 
@@ -702,13 +753,9 @@ export default function SongEditPage() {
   const isChordInputBlank = customChordInputValue.trim() === ""; 
   const isCommentInputBlank = customCommentInputValue.trim() === "";
 
-  if (loading && formSections.length === 0) {
-    return (
-      <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#f8f9fa] text-center select-none animate-pulse">
-        <div className="text-[10px] font-mono font-black uppercase text-blue-600 tracking-widest">Syncing Catalog Rows...</div>
-      </div>
-    );
-  }
+  if (loading) {
+  return <GlobalLoader message="LOADING SONGS DETAILS..." />;
+}
 
   return (
     /* SURGICAL DE-CONTAINERIZATION: Bounding limits like max-w-4xl and centering elements removed (edited-image.png) */
@@ -896,7 +943,7 @@ export default function SongEditPage() {
 
                 const totalManualLineMeasures = currentLinesMetrics.reduce((sum, l) => sum + l.measures, 0) * totalPasses;
                 const totalManualLineBeats = currentLinesMetrics.reduce((sum, l) => sum + l.beats, 0) * totalPasses;
-                const totalManualAbsoluteBeats = (totalManualLineMeasures * 4) + totalManualLineBeats;
+                const totalManualAbsoluteBeats = (totalManualLineMeasures * 4) + totalManualLineBeats + (timingTuple.head_m * 4) + (timingTuple.tail_m * 4);
                 const isSectionMismatched = totalLines > 0 && totalManualAbsoluteBeats !== masterTotalAbsoluteBeats;
 
                 const handleAdjustLineMetricValue = (lineIdx: number, field: "measures" | "beats", delta: number) => {
@@ -904,15 +951,16 @@ export default function SongEditPage() {
                   const proposedVal = Math.max(0, currentVal + delta);
 
                   if (field === "beats" && proposedVal > 3) return;
-                  const deltaBeats = (field === "measures" ? (delta * 4) : delta) * totalPasses;
-                  const projectedAbsoluteBeats = totalManualAbsoluteBeats + deltaBeats;
-
-                  if (projectedAbsoluteBeats > masterTotalAbsoluteBeats) return;
+                  
+                  // ✅ SURGICAL FIX: Removed the `projectedAbsoluteBeats > masterTotalAbsoluteBeats` hard-block!
+                  // It was causing a deadlock when Head/Tail values pushed the section over the limit.
+                  // Now, the user can freely adjust the steppers to "dig out" of the deficit, 
+                  // safely guided by the yellow warning banner and locked save button.
 
                   setHasUnsavedChanges(true);
                   setLineOverrides(prev => {
                     const prevOverrides = prev || {};
-                    // ✅ SURGICAL FIX: Execute a true DEEP COPY to prevent React state poisoning
+                    // Execute a true DEEP COPY to prevent React state poisoning
                     const sectionMap = { ...(prevOverrides[sec.type] || {}) };
                     
                     processedLines.forEach((_, currentIdx) => {
@@ -935,7 +983,6 @@ export default function SongEditPage() {
                   <div key={sec.id} className={`border rounded-xl p-3.5 space-y-2 relative transition-all shadow-sm ${isRealtimePreviewActive && isSectionMismatched ? "bg-amber-50/40 border-amber-300 ring-4 ring-amber-500/5" : "bg-white border-zinc-200"}`}>
                     <div className="flex items-center justify-between gap-2 flex-wrap">
                       <div className="flex flex-wrap items-center gap-1.5">
-                        {/* ✅ SURGICAL FIX: Triggers the new unified assignment modal */}
                         <div className="relative">
                           <button 
                             type="button" 
@@ -962,6 +1009,16 @@ export default function SongEditPage() {
                         <div className="flex items-center gap-1 bg-zinc-50 border rounded-lg px-2 py-0.5 text-[10px] font-bold text-zinc-600 shadow-inner">
                           <span className="text-[8px] font-black uppercase text-zinc-400">R:</span>
                           <input type="number" min={0} value={sectionRepeats} className="w-5 bg-transparent text-center font-black text-zinc-800 outline-none" onChange={(e) => { handleUpdateCentralizedMetrics(sec.type, "repeats", Math.max(0, parseInt(e.target.value, 10) || 0)); setLineOverrides(prev => { if (!prev) return {}; const newPrev = { ...prev }; delete newPrev[sec.type]; return newPrev; }); }} />
+                        </div>
+                        
+                        {/* ✅ SURGICAL ADDITION: Head (H) and Tail (T) Measure Inputs */}
+                        <div className="flex items-center gap-1 bg-zinc-50 border rounded-lg px-2 py-0.5 text-[10px] font-bold text-zinc-600 shadow-inner">
+                          <span className="text-[8px] font-black uppercase text-zinc-400" title="Head Padding (Added before first loop)">H:</span>
+                          <input type="number" min={0} value={timingTuple.head_m} className="w-5 bg-transparent text-center font-black text-zinc-800 outline-none" onChange={(e) => { handleUpdateCentralizedMetrics(sec.type, "head_m", Math.max(0, parseInt(e.target.value, 10) || 0)); setLineOverrides(prev => { if (!prev) return {}; const newPrev = { ...prev }; delete newPrev[sec.type]; return newPrev; }); }} />
+                        </div>
+                        <div className="flex items-center gap-1 bg-zinc-50 border rounded-lg px-2 py-0.5 text-[10px] font-bold text-zinc-600 shadow-inner">
+                          <span className="text-[8px] font-black uppercase text-zinc-400" title="Tail Padding (Added after last loop)">T:</span>
+                          <input type="number" min={0} value={timingTuple.tail_m} className="w-5 bg-transparent text-center font-black text-zinc-800 outline-none" onChange={(e) => { handleUpdateCentralizedMetrics(sec.type, "tail_m", Math.max(0, parseInt(e.target.value, 10) || 0)); setLineOverrides(prev => { if (!prev) return {}; const newPrev = { ...prev }; delete newPrev[sec.type]; return newPrev; }); }} />
                         </div>
                       </div>
 
@@ -1032,23 +1089,57 @@ export default function SongEditPage() {
                                   })}
                                 </div>
 
-                                <div className="flex items-center gap-1.5 shrink-0 select-none">
-                                  <div className="flex items-center gap-1 bg-white border border-zinc-200 p-1 px-2.5 h-7 rounded-lg shadow-sm text-[10px] font-bold text-zinc-400 relative pr-4">
-                                    <span>M:</span>
-                                    <span className="font-black text-zinc-800 text-center min-w-[12px]">{lineMetrics.measures}</span>
-                                    <div className="absolute right-0.5 inset-y-0 flex flex-col justify-center text-[6px] scale-90 leading-[5px] text-zinc-400 font-sans">
-                                      <button type="button" onClick={() => handleAdjustLineMetricValue(lineIdx, "measures", 1)} className="hover:text-blue-600 transition-colors py-0.5">▲</button>
-                                      <button type="button" onClick={() => handleAdjustLineMetricValue(lineIdx, "measures", -1)} className="hover:text-blue-600 transition-colors py-0.5">▼</button>
+                                {/* ✅ SURGICAL REPLACEMENT: Touch-friendly Horizontal Steppers */}
+                                <div className="flex items-center gap-2 shrink-0 select-none">
+                                  
+                                  {/* Measures (M) Stepper */}
+                                  <div className="flex items-center bg-white border border-zinc-200 rounded-lg shadow-sm h-7 overflow-hidden transition-colors focus-within:border-blue-400 focus-within:ring-1 focus-within:ring-blue-400">
+                                    <div className="px-1.5 text-[9px] font-black text-zinc-400 bg-zinc-50/80 border-r border-zinc-200/60 flex items-center h-full cursor-help" title="Measures">
+                                      M
                                     </div>
+                                    <button 
+                                      type="button" 
+                                      onClick={() => handleAdjustLineMetricValue(lineIdx, "measures", -1)} 
+                                      className="w-6 h-full flex items-center justify-center text-zinc-400 hover:text-blue-600 hover:bg-blue-50 active:bg-blue-100 transition-colors"
+                                    >
+                                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><path d="M5 12h14"/></svg>
+                                    </button>
+                                    <span className="w-5 text-center text-[11px] font-black text-zinc-800">
+                                      {lineMetrics.measures}
+                                    </span>
+                                    <button 
+                                      type="button" 
+                                      onClick={() => handleAdjustLineMetricValue(lineIdx, "measures", 1)} 
+                                      className="w-6 h-full flex items-center justify-center text-zinc-400 hover:text-blue-600 hover:bg-blue-50 active:bg-blue-100 transition-colors border-l border-transparent"
+                                    >
+                                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+                                    </button>
                                   </div>
-                                  <div className="flex items-center gap-1 bg-white border border-zinc-200 p-1 px-2.5 h-7 rounded-lg shadow-sm text-[10px] font-bold text-zinc-400 relative pr-4">
-                                    <span>B:</span>
-                                    <span className="font-black text-zinc-700 text-center min-w-[12px]">{lineMetrics.beats}</span>
-                                    <div className="absolute right-0.5 inset-y-0 flex flex-col justify-center text-[6px] scale-90 leading-[5px] text-zinc-400 font-sans">
-                                      <button type="button" onClick={() => handleAdjustLineMetricValue(lineIdx, "beats", 1)} className="hover:text-blue-600 transition-colors py-0.5">▲</button>
-                                      <button type="button" onClick={() => handleAdjustLineMetricValue(lineIdx, "beats", -1)} className="hover:text-blue-600 transition-colors py-0.5">▼</button>
+
+                                  {/* Beats (B) Stepper */}
+                                  <div className="flex items-center bg-white border border-zinc-200 rounded-lg shadow-sm h-7 overflow-hidden transition-colors focus-within:border-blue-400 focus-within:ring-1 focus-within:ring-blue-400">
+                                    <div className="px-1.5 text-[9px] font-black text-zinc-400 bg-zinc-50/80 border-r border-zinc-200/60 flex items-center h-full cursor-help" title="Beats">
+                                      B
                                     </div>
+                                    <button 
+                                      type="button" 
+                                      onClick={() => handleAdjustLineMetricValue(lineIdx, "beats", -1)} 
+                                      className="w-6 h-full flex items-center justify-center text-zinc-400 hover:text-blue-600 hover:bg-blue-50 active:bg-blue-100 transition-colors"
+                                    >
+                                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><path d="M5 12h14"/></svg>
+                                    </button>
+                                    <span className="w-4 text-center text-[11px] font-black text-zinc-800">
+                                      {lineMetrics.beats}
+                                    </span>
+                                    <button 
+                                      type="button" 
+                                      onClick={() => handleAdjustLineMetricValue(lineIdx, "beats", 1)} 
+                                      className="w-6 h-full flex items-center justify-center text-zinc-400 hover:text-blue-600 hover:bg-blue-50 active:bg-blue-100 transition-colors border-l border-transparent"
+                                    >
+                                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+                                    </button>
                                   </div>
+
                                 </div>
                               </div>
                             );
@@ -1187,12 +1278,13 @@ export default function SongEditPage() {
               const checkSpreadBeats = Math.floor(checkTuple.beats / totalLineSegments);
               const checkRemainderBeats = checkTuple.beats % totalLineSegments;
 
-              const calculatedBeatsSum = checkLines.reduce((sum, _, lineIndex) => {
+              // ✅ SURGICAL FIX: Add Head and Tail to the bottom validation check
+              const calculatedBeatsSum = (checkLines.reduce((sum, _, lineIndex) => {
                 const lineOverride = (lineOverrides as any)?.[checkSec.type]?.[lineIndex];
                 const measures = lineOverride?.measures ?? (checkSpreadMeasures + (lineIndex < checkRemainderMeasures ? 1 : 0));
                 const beats = lineOverride?.beats ?? (checkSpreadBeats + (lineIndex < checkRemainderBeats ? 1 : 0));
                 return sum + (measures * 4) + beats;
-              }, 0) * totalCheckPasses;
+              }, 0) * totalCheckPasses) + (checkTuple.head_m * 4) + (checkTuple.tail_m * 4);
 
               return calculatedBeatsSum !== targetAbsoluteBeats;
             });
@@ -1275,20 +1367,21 @@ export default function SongEditPage() {
 
             {/* Scrollable Radio List */}
             <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-2.5 custom-scrollbar bg-[#f2f2f6] md:bg-white">
-              {SECTION_CATALOG.filter(tmpl => tmpl.display.toLowerCase().includes(sectionModalSearch.toLowerCase())).map(tmpl => {
-                const isSelected = sectionModalSelected === tmpl.id;
+              {/* ✅ SURGICAL FIX: Map the dynamically numbered options! */}
+              {dynamicCatalogOptions.filter(tmpl => tmpl.computedDisplay.toLowerCase().includes(sectionModalSearch.toLowerCase())).map(tmpl => {
+                const isSelected = sectionModalSelected === tmpl.computedId;
                 return (
                   <button 
-                    key={tmpl.id} 
+                    key={tmpl.computedId} 
                     type="button" 
-                    onClick={() => setSectionModalSelected(tmpl.id)}
+                    onClick={() => setSectionModalSelected(tmpl.computedId)}
                     className={`w-full flex items-center justify-between p-3 rounded-2xl transition-all ${isSelected ? "bg-white ring-2 ring-blue-500 shadow-sm" : "bg-white hover:bg-zinc-50/80 border border-transparent shadow-sm md:border-zinc-200/60"}`}
                   >
                     <div className="flex items-center gap-3.5">
                       <div className={`w-8 h-8 rounded-full border-2 flex items-center justify-center text-[10px] font-black ${tmpl.color}`}>
                         {tmpl.abbr}
                       </div>
-                      <span className="text-[14px] font-bold text-zinc-900 tracking-tight">{tmpl.display}</span>
+                      <span className="text-[14px] font-bold text-zinc-900 tracking-tight">{tmpl.computedDisplay}</span>
                     </div>
                     
                     {/* Native iOS style Radio indicator */}
@@ -1364,16 +1457,42 @@ export default function SongEditPage() {
             </div>
             
             {/* Visualizer Display */}
-            <div className="bg-white border rounded-xl p-4 shadow-inner min-h-[4rem] flex items-center justify-center overflow-hidden whitespace-pre-wrap">
+            {/* ✅ SURGICAL FIX: Click-to-reset, grouped Flexbox wrapping, and idle support */}
+            <div 
+              onClick={() => setTapTimestamps([])}
+              title="Click to reset taps"
+              className="bg-white border rounded-xl p-4 shadow-inner h-28 w-full flex items-center justify-center overflow-hidden cursor-pointer hover:bg-zinc-50 transition-colors relative group"
+            >
+              {/* Subtle hover icon to indicate it's clickable to reset */}
+              <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-5 transition-opacity pointer-events-none">
+                 <span className="text-6xl font-black">↺</span>
+              </div>
+
               {tapTimestamps.length === 0 ? (
-                <span className="text-zinc-400 text-sm font-bold italic">Start tapping...</span>
+                <span className="text-zinc-400 text-sm font-bold italic relative z-10">Start tapping...</span>
               ) : (
-                <span className="text-blue-600 font-black text-2xl tracking-widest animate-in fade-in duration-75">
-                  {/* Keep only the last 16 taps so the modal doesn't overflow */}
-                  {tapTimestamps.slice(-16).map((_, i) => (
-                    <span key={i}>{((i + 1) % 4 === 0) ? "*\u00A0\u00A0\u00A0" : "*\u00A0"}</span>
-                  ))}
-                </span>
+                <div className="flex flex-wrap items-center justify-center gap-y-2 gap-x-4 md:gap-x-5 animate-in fade-in duration-75 w-full relative z-10">
+                  {/* Group timestamps into chunks of 4 so they never break across lines */}
+                  {Array.from({ length: Math.ceil(Math.min(tapTimestamps.length, 48) / 4) }).map((_, groupIdx) => {
+                    const totalTaps = Math.min(tapTimestamps.length, 48);
+                    const starsInGroup = Math.min(4, totalTaps - groupIdx * 4);
+                    
+                    let tapSizeClass = "text-4xl";
+                    if (totalTaps > 36) tapSizeClass = "text-xl";
+                    else if (totalTaps > 24) tapSizeClass = "text-2xl";
+                    else if (totalTaps > 12) tapSizeClass = "text-3xl";
+
+                    return (
+                      <div key={groupIdx} className="flex gap-1.5 flex-nowrap shrink-0">
+                        {Array.from({ length: starsInGroup }).map((_, starIdx) => (
+                          <span key={starIdx} className={`text-blue-600 font-black leading-none transition-all duration-200 ${tapSizeClass}`}>
+                            *
+                          </span>
+                        ))}
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </div>
 
@@ -1429,6 +1548,92 @@ export default function SongEditPage() {
           </div>
         </div>
       )}
+      {/* ======================================================= */}
+      {/* ✅ SURGICAL ADDITION: SAVE ENGINE OVERLAY                 */}
+      {/* ======================================================= */}
+      {saveStatus !== "idle" && (
+        <div className="fixed inset-0 bg-zinc-950/70 backdrop-blur-sm z-[300000] flex items-center justify-center p-4 select-none">
+          
+          {/* Keyframes for the blobs */}
+          <style dangerouslySetInnerHTML={{__html: `
+            @keyframes dart-x { 0%, 100% { transform: translateX(0) scale(1); } 2%, 6% { transform: translateX(30px) scale(0.9, 1.1) rotate(5deg); } 8%, 50% { transform: translateX(30px) scale(1) rotate(5deg); } 52%, 56% { transform: translateX(-15px) scale(1.1, 0.9) rotate(-2deg); } 58%, 95% { transform: translateX(-15px) scale(1) rotate(-2deg); } }
+            @keyframes morph-squish { 0%, 100% { transform: scale(1) rotate(0deg); } 25% { transform: scale(1.2, 0.8) rotate(10deg); } 50% { transform: scale(0.9, 1.15) rotate(-5deg); } 75% { transform: scale(1.05, 0.95) rotate(15deg); } }
+            @keyframes float-spin { 0%, 100% { transform: translateY(0) rotate(0deg); } 50% { transform: translateY(-20px) rotate(180deg); } }
+            @keyframes pulse-ghost { 0%, 100% { transform: scale(1); opacity: 0.7; } 30% { transform: scale(1.6); opacity: 0.1; } 40% { transform: scale(0.8); opacity: 0.9; } }
+            @keyframes blink { 0%, 96%, 100% { transform: scaleY(1); opacity: 1; } 98% { transform: scaleY(0.1); opacity: 0; } }
+            
+            .animate-dart-x { animation: dart-x 7s cubic-bezier(0.34, 1.56, 0.64, 1) infinite; }
+            .animate-morph-squish { animation: morph-squish 5s ease-in-out infinite; }
+            .animate-float-spin { animation: float-spin 19s ease-in-out infinite; }
+            .animate-pulse-ghost { animation: pulse-ghost 7s ease-in-out infinite; }
+            .animate-blink { animation: blink 4s infinite; transform-origin: center; }
+          `}} />
+
+          {/* Dynamic Background Blobs based on State */}
+          <div className="absolute inset-0 overflow-hidden pointer-events-none">
+            {saveStatus === "saving" && (
+              <>
+                <Blob color="#3B82F6" w="100px" hasEyes animClass="animate-dart-x" delay="0s" top="20%" left="30%" />
+                <Blob color="#60A5FA" w="60px" hasEyes={false} animClass="animate-float-spin" delay="-2s" bottom="30%" right="25%" />
+              </>
+            )}
+            {saveStatus === "success" && (
+              <>
+                <Blob color="#10B981" w="110px" hasEyes animClass="animate-morph-squish" delay="0s" top="30%" right="30%" />
+                <Blob color="#34D399" w="50px" hasEyes={false} animClass="animate-pulse-ghost" delay="-1s" bottom="20%" left="20%" />
+              </>
+            )}
+            {saveStatus === "error" && (
+              <>
+                <Blob color="#EF4444" w="90px" hasEyes animClass="animate-dart-x" delay="0s" bottom="25%" left="25%" />
+                <Blob color="#F87171" w="70px" hasEyes={false} animClass="animate-float-spin" delay="-3s" top="20%" right="20%" />
+              </>
+            )}
+          </div>
+
+          {/* The Modal Card */}
+          <div className="bg-white rounded-[2rem] shadow-2xl p-8 max-w-sm w-full relative z-10 text-center animate-in zoom-in-95 duration-200">
+            
+            {saveStatus === "saving" && (
+              <>
+                <div className="w-16 h-16 border-4 border-blue-100 border-t-blue-600 rounded-full animate-spin mx-auto mb-6 shadow-sm" />
+                <h3 className="text-xl font-black tracking-tight text-zinc-900">Saving Matrix...</h3>
+                <p className="text-[13px] font-bold text-zinc-500 mt-2">Writing arrangement to secure database.</p>
+              </>
+            )}
+
+            {saveStatus === "success" && (
+              <div className="animate-in slide-in-from-bottom-2 duration-300">
+                <div className="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center text-3xl mx-auto mb-6 shadow-sm border border-green-200">
+                  <span className="font-black">✓</span>
+                </div>
+                <h3 className="text-xl font-black tracking-tight text-zinc-900">Saved Successfully</h3>
+                <p className="text-[13px] font-bold text-zinc-500 mt-2">Your changes have been safely logged.</p>
+              </div>
+            )}
+
+            {saveStatus === "error" && (
+              <div className="animate-in slide-in-from-bottom-2 duration-300">
+                <div className="w-16 h-16 bg-red-100 text-red-600 rounded-full flex items-center justify-center text-3xl mx-auto mb-6 shadow-sm border border-red-200">
+                  <span className="font-black">✕</span>
+                </div>
+                <h3 className="text-xl font-black tracking-tight text-zinc-900">Save Failed</h3>
+                <div className="bg-red-50 border border-red-100 rounded-xl p-3 mt-4 mb-6">
+                  <p className="text-[11px] font-bold text-red-600 font-mono break-words">{saveErrorMessage}</p>
+                </div>
+                <button 
+                  onClick={() => setSaveStatus("idle")} 
+                  className="w-full py-3.5 bg-zinc-900 hover:bg-zinc-800 text-white rounded-xl font-black text-xs uppercase tracking-wider transition-colors active:scale-95 shadow-md"
+                >
+                  Close & Try Again
+                </button>
+              </div>
+            )}
+
+          </div>
+        </div>
+      )}
     </div>
+    
   );
 }

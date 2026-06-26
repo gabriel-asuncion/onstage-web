@@ -4,10 +4,12 @@ import { useEffect, useState } from "react";
 import { useRouter, useParams } from "next/navigation";
 import { createClient } from "../../../utils/supabase/client";
 import { useEngine } from "../../context/EngineContext";
+import GlobalLoader from '../../../components/GlobalLoader';
 import { 
   getUserTeam, getAllProfiles, addTeamMember, removeTeamMember, 
   getAuthUserProfile, getAllSongs, getSongChordChart
 } from "../../../utils/supabase/actions";
+
 
 interface DBProfile { id: string; full_name: string; email: string; avatar_url?: string; ministries: string[]; unavailable_dates?: string[]; }
 interface MemberRow { id: string; role: string; user_id: string; profiles: DBProfile | null; isNew?: boolean; }
@@ -23,6 +25,25 @@ interface SetlistSongItem {
   assigned_user_ids?: string[] | null; 
   songs: any | null; 
 }
+
+// ============================================================================
+// ✅ SURGICAL ADDITION: REUSABLE BLOB COMPONENT
+// ============================================================================
+const Blob = ({ 
+  color, w, hasEyes, animClass, delay, top, left, right, bottom 
+}: { 
+  color: string, w: string, hasEyes: boolean, animClass: string, delay: string, top?: string, left?: string, right?: string, bottom?: string 
+}) => (
+  <div className={`absolute z-0 opacity-70 ${animClass}`} style={{ animationDelay: delay, top, left, right, bottom, width: w }}>
+    <svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+      <path fill={color} d="M45.7,-76.3C58.9,-69.3,69.1,-55.3,77.5,-41.1C85.9,-26.9,92.5,-12.4,90.4,1.4C88.4,15.2,77.7,28.3,67.6,40.4C57.5,52.5,48,63.6,35.5,70.5C23,77.4,7.5,80.1,-6.9,78C-21.3,75.9,-34.5,69.1,-46.8,60.8C-59.1,52.5,-70.5,42.7,-78.6,30.3C-86.7,17.9,-91.5,2.9,-88.4,-10.8C-85.3,-24.5,-74.3,-36.9,-62,-46.1C-49.7,-55.3,-36.1,-61.3,-23.1,-68.2C-10.1,-75.1,2.3,-82.9,16.4,-82.6C30.5,-82.3,46,-73.9,45.7,-76.3Z" transform="translate(100 100)" />
+      {hasEyes && (
+        <><circle cx="85" cy="90" r="8" fill="white" className="animate-blink" /><circle cx="115" cy="90" r="8" fill="white" className="animate-blink" /></>
+      )}
+    </svg>
+  </div>
+);
+
 interface EventItem { id: string; title: string; event_date: string; description: string; service_type?: string; team_id?: string; }
 interface SetlistMetaItem { id: string; name: string; event_id: string; }
 
@@ -526,8 +547,9 @@ export default function EventCockpitPage() {
   useEffect(() => { setHasMounted(true); loadData(); }, [eventId]);
 
   if (!hasMounted) return null;
-  if (loading) return <div className="p-12 text-center text-xs font-bold animate-pulse">Loading Cockpit Content...</div>;
-
+  if (loading) {
+  return <GlobalLoader message="LOADING EVENT DETAILS" />;
+}
   return (
     <div className="p-4 md:p-8 w-full max-w-7xl mx-auto space-y-6 animate-in fade-in duration-200">
       
@@ -930,21 +952,42 @@ export default function EventCockpitPage() {
         </div>
       )}
       
-      {/* SUCCESS CONFIRMATION MODAL */}
+      {/* ======================================================= */}
+      {/* ✅ SURGICAL REPLACEMENT: SUCCESS CONFIRMATION MODAL       */}
+      {/* ======================================================= */}
       {showSuccessModal && (
-        <div className="fixed inset-0 bg-zinc-950/60 backdrop-blur-sm z-[150000] flex items-center justify-center p-4">
-          <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-sm p-6 text-center space-y-4 animate-in zoom-in-95 duration-150">
-            <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto text-2xl shadow-inner border border-emerald-200">
-              🎉
+        <div className="fixed inset-0 bg-zinc-950/70 backdrop-blur-sm z-[150000] flex items-center justify-center p-4 select-none">
+          
+          {/* Keyframes for the blobs */}
+          <style dangerouslySetInnerHTML={{__html: `
+            @keyframes morph-squish { 0%, 100% { transform: scale(1) rotate(0deg); } 25% { transform: scale(1.2, 0.8) rotate(10deg); } 50% { transform: scale(0.9, 1.15) rotate(-5deg); } 75% { transform: scale(1.05, 0.95) rotate(15deg); } }
+            @keyframes pulse-ghost { 0%, 100% { transform: scale(1); opacity: 0.7; } 30% { transform: scale(1.6); opacity: 0.1; } 40% { transform: scale(0.8); opacity: 0.9; } }
+            @keyframes blink { 0%, 96%, 100% { transform: scaleY(1); opacity: 1; } 98% { transform: scaleY(0.1); opacity: 0; } }
+            
+            .animate-morph-squish { animation: morph-squish 5s ease-in-out infinite; }
+            .animate-pulse-ghost { animation: pulse-ghost 7s ease-in-out infinite; }
+            .animate-blink { animation: blink 4s infinite; transform-origin: center; }
+          `}} />
+
+          {/* Dynamic Background Blobs */}
+          <div className="absolute inset-0 overflow-hidden pointer-events-none">
+            <Blob color="#10B981" w="110px" hasEyes animClass="animate-morph-squish" delay="0s" top="30%" right="30%" />
+            <Blob color="#34D399" w="50px" hasEyes={false} animClass="animate-pulse-ghost" delay="-1s" bottom="20%" left="20%" />
+            <Blob color="#A7F3D0" w="80px" hasEyes={false} animClass="animate-morph-squish" delay="-2s" top="20%" left="30%" />
+          </div>
+
+          <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-sm p-8 text-center relative z-10 animate-in zoom-in-95 duration-200">
+            <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto text-3xl shadow-sm border border-emerald-200 mb-6">
+              <span className="font-black">✓</span>
             </div>
             <div>
               <h3 className="text-xl font-black text-zinc-900 tracking-tight">Success!</h3>
-              <p className="text-[13px] font-bold text-zinc-500 mt-1.5">Lineup successfully synchronized and saved to the database.</p>
+              <p className="text-[13px] font-bold text-zinc-500 mt-2">Lineup successfully synchronized and saved to the database.</p>
             </div>
             <button 
               type="button" 
               onClick={() => setShowSuccessModal(false)} 
-              className="w-full bg-zinc-950 hover:bg-zinc-800 text-white font-black py-3.5 rounded-xl text-xs uppercase tracking-widest shadow-md transition-all active:scale-95 mt-4"
+              className="w-full bg-zinc-900 hover:bg-zinc-800 text-white font-black py-3.5 rounded-xl text-xs uppercase tracking-widest shadow-md transition-all active:scale-95 mt-6"
             >
               Continue
             </button>

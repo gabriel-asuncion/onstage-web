@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "../../utils/supabase/client";
 import { useEngine } from "../context/EngineContext";
+import GlobalLoader from '../../components/GlobalLoader';
 
 interface EventItem {
   id: string;
@@ -20,25 +21,65 @@ interface TeamMemberAllocation {
   role: string;
 }
 
-// 180+ Curated global greetings from formal to informal/slang
+// 50 Curated Unique English & Filipino Greetings
 const GLOBAL_GREETINGS_DICTIONARY = [
-  "Shalom", "Mabuhay", "Kamusta", "Aloha", "Kia Ora", "Namaste", "Hola", "Bonjour", "Ciao", "Konnichiwa",
-  "Annyeong", "Merhaba", "Ahlan", "Sawasdee", "Jambo", "Zdravo", "Privet", "Guten Tag", "G'day", "Salut",
-  "Nǐ Hǎo", "Shada", "Wazza", "Yo", "Howdy", "What's up", "Ahoj", "Ahalan", "Sveiki", "Hej",
-  "Goddag", "Yasas", "Hujambo", "Selam", "Bula", "Talofa", "Moni", "Grüss Gott", "Servus", "Chao",
-  "Vanakkam", "Asalaam Alaykum", "Sat Sri Akal", "Kuzu Zangpo", "Mingalaba", "Suosdei", "Sabaidee", "Xin Chào", "Niltze", "Allianllachu",
-  "Moïen", "Dia Duit", "Halo", "Bongu", "Tere", "Tere", "Szia", "Sveiki", "Labas", "Zdraveite",
-  "Czesc", "Witamy", "Dobry Dan", "Dzien Dobry", "Ahoj", "Zdravo", "Zivijo", "Bunã", "Privet", "Salam",
-  "Barev", "Gamarjoba", "Salamat", "Kaixo", "Ongi Etorri", "Ola", "Boas", "Ey", "Sup", "Watchya",
-  "Alright", "Ahoy", "Cheerio", "Hiya", "Cheers", "Greetings", "Welcome", "Good Day", "Top of the morning", "What's crackin",
-  "How's tricks", "What's the word", "How's it going", "What's new", "How's life", "Good to see you", "Long time no see", "Look what the cat dragged in", "How fare you", "Hail",
-  "Well met", "Peace be with you", "Blessings", "Grace", "Marhaban", "Marhaba", "Yallah", "Ahlan Wa Sahlan", "Marhaban Bik", "Kehal",
-  "Ete", "Nda", "Moyo", "Mambo", "Vipi", "Sasa", "Niaje", "Oya", "Ariba", "Que pasa",
-  "Que tal", "Buenas", "Buenas Tardes", "Ostia", "Apa Kabar", "G’day Mate", "How ya goin", "Rad", "Epic", "Stoked",
-  "Aluu", "Inuujunga", "Qanuipit", "Khow", "Shwmae", "Helo", "Halò", "Failte", "Hwyl", "Ayo",
-  "Hoy", "Heisan", "Moin", "Moin Moin", "Tach", "Maje", "Wassup", "Whadup", "Guwop", "Guten Morgen",
-  "Morgen", "Nabend", "Nite", "Hi", "Hello", "How goes it", "What's standard", "Safe", "Bless", "Whagwan",
-  "Wah gwaan", "Zion", "Hosanna", "Hallelujah", "Amen", "Maranatha", "Selah", "Ebenezer", "Emmanuel", "Kyrie"
+  // ==========================================
+  // 🇵🇭 FILIPINO (Traditional & Modern Slang)
+  // ==========================================
+  "Mabuhay",             // Long live / Welcome
+  "Kamusta",             // How are you?
+  "Magandang Araw",      // Good day
+  "Magandang Umaga",     // Good morning
+  "Magandang Hapon",     // Good afternoon
+  "Magandang Gabi",      // Good evening
+  "Tuloy po kayo",       // Please come in (Formal/Respectful)
+  "Pasok!",              // Come in! 
+  "Musta?",              // Short for Kamusta
+  "Ano'ng ganap?",       // What's happening? / What's up? (Modern slang)
+  "Balita?",             // What's the news? / How's it going?
+  "Uy, kamusta?",        // Hey, how are you?
+  "Tara!",               // Let's go! (Energetic)
+  "G!",                  // Game! / Let's do this! (Modern Gen Z/Millennial slang)
+  "Rak na!",             // Let's rock! / Let's do this!
+  "Kumusta buhay?",      // How's life?
+  "Ano na?",             // What's up now?
+  "Larga!",              // Let's roll!
+  "O, nandito ka na",    // Oh, you're here (Warm recognition)
+  "Kamusta ang lahat?",  // How is everything?
+  
+  // ==========================================
+  // 🇬🇧/🇺🇸 ENGLISH (Classic, Warm, & Workspace)
+  // ==========================================
+  "Hello", 
+  "Hi there", 
+  "Welcome back", 
+  "Good to see you", 
+  "Greetings", 
+  "What's up?", 
+  "How's it going?", 
+  "What's good?", 
+  "Look who it is!", 
+  "Hey there", 
+  "Top of the morning", 
+  "Greetings and salutations", 
+  "What's the good word?", 
+  "Ahoy!", 
+  "What's happening?", 
+  "How's life treating you?", 
+  "Ready to rock?", 
+  "Let's get to work", 
+  "Welcome aboard", 
+  "Great to have you here", 
+  "How's everything?", 
+  "What's new?", 
+  "Nice to see you", 
+  "Rise and shine!", 
+  "Let's do this", 
+  "Hello, world!",       // The classic developer greeting
+  "Howdy", 
+  "Hope you're doing well", 
+  "Let's make it happen", 
+  "Glad you're here"
 ];
 
 const FALLBACK_VERSES = [
@@ -79,12 +120,21 @@ export default function DashboardPage() {
       setCurrentGreeting(GLOBAL_GREETINGS_DICTIONARY[greetingIndex]);
 
       // 2. Fetch Daily Verse
-      const todayString = new Date().toISOString().split("T")[0];
-      const { data: inspirationData } = await supabase
+      const now = new Date();
+      const localYear = now.getFullYear();
+      const localMonth = String(now.getMonth() + 1).padStart(2, '0');
+      const localDay = String(now.getDate()).padStart(2, '0');
+      const todayString = `${localYear}-${localMonth}-${localDay}`;
+
+      const { data: inspirationData, error: inspirationErr } = await supabase
         .from("daily_inspiration")
         .select("verse_text, verse_reference")
         .eq("target_date", todayString)
         .maybeSingle();
+
+      if (inspirationErr) {
+        console.error("Daily verse fetch error:", inspirationErr);
+      }
 
       if (inspirationData) {
         setDailyVerse({
@@ -165,7 +215,9 @@ export default function DashboardPage() {
      song.artist?.toLowerCase().includes(bookmarkSearchQuery.toLowerCase()))
   );
 
-  if (loading) return <div className="p-4 text-center text-xs font-black uppercase tracking-widest text-zinc-400 animate-pulse">Synchronizing Dashboard Matrix...</div>;
+  if (loading) {
+  return <GlobalLoader message="LOADING DASHBOARD..." />;
+}
 
   return (
     <div className="p-4 md:p-4 max-w-7xl w-full mx-auto space-y-4 md:space-y-8 animate-in fade-in duration-150">
@@ -227,7 +279,9 @@ export default function DashboardPage() {
               return (
                 <div 
                   key={evt.id}
-                  className="bg-white border border-zinc-200 p-5 rounded-2xl shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-5 hover:border-blue-500 transition-all group"
+                  // ✅ SURGICAL FIX: Entire card is now clickable and routes to the event overview
+                  onClick={() => router.push(`/events/${evt.id}`)}
+                  className="bg-white border border-zinc-200 p-5 rounded-2xl shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-5 hover:border-blue-500 transition-all group cursor-pointer"
                 >
                   <div className="space-y-1">
                     <div className="flex items-center gap-1.5 flex-wrap">
@@ -250,12 +304,33 @@ export default function DashboardPage() {
                     )}
                   </div>
 
+                  {/* ✅ SURGICAL FIX: Async routing to bridge Event ID to Setlist ID */}
                   <button
                     type="button"
-                    onClick={() => router.push(`/events/${evt.id}`)}
-                    className="px-5 py-2.5 bg-zinc-50 border border-zinc-200 text-zinc-800 hover:bg-blue-600 hover:text-white hover:border-blue-500 rounded-xl text-xs font-black uppercase tracking-widest transition-all shadow-sm shrink-0 cursor-pointer text-center w-full sm:w-auto"
+                    onClick={async (e) => {
+                      e.stopPropagation(); 
+                      
+                      // 1. Ask Supabase for the first setlist attached to this specific event
+                      const { data } = await supabase
+                        .from("setlists")
+                        .select("id")
+                        .eq("event_id", evt.id)
+                        .limit(1)
+                        .maybeSingle();
+
+                      // 2. Route dynamically based on the result
+                      if (data?.id) {
+                        // Success! We found a setlist, jump straight into the Live Engine
+                        router.push(`/setlists/${data.id}/live`);
+                      } else {
+                        // No setlist exists yet! Redirect to the cockpit so they can build one.
+                        alert("No setlist built for this event yet! Redirecting to event cockpit...");
+                        router.push(`/events/${evt.id}`);
+                      }
+                    }}
+                    className="px-5 py-2.5 bg-blue-50 border border-blue-100 text-blue-600 hover:bg-blue-600 hover:text-white rounded-xl text-xs font-black uppercase tracking-widest transition-all shadow-sm shrink-0 cursor-pointer text-center w-full sm:w-auto"
                   >
-                    View Event
+                    Start Rehearsal
                   </button>
                 </div>
               );
