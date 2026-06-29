@@ -3,7 +3,7 @@
 import React, { useEffect, useState, useMemo, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { createClient } from "../../../utils/supabase/client";
-import { useEngine } from "../../../context/EngineContext";
+import { useEngine } from "../../context/EngineContext";
 
 // =======================================================
 // INTERFACES
