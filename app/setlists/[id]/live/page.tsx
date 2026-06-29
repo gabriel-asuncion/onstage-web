@@ -6,6 +6,8 @@ import { createClient } from "../../../../utils/supabase/client";
 import { useEngine } from "../../../context/EngineContext"; 
 import GlobalLoader from '../../../../components/GlobalLoader';
 
+import { useTimesync } from '../../../../hooks/useTimesync';
+
 // HOISTED TO GLOBAL SCOPE: Instantiates exactly once per tab instance to protect the WebSocket stream!
 const supabase = createClient();
 
@@ -207,10 +209,9 @@ const fetchAndDecodeAudio = async (url: string, key: string) => {
   }
 };
 
-const playZeroLatencyAudio = (key: string, volume: number = 1.0) => {
+const playZeroLatencyAudio = (key: string, volume: number = 1.0, time: number = 0) => {
   if (!globalAudioContext || !audioBufferCache[key]) return;
   
-  // Creates a temporary hardware node that plays instantly and destroys itself
   const source = globalAudioContext.createBufferSource();
   source.buffer = audioBufferCache[key];
   
@@ -219,7 +220,9 @@ const playZeroLatencyAudio = (key: string, volume: number = 1.0) => {
   
   source.connect(gainNode);
   gainNode.connect(globalAudioContext.destination);
-  source.start(0);
+  
+  // Schedules it on the hardware timeline (0 means instantly)
+  source.start(time); 
 };
 
 const playGuideCue = (rawSectionName: string) => {
@@ -264,6 +267,8 @@ export default function SetlistPerformanceRoomPage() {
 
   // Consume active profile states from your context simulation layer
   const { simulatedUserId, simulatedRole } = useEngine();
+
+  const { isSynced, getGlobalTime } = useTimesync();
   
 
   // Master Setlist Tracking States
@@ -429,11 +434,11 @@ export default function SetlistPerformanceRoomPage() {
     }
   }, []);
 
-  const triggerMetronomeSound = (beatNum: number) => {
-    if (!isMetronomeSoundEnabledRef.current) return;
-    const targetKey = beatNum === 1 ? "metronome_1" : "metronome_2";
-    playZeroLatencyAudio(targetKey, 1.0);
-  };
+  const triggerMetronomeSound = (beatNum: number, time: number = 0) => {
+  if (!isMetronomeSoundEnabledRef.current) return;
+  const targetKey = beatNum === 1 ? "metronome_1" : "metronome_2";
+  playZeroLatencyAudio(targetKey, 1.0, time);
+};
  
   // Floating scroll state anchors tracking fields
   const [showSyncBack, setShowSyncBack] = useState<boolean>(false);
@@ -780,6 +785,24 @@ export default function SetlistPerformanceRoomPage() {
           setQueuedTrackIndex(payload.trackIndex);
           setQueuedSectionIndex(payload.sectionIndex);
         }
+        // ✅ SURGICAL FIX: Catch takeover events and force the old MD to step down!
+        else if (payload.action === "MD_TAKEOVER") {
+          if (localPresenceUserRef.current?.isMD && localPresenceUserRef.current.id !== payload.newMdId) {
+            // We were the MD, but someone else just claimed it. Step down immediately.
+            const downgradedPayload = { ...localPresenceUserRef.current, isMD: false };
+            setLocalPresenceUser(downgradedPayload);
+            localPresenceUserRef.current = downgradedPayload;
+            
+            // Update our presence in the lobby to remove our crown
+            if (isChannelSubscribedRef.current) {
+              lobbyChannel.track(downgradedPayload);
+            }
+            
+            // Optional: Stop local playback so the new MD has a clean slate
+            executeLocalResetSequence();
+            alert("Music Director control was taken by another user.");
+          }
+        }
       })
       .subscribe((status) => {
         if (status === "SUBSCRIBED") {
@@ -940,7 +963,8 @@ export default function SetlistPerformanceRoomPage() {
       mountTargetSetlistTrackIndex(trackIdx, tracksList, true);
     } else {
       mountTargetSetlistTrackIndex(trackIdx, tracksList, false);
-      if (realtimeChannelRef.current) {
+      // ✅ SURGICAL FIX: Only the active MD can broadcast track changes to the band
+      if (localPresenceUser?.isMD && realtimeChannelRef.current) {
         realtimeChannelRef.current.send({
           type: "broadcast",
           event: "lobby_sync",
@@ -954,7 +978,9 @@ export default function SetlistPerformanceRoomPage() {
     const nextTrackIndex = playingTrackIndexRef.current + 1; 
     if (nextTrackIndex < tracksListRef.current.length) {
       mountTargetSetlistTrackIndex(nextTrackIndex, tracksListRef.current, false, false);
-      if (realtimeChannelRef.current) {
+      
+      // ✅ SURGICAL FIX: Only MD broadcasts the automatic track advancement
+      if (localPresenceUserRef.current?.isMD && realtimeChannelRef.current) {
         realtimeChannelRef.current.send({
           type: "broadcast",
           event: "lobby_sync",
@@ -965,7 +991,7 @@ export default function SetlistPerformanceRoomPage() {
         isPlayingRef.current = true;
         setIsPlayingFlow(true);
         if (localPresenceUserRef.current?.isMD) {
-          mdSectionStartTimeRef.current = Date.now();
+          mdSectionStartTimeRef.current = getGlobalTime();
         }
       }, 120);
     } else {
@@ -1145,34 +1171,55 @@ export default function SetlistPerformanceRoomPage() {
       const totalDurationMs = totalBeats * beatSpeedMsCurrent;
       
       // ==========================================
-      // 2. ABSOLUTE CLOCK ELAPSED MATH
+      // 2. ABSOLUTE CLOCK ELAPSED MATH & LOOKAHEAD
       // ==========================================
       
-      // ✅ SURGICAL FIX 3: Everyone uses the smooth timestamp now. Removed the Date.now() clock-drift trap!
-      let elapsedMs = timestamp - sectionStartTimeRef.current;
+      if (!mdSectionStartTimeRef.current) return;
+
+      // ✅ SURGICAL FIX 1: Pure Network Sync. No clock drift!
+      let elapsedMs = getGlobalTime() - mdSectionStartTimeRef.current;
+      
+      // If elapsed is negative, it means the MD broadcasted a future start time 
+      // and we are just waiting for that exact physical millisecond to arrive.
+      if (elapsedMs < 0) {
+        animationFrameRef.current = requestAnimationFrame(clockExecutionTick);
+        return; 
+      }
       
       // Split Audio (Real) Time and Visual (Delayed) Time
-      const trueElapsedMs = Math.max(0, elapsedMs);
+      const trueElapsedMs = elapsedMs;
       const visualElapsedMs = Math.max(0, elapsedMs - audioLatencyOffsetMs);
       
-      
-      // 1. PROGRESS BAR (Runs on delayed Visual Time)
+      // 1. PROGRESS BAR (Visual Time)
       const progressRatio = Math.min(1, visualElapsedMs / totalDurationMs);
       if (backdropProgressRef.current) backdropProgressRef.current.style.transform = `scaleX(${progressRatio})`;
       if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = `scaleX(${progressRatio})`;
 
-      // 2. AUDIO METRONOME & CUES (Runs on true, exact Time)
-      const currentAudioBeatPulse = Math.floor(trueElapsedMs / beatSpeedMsCurrent) % 4 + 1;
-      if (currentAudioBeatPulse !== lastAudioBeatRef.current) {
-        lastAudioBeatRef.current = currentAudioBeatPulse;
-        triggerMetronomeSound(currentAudioBeatPulse);
+      // ✅ SURGICAL FIX 2: THE HARDWARE LOOKAHEAD SCHEDULER (Immune to React lag)
+      const lookaheadMs = 150; 
+      const timeToNextBeatMs = beatSpeedMsCurrent - (trueElapsedMs % beatSpeedMsCurrent);
+
+      // If the next beat is going to happen within our 150ms lookahead window...
+      if (timeToNextBeatMs <= lookaheadMs) {
+        const absoluteBeatIndex = Math.floor(trueElapsedMs / beatSpeedMsCurrent) + 1;
+        
+        if (absoluteBeatIndex > lastAudioBeatRef.current) {
+          lastAudioBeatRef.current = absoluteBeatIndex;
+          const nextBeatPulse = (absoluteBeatIndex % 4) + 1;
+          
+          // Calculate the exact hardware time it should play, and hand it off to the Web Audio API!
+          const audioContextTimeDelay = timeToNextBeatMs / 1000;
+          const scheduleTime = (globalAudioContext?.currentTime || 0) + audioContextTimeDelay;
+          
+          triggerMetronomeSound(nextBeatPulse, scheduleTime);
+        }
       }
 
       // 3. VISUAL METRONOME UI (Runs on delayed Visual Time)
       const currentVisualBeatPulse = Math.floor(visualElapsedMs / beatSpeedMsCurrent) % 4 + 1;
       if (currentVisualBeatPulse !== lastVisualBeatRef.current) {
         lastVisualBeatRef.current = currentVisualBeatPulse;
-        updateMetronomeUI(currentVisualBeatPulse, true); // ✅ FAST DOM MUTATION
+        updateMetronomeUI(currentVisualBeatPulse, true); 
       }
       
       // Guide Cues trigger based on True Time
@@ -1357,7 +1404,7 @@ export default function SetlistPerformanceRoomPage() {
       isPlayingRef.current = true;
       setIsPlayingFlow(true);
 
-      const startTimestamp = Date.now();
+      const startTimestamp = getGlobalTime() + 150; 
       mdSectionStartTimeRef.current = startTimestamp;
 
       if (realtimeChannelRef.current) {
@@ -1377,7 +1424,8 @@ export default function SetlistPerformanceRoomPage() {
 
   function handleResetFlowTrigger() {
     executeLocalResetSequence();
-    if (realtimeChannelRef.current) {
+    // ✅ SURGICAL FIX: Only MD can broadcast the STOP command
+    if (localPresenceUser?.isMD && realtimeChannelRef.current) {
       realtimeChannelRef.current.send({
         type: "broadcast",
         event: "lobby_sync",
@@ -1441,7 +1489,18 @@ export default function SetlistPerformanceRoomPage() {
           playingSectionsRef.current = targetTrackItem.custom_structure || [];
         }
 
-        const jumpTime = Date.now();
+        let jumpTime = getGlobalTime() + 150;
+
+        // ✅ SURGICAL FIX: Continuous Metronome Grid Snapping
+        // Instead of starting the section blindly in 150ms, we snap the start time
+        // to the exact next beat of the already playing metronome grid!
+        if (mdSectionStartTimeRef.current && activeSong) {
+          const beatSpeedMs = (60 / (activeSong.tempo || 75)) * 1000;
+          const elapsed = getGlobalTime() - mdSectionStartTimeRef.current;
+          const beatsElapsed = Math.ceil((elapsed + 150) / beatSpeedMs);
+          jumpTime = mdSectionStartTimeRef.current + (beatsElapsed * beatSpeedMs);
+        }
+
         mdSectionStartTimeRef.current = jumpTime;
         handleSelectSectionDirectlyLocally(index);
 
@@ -1702,25 +1761,39 @@ export default function SetlistPerformanceRoomPage() {
   const highlightedTargetSectionName = sections[currentSectionIndex]?.section_name || "FLOW";
   const upcomingTrackItem = tracksList[currentTrackIndex + 1] || null;
 
-  const activeMDConnection = onlineUsers.find(u => u.isMD);
-  const isReadOnlyMode = activeMDConnection !== undefined && activeMDConnection.id !== localPresenceUser?.id;
   const isCurrentlyMD = localPresenceUser?.isMD === true;
+  const activeMDConnection = onlineUsers.find(u => u.isMD && u.id !== localPresenceUser?.id);
+  const isReadOnlyMode = !isCurrentlyMD && (activeMDConnection !== undefined);
 
   const handleToggleMusicDirectorMode = () => {
     if (!localPresenceUser) return;
 
     const alternateMD = onlineUsers.find(u => u.isMD && u.id !== localPresenceUser.id);
-    if (alternateMD && !localPresenceUser.isMD) {
-      alert(`Access Denied: ${alternateMD.name} is currently driving this setlist as the Music Director.`);
-      return;
+    const isTakingOver = !localPresenceUser.isMD; // Are we turning it ON?
+
+    if (alternateMD && isTakingOver) {
+      // ✅ Allow them to steal it, but warn them first
+      const confirmSteal = confirm(`${alternateMD.name} is currently driving. Do you want to force takeover as Music Director?`);
+      if (!confirmSteal) return;
     }
 
-    const updatedPresencePayload = { ...localPresenceUser, isMD: !localPresenceUser.isMD };
+    // 1. Update our local UI instantly
+    const updatedPresencePayload = { ...localPresenceUser, isMD: isTakingOver };
     setLocalPresenceUser(updatedPresencePayload);
     localPresenceUserRef.current = updatedPresencePayload;
 
     if (realtimeChannelRef.current && isChannelSubscribedRef.current) {
+      // 2. Tell the lobby we changed our state
       realtimeChannelRef.current.track(updatedPresencePayload);
+
+      // 3. ✅ SURGICAL FIX: If we are claiming the MD role, yell at the old MD to step down!
+      if (isTakingOver) {
+        realtimeChannelRef.current.send({
+          type: "broadcast",
+          event: "lobby_sync",
+          payload: { action: "MD_TAKEOVER", newMdId: localPresenceUser.id }
+        });
+      }
     }
   };
 
@@ -2373,7 +2446,7 @@ export default function SetlistPerformanceRoomPage() {
         </div>
       )}
       {/* ======================================================= */}
-      {/* ✅ SURGICAL ADDITION: QUICK JUMP SCRUBBER OVERLAY         */}
+      {/* ✅ SURGICAL FIX: QUICK JUMP SCRUBBER OVERLAY              */}
       {/* ======================================================= */}
       {sections.length > 0 && (
         <div
@@ -2381,13 +2454,16 @@ export default function SetlistPerformanceRoomPage() {
           onPointerMove={isScrubberActive ? handleScrubberPointerMove : undefined}
           onPointerUp={handleScrubberPointerUp}
           onPointerCancel={handleScrubberPointerUp}
-          className={`fixed right-0 top-[15%] bottom-[15%] z-[90000] flex flex-col justify-center py-4 pl-12 pr-1 md:pr-3 touch-none transition-all duration-300 select-none ${
+          // 1. Replaced percentage bounds with hard pixel bounds (top-[140px]) to completely clear the header.
+          // 2. Added overflow-y-auto so if the list is massive, it can safely scroll if needed.
+          className={`fixed right-0 top-[140px] bottom-24 z-40 flex flex-col overflow-y-auto custom-scrollbar pl-12 pr-1 md:pr-3 touch-none transition-all duration-300 select-none ${
             isScrubberActive ? "w-48" : "w-10"
           }`}
         >
-          {/* GRADIENT COMPLETELY REMOVED */}
-
-          <div className="relative z-10 flex flex-col items-end gap-3.5 py-4 transition-all duration-300">
+          {/* 3. Replaced parent 'justify-center' with 'my-auto' here.
+                 This centers short lists perfectly, but prevents tall lists from bleeding upward! 
+                 4. Shrunk the vertical gap slightly (gap-2) to fit more sections on mobile screens. */}
+          <div className="relative z-10 flex flex-col items-end gap-2 md:gap-3 py-4 my-auto transition-all duration-300 w-full min-h-min">
             {sections.map((sec, idx) => {
               const isHovered = scrubberHoverIndex === idx;
               const isActive = currentSectionIndex === idx;

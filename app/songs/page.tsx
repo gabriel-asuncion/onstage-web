@@ -247,7 +247,7 @@ export default function SongsListPage() {
           return (
             <div 
               key={song.id} 
-              onClick={() => router.push(`/songs/${song.id}/edit`)} 
+              onClick={() => router.push(`/songs/${song.id}`)}
               className="p-5 rounded-2xl border border-zinc-200 bg-white hover:bg-zinc-50/50 transition-all cursor-pointer flex flex-col justify-between min-h-[145px] relative group shadow-sm overflow-hidden"
             >
               <div className="space-y-1 pr-10">

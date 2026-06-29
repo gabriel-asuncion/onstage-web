@@ -114,6 +114,24 @@ export default function DashboardPage() {
 
   async function loadDashboardMetrics() {
     try {
+      const { data: authData } = await supabase.auth.getUser();
+
+      if (authData?.user) {
+        // Fetch their real database profile
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("full_name, team_id")
+          .eq("id", authData.user.id)
+          .maybeSingle();
+
+        // If they don't have a profile, or haven't finished setting up their name, bounce them!
+        if (!profile || !profile.full_name) {
+          console.log("🚨 Incomplete profile detected. Rerouting to onboarding...");
+          router.push("/onboarding");
+          return; // Strictly stop the dashboard from loading any further!
+        }
+      }
+
       // 1. Calculate Greeting Locally
       const dayOfYearHash = Math.floor(Date.now() / 86400000);
       const greetingIndex = dayOfYearHash % GLOBAL_GREETINGS_DICTIONARY.length;
@@ -126,6 +144,8 @@ export default function DashboardPage() {
       const localDay = String(now.getDate()).padStart(2, '0');
       const todayString = `${localYear}-${localMonth}-${localDay}`;
 
+      
+
       const { data: inspirationData, error: inspirationErr } = await supabase
         .from("daily_inspiration")
         .select("verse_text, verse_reference")
@@ -137,13 +157,34 @@ export default function DashboardPage() {
       }
 
       if (inspirationData) {
+        // A verse already exists for today! Just use it.
         setDailyVerse({
           text: inspirationData.verse_text,
           reference: inspirationData.verse_reference
         });
       } else {
+        // NO VERSE FOUND FOR TODAY! 
+        // 1. Pick a consistent verse from the fallback array
         const verseIndex = dayOfYearHash % FALLBACK_VERSES.length;
-        setDailyVerse(FALLBACK_VERSES[verseIndex]);
+        const selectedFallback = FALLBACK_VERSES[verseIndex];
+
+        // 2. Instantly show it in the UI so the user isn't waiting
+        setDailyVerse(selectedFallback);
+
+        // 3. Silently auto-seed this into Supabase so it's there for the next user today
+        const { error: insertErr } = await supabase
+          .from("daily_inspiration")
+          .insert([{
+            target_date: todayString,
+            verse_text: selectedFallback.text,
+            verse_reference: selectedFallback.reference
+          }]);
+
+        if (insertErr) {
+          // Note: If 5 users log in at exactly midnight, you might get a "duplicate key" error here.
+          // That is totally fine, it just means someone else beat them to the insert!
+          console.error("Auto-seed daily verse error:", insertErr);
+        }
       }
 
       // ✅ 3. PHASE 3 FILTER: Fetch events strictly bound to the active user's Team ID

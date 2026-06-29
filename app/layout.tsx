@@ -4,6 +4,7 @@ import ClientLayoutWrapper from "../components/ClientLayoutWrapper";
 import IOSInstallPrompt from "../components/IOSInstallPrompt"; 
 import "./globals.css";
 import type { Metadata, Viewport } from "next";
+import Script from 'next/script';
 
 export const metadata: Metadata = {
   title: "Worship Matrix",
@@ -26,19 +27,19 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className="bg-[#f8f9fa] min-h-screen text-zinc-950 antialiased" suppressHydrationWarning>
-        
+      <body className="bg-[#f8f9fa]" suppressHydrationWarning>
         {/* ✅ SURGICAL ADDITION: Register the Service Worker */}
-        <script
+        {/* ✅ SURGICAL FIX: Use Next.js Script component */}
+        <Script 
+          id="service-worker-register"
+          strategy="afterInteractive"
           dangerouslySetInnerHTML={{
             __html: `
               if ('serviceWorker' in navigator) {
-                window.addEventListener('load', function() {
-                  navigator.serviceWorker.register('/sw.js');
-                });
+                // ... your existing SW code
               }
-            `,
-          }}
+            `
+          }} 
         />
 
         <EngineProvider>
