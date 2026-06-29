@@ -329,6 +329,9 @@ export default function SetlistPerformanceRoomPage() {
   const [showChords, setShowChords] = useState<boolean>(true); 
   const [isMetronomeSoundEnabled, setIsMetronomeSoundEnabled] = useState<boolean>(false); // ✅ Metronome Toggle State
 
+  const [isSimplifiedMode, setIsSimplifiedMode] = useState<boolean>(false);
+  const simplifiedProgressBarRef = useRef<HTMLDivElement | null>(null);
+
   const isMetronomeSoundEnabledRef = useRef<boolean>(false);
   useEffect(() => {
     isMetronomeSoundEnabledRef.current = isMetronomeSoundEnabled;
@@ -1195,6 +1198,9 @@ export default function SetlistPerformanceRoomPage() {
       if (backdropProgressRef.current) backdropProgressRef.current.style.transform = `scaleX(${progressRatio})`;
       if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = `scaleX(${progressRatio})`;
 
+      // ✅ SURGICAL ADDITION: Drive the new Musician Stack progress bar
+      if (simplifiedProgressBarRef.current) simplifiedProgressBarRef.current.style.transform = `scaleX(${progressRatio})`;
+
       // ✅ SURGICAL FIX 2: THE HARDWARE LOOKAHEAD SCHEDULER (Immune to React lag)
       const lookaheadMs = 150; 
       const timeToNextBeatMs = beatSpeedMsCurrent - (trueElapsedMs % beatSpeedMsCurrent);
@@ -1973,13 +1979,115 @@ export default function SetlistPerformanceRoomPage() {
         </div>
       </div>
 
-      <div 
-        ref={scrollContainerRef}
-        className="flex-1 overflow-y-auto p-4 md:p-8 pt-4 custom-scrollbar pb-64" // ✅ Increased pb-64 to let the last line scroll all the way to the center of the screen
-      >
-        <div className="max-w-5xl w-full mx-auto space-y-4 md:space-y-6">
-          
-          {memoizedSongAstTree.map((section, idx) => {
+      {/* ======================================================================= */}
+      {/* --- SHEET CANVAS PANE VIEW (STANDARD OR SIMPLIFIED) ------------------- */}
+      {/* ======================================================================= */}
+      
+      {isSimplifiedMode && (
+        // ✅ SURGICAL ADDITION: The 3-Stack Musician Teleprompter View
+        <div className="flex-1 flex flex-col items-center justify-center p-4 md:p-8 bg-[#f8f9fa] overflow-hidden relative z-0">
+          {(() => {
+            // Helper to extract exact section data and timings
+            const getSecData = (idx: number) => {
+              const ast = memoizedSongAstTree[idx];
+              if (!ast) return null;
+              
+              // ✅ SURGICAL FIX: Added all missing fallback properties so TypeScript is perfectly happy!
+              const timings = activeSong?.section_timings?.[ast.section_name] || { measures: 4, beats: 0, repeats: 0, head_m: 0, tail_m: 0 };
+              
+              const repeats = (timings.repeats || 0) + 1;
+              const totalM = ((timings.measures || 0) * repeats) + (timings.head_m || 0) + (timings.tail_m || 0);
+              return { ast, totalM };
+            };
+
+            const prevSec = getSecData(currentSectionIndex - 1);
+            const currSec = getSecData(currentSectionIndex);
+            
+            // Handle cross-section manual queueing
+            const nextIdx = (queuedSectionIndex !== null && queuedTrackIndex === currentTrackIndex) 
+              ? queuedSectionIndex 
+              : currentSectionIndex + 1;
+            const nextSec = getSecData(nextIdx);
+
+            // Helper to flatten chords from a specific line
+            const getChords = (ast: any, lineIdx: number) => {
+              if (!ast || !ast.lines[lineIdx]) return [];
+              return ast.lines[lineIdx].words.flatMap((w: any) => w.chords);
+            };
+
+            return (
+              <div className="w-full max-w-4xl flex flex-col gap-4 md:gap-6 items-center mt-[-8vh]">
+                
+                {/* 1. TOP STACK (PREVIOUS) */}
+                <div className="w-11/12 max-w-3xl h-16 md:h-20 bg-zinc-100 border border-zinc-200 rounded-2xl flex items-center justify-between px-6 opacity-50 shadow-inner">
+                  <span className="font-black text-[10px] uppercase text-zinc-400 bg-zinc-200/50 px-3 py-1 rounded-full">{prevSec ? prevSec.ast.section_name : "START"}</span>
+                  <div className="flex items-center gap-3">
+                    {prevSec && getChords(prevSec.ast, prevSec.ast.lines.length - 1).map((ch: string, i: number) => (
+                      <span key={i} className="font-mono font-bold text-zinc-400 text-sm md:text-base">{ch}</span>
+                    ))}
+                  </div>
+                  <span className="font-mono text-[10px] font-bold text-zinc-400">{prevSec ? `${prevSec.totalM}M` : "--"}</span>
+                </div>
+
+                {/* 2. MIDDLE STACK (CURRENT LINE) */}
+                <div className="w-full h-32 md:h-44 bg-white border-2 border-blue-500 rounded-3xl flex flex-col justify-center px-6 md:px-10 shadow-2xl relative overflow-hidden ring-8 ring-blue-500/10">
+                  <div ref={simplifiedProgressBarRef} className="absolute bottom-0 left-0 h-2 md:h-3 bg-blue-500 origin-left scale-x-0 w-full z-0" style={{ willChange: 'transform' }} />
+                  
+                  <div className="relative z-10 flex items-center justify-between w-full h-full">
+                    <div className="flex flex-col gap-2 w-[20%] shrink-0">
+                       <span className="font-black text-[10px] md:text-xs uppercase text-white bg-blue-600 px-4 py-1.5 rounded-full inline-block w-max shadow-sm">{currSec ? currSec.ast.section_name : "FLOW"}</span>
+                    </div>
+
+                    {/* Displays exactly the chords from the currently active line */}
+                    <div className="flex-1 flex flex-wrap items-center justify-center gap-4 md:gap-6 px-4">
+                      {currSec && getChords(currSec.ast, activeLineIndex).length > 0 ? (
+                        getChords(currSec.ast, activeLineIndex).map((ch: string, i: number) => (
+                          <span key={i} className="font-mono font-black text-blue-600 text-4xl md:text-6xl drop-shadow-sm">{ch}</span>
+                        ))
+                      ) : (
+                        <span className="font-mono font-bold text-zinc-300 text-xl md:text-2xl italic">---</span>
+                      )}
+                    </div>
+
+                    <div className="w-[20%] shrink-0 flex justify-end">
+                       <span className="font-mono text-lg md:text-2xl font-black text-zinc-300">{currSec ? `${currSec.totalM}M` : "--"}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 3. BOTTOM STACK (NEXT QUEUED) */}
+                <div className="w-11/12 max-w-3xl h-16 md:h-20 bg-white border border-zinc-200 rounded-2xl flex items-center justify-between px-6 opacity-90 shadow-sm relative">
+                  {(queuedSectionIndex !== null && queuedTrackIndex === currentTrackIndex) && (
+                    <div className="absolute -top-2 -right-2 bg-purple-600 text-white text-[8px] font-black uppercase px-2 py-0.5 rounded shadow-sm z-20 animate-pulse">⚡ QUEUED</div>
+                  )}
+                  <span className="font-black text-[10px] uppercase text-zinc-500 bg-zinc-100 px-3 py-1 rounded-full">
+                    {nextSec ? nextSec.ast.section_name : (upcomingTrackItem ? `NEXT: ${upcomingTrackItem.songs?.title}` : "END")}
+                  </span>
+                  <div className="flex items-center gap-3">
+                    {nextSec && getChords(nextSec.ast, 0).map((ch: string, i: number) => (
+                      <span key={i} className="font-mono font-bold text-zinc-600 text-sm md:text-base">{ch}</span>
+                    ))}
+                  </div>
+                  <span className="font-mono text-[10px] font-bold text-zinc-400">{nextSec ? `${nextSec.totalM}M` : "--"}</span>
+                </div>
+
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {!isSimplifiedMode && (
+        // =========================================================
+        // ORIGINAL STANDARD SHEET VIEW
+        // =========================================================
+        <div 
+          ref={scrollContainerRef}
+          className="flex-1 overflow-y-auto p-4 md:p-8 pt-4 custom-scrollbar pb-64" // ✅ Increased pb-64 to let the last line scroll all the way to the center of the screen
+        >
+          <div className="max-w-5xl w-full mx-auto space-y-4 md:space-y-6">
+            
+            {memoizedSongAstTree.map((section, idx) => {
             const isThisSectionActivePlayback = isPlayingFlow && playingTrackIndex === currentTrackIndex && currentSectionIndex === idx;
             const isThisSectionQueuedNext = queuedTrackIndex === currentTrackIndex && queuedSectionIndex === idx;
             const isStagedUnstartedTarget = !isPlayingFlow && currentSectionIndex === idx;
@@ -2080,6 +2188,7 @@ export default function SetlistPerformanceRoomPage() {
           )}
         </div>
       </div>
+      )} {/* Closes the !isSimplifiedMode block */}
 
       {showSyncBack && (
         <button
@@ -2144,6 +2253,30 @@ export default function SetlistPerformanceRoomPage() {
                   }`}
                 >
                   🙈 Hide Chords
+                </button>
+              </div>
+            </div>
+            {/* ✅ SURGICAL ADDITION: Musician View Mode Toggle */}
+            <div className="space-y-2 pt-1">
+              <label className="text-[10px] font-black text-zinc-400 uppercase tracking-wider block">Setlist View Mode</label>
+              <div className="grid grid-cols-2 gap-1 bg-white border p-1 rounded-xl shadow-inner">
+                <button
+                  type="button"
+                  onClick={() => setIsSimplifiedMode(false)}
+                  className={`py-2 text-center rounded-lg font-black text-[10px] uppercase transition-all cursor-pointer ${
+                    !isSimplifiedMode ? "bg-zinc-900 text-white shadow-md" : "text-zinc-500 hover:text-zinc-800 bg-zinc-50/20"
+                  }`}
+                >
+                  📄 Standard Sheet
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsSimplifiedMode(true)}
+                  className={`py-2 text-center rounded-lg font-black text-[10px] uppercase transition-all cursor-pointer ${
+                    isSimplifiedMode ? "bg-zinc-900 text-white shadow-md" : "text-zinc-500 hover:text-zinc-800 bg-zinc-50/20"
+                  }`}
+                >
+                  🎸 Musician Stack
                 </button>
               </div>
             </div>
