@@ -123,8 +123,7 @@ const getSectionAbbreviation = (name: string): string => {
   return name.split(' ').slice(0, 2).map(w => w[0]).join('').toUpperCase();
 };
 
-// ✅ SURGICAL PERFORMANCE FIX: O(1) Memoized Rendering
-// This stops React from rebuilding the entire song when the playhead moves down a line
+// ✅ SURGICAL PERFORMANCE FIX & UI OVERHAUL: O(1) Memoized Rendering
 const MemoizedLyricLine = React.memo(({ 
   line, 
   sectionIndex, 
@@ -132,7 +131,9 @@ const MemoizedLyricLine = React.memo(({
   isCurrentlyPlayingLine, 
   showChords, 
   lyricsFontSize, 
-  lineSpacing 
+  lineSpacing,
+  chordFormat,      // ✅ Added prop
+  activeDisplayKey  // ✅ Added prop
 }: {
   line: ParsedLineToken;
   sectionIndex: number;
@@ -141,30 +142,40 @@ const MemoizedLyricLine = React.memo(({
   showChords: boolean;
   lyricsFontSize: number;
   lineSpacing: number;
+  chordFormat: "Key" | "Numbers"; 
+  activeDisplayKey: string;
 }) => {
   return (
     <div 
       id={`line-${sectionIndex}-${lineIndex}`}
-      style={{ paddingBottom: `${lineSpacing}px` }} 
-      className={`flex flex-col sm:flex-row sm:items-start justify-between gap-2 border-b border-zinc-100/50 last:border-0 p-3 -mx-3 rounded-2xl transition-all duration-300 ${
+      style={{ paddingBottom: `${Math.max(2, lineSpacing - 12)}px` }} 
+      className={`flex flex-col sm:flex-row sm:items-start justify-between gap-1 border-b border-zinc-100/40 last:border-0 px-2 py-1 -mx-2 rounded-xl transition-all duration-300 ${
         isCurrentlyPlayingLine 
-          ? "bg-zinc-100 shadow-sm scale-[1.005] border-transparent z-20" 
+          ? "bg-zinc-100/80 shadow-sm scale-[1.002] border-transparent z-20" 
           : ""
       }`}
     >
-      <div className="flex flex-wrap items-end gap-x-2 gap-y-3.5 py-0.5 leading-none flex-1">
+      <div className="flex flex-wrap items-end gap-x-1.5 gap-y-2.5 leading-none flex-1 mt-1">
         {line.words.map((wordObj, wIdx) => (
-          <div key={wIdx} className="flex flex-col items-start min-h-[36px] justify-end">
+          <div key={wIdx} className="flex flex-col items-start justify-end">
             {showChords && wordObj.chords.length > 0 && (
-              <div className="text-[11px] font-mono font-black tracking-tight pb-0.5 select-none text-blue-600">
-                {wordObj.chords.map((ch, cIdx) => (
-                  <span key={cIdx} className="mr-0.5 px-0.5 rounded border bg-blue-50/60 border-blue-100/40">{ch}</span>
-                ))}
+              <div className="w-0 overflow-visible whitespace-nowrap">
+                <div className="text-[14px] md:text-[15px] font-['Roboto_Condensed'] font-bold tracking-tight pb-0.5 select-none text-blue-600 flex">
+                  {wordObj.chords.map((ch, cIdx) => {
+                    // ✅ Apply Roman Numeral Translation if requested
+                    const displayChord = chordFormat === "Numbers" ? chordToRoman(ch, activeDisplayKey) : ch;
+                    return (
+                      <span key={cIdx} className="mr-1 px-1 rounded border bg-blue-50/60 border-blue-100/40 inline-block leading-none">
+                        {displayChord}
+                      </span>
+                    );
+                  })}
+                </div>
               </div>
             )}
             <div 
-              style={{ fontSize: `${lyricsFontSize}px` }}
-              className="font-sans font-bold tracking-tight transition-all duration-100 uppercase text-zinc-950"
+              style={{ fontSize: `${lyricsFontSize}px`, fontFamily: "'Roboto Condensed', sans-serif" }}
+              className="font-medium tracking-tight transition-all duration-100 text-zinc-950 uppercase"
             >
               {wordObj.word || " "}
             </div>
@@ -180,6 +191,17 @@ const MemoizedLyricLine = React.memo(({
   );
 });
 MemoizedLyricLine.displayName = "MemoizedLyricLine";
+
+const getSectionColorClass = (name: string): string => {
+  if (!name) return 'border-zinc-300 text-zinc-500';
+  const lower = name.toLowerCase();
+  if (lower.includes('verse')) return 'border-[#71cbf4] text-[#4db3df] bg-[#eefaff]'; // Light Blue
+  if (lower.includes('chorus')) return 'border-[#fcbca0] text-[#ea9772] bg-[#fff5f0]'; // Orange
+  if (lower.includes('pre')) return 'border-[#fbd277] text-[#e0a82e] bg-[#fffbf0]'; // Yellow
+  if (lower.includes('bridge')) return 'border-[#d0a7f1] text-[#aa73d7] bg-[#fbf5ff]'; // Purple
+  if (lower.includes('intro') || lower.includes('outro')) return 'border-[#a7f1d0] text-[#69c79e] bg-[#f0fdf6]'; // Green
+  return 'border-zinc-300 text-zinc-500 bg-zinc-50'; // Default Gray
+};
 
 // ✅ SURGICAL ADDITION: Web Audio API Engine for Zero-Latency Playback
 let globalAudioContext: AudioContext | null = null;
@@ -259,6 +281,56 @@ const transposeSingleNote = (note: string, semitones: number): string => {
   return CHROMATIC_SCALE[(idx + semitones + 12) % 12];
 };
 
+const chordToRomanBase = (bassStr: string, activeKey: string): string => {
+  const match = bassStr.match(/^([A-G][#b]?)(.*)$/);
+  if (!match) return bassStr;
+  const chordRoot = match[1];
+  const keyBase = activeKey.replace(/m$/, '');
+  const rootIdx = CHROMATIC_SCALE.indexOf(normalizeKeyNote(keyBase));
+  const chordIdx = CHROMATIC_SCALE.indexOf(normalizeKeyNote(chordRoot));
+  if (rootIdx === -1 || chordIdx === -1) return bassStr;
+  const diff = (chordIdx - rootIdx + 12) % 12;
+  const romanBases = ["I", "♭II", "II", "♭III", "III", "IV", "♭V", "V", "♭VI", "VI", "♭VII", "VII"];
+  return romanBases[diff] + match[2];
+};
+
+const chordToRoman = (chordStr: string, activeKey: string): string => {
+  // Recursively handle slash chords (e.g., G/B -> I/III)
+  if (chordStr.includes('/')) {
+    const [main, bass] = chordStr.split('/');
+    return `${chordToRoman(main, activeKey)}/${chordToRomanBase(bass, activeKey)}`;
+  }
+
+  const match = chordStr.match(/^([A-G][#b]?)(.*)$/);
+  if (!match) return chordStr;
+
+  const chordRoot = match[1];
+  let suffix = match[2];
+
+  const keyBase = activeKey.replace(/m$/, '');
+  const rootIdx = CHROMATIC_SCALE.indexOf(normalizeKeyNote(keyBase));
+  const chordIdx = CHROMATIC_SCALE.indexOf(normalizeKeyNote(chordRoot));
+
+  if (rootIdx === -1 || chordIdx === -1) return chordStr;
+
+  const diff = (chordIdx - rootIdx + 12) % 12;
+  const romanBases = ["I", "♭II", "II", "♭III", "III", "IV", "♭V", "V", "♭VI", "VI", "♭VII", "VII"];
+  let roman = romanBases[diff];
+
+  // Detect Minor or Diminished qualities and cast to lowercase
+  if (suffix.match(/^m(?!aj)/)) {
+    roman = roman.toLowerCase();
+    suffix = suffix.replace(/^m/, '');
+  } else if (suffix.startsWith('-')) {
+    roman = roman.toLowerCase();
+    suffix = suffix.replace(/^-/, '');
+  } else if (suffix.startsWith('dim') || suffix.startsWith('°')) {
+    roman = roman.toLowerCase();
+  }
+
+  return `${roman}${suffix}`;
+};
+
 
 export default function SetlistPerformanceRoomPage() {
   const router = useRouter();
@@ -327,6 +399,7 @@ export default function SetlistPerformanceRoomPage() {
   // Accessibility & Layout Preference Configurations
   const [lyricsFontSize, setLyricsFontSize] = useState<number>(16);
   const [showChords, setShowChords] = useState<boolean>(true); 
+  const [chordFormat, setChordFormat] = useState<"Key" | "Numbers">("Key");
   const [isMetronomeSoundEnabled, setIsMetronomeSoundEnabled] = useState<boolean>(false); // ✅ Metronome Toggle State
 
   const [isSimplifiedMode, setIsSimplifiedMode] = useState<boolean>(false);
@@ -352,6 +425,7 @@ export default function SetlistPerformanceRoomPage() {
   const [lineSpacing, setLineSpacing] = useState<number>(16); 
   const [isMdLockModalOpen, setIsMdLockModalOpen] = useState<boolean>(false); // ✅ SURGICAL FIX: Added modal state
 
+  const [isAddBlockModalOpen, setIsAddBlockModalOpen] = useState<boolean>(false);
   // ✅ SURGICAL ADDITION: Background loop for the Settings Modal Test Sync
   useEffect(() => {
     let reqId: number;
@@ -400,6 +474,59 @@ export default function SetlistPerformanceRoomPage() {
   const [onlineUsers, setOnlineUsers] = useState<{ id: string; name: string; initials: string; bg: string; connectionId?: string; avatar?: string | null; isMD?: boolean; }[]>([]);
   const [localPresenceUser, setLocalPresenceUser] = useState<{ id: string; name: string; initials: string; bg: string; connectionId?: string; avatar?: string | null; isMD?: boolean; } | null>(null);
  
+  // ✅ SURGICAL ADDITION: Admin Auth State
+  const [isAdmin, setIsAdmin] = useState(false);
+
+
+  useEffect(() => {
+    async function fetchCurrentPresenceIdentity() {
+      // 1. Prioritize the REAL Supabase authenticated user first
+      let targetUserId = null;
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      if (user) {
+        targetUserId = user.id;
+      } else if (simulatedUserId && simulatedUserId !== "00000000-0000-0000-0000-000000000000") {
+        targetUserId = simulatedUserId;
+      }
+
+      if (targetUserId) {
+        // ✅ SURGICAL FIX: Ask the database for the official role column!
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("full_name, avatar_url, role")
+          .eq("id", targetUserId)
+          .maybeSingle();
+
+        // 2. The Database is the primary source of truth. 
+        // (We only let the DevSimulator override if you actively toggled it to 'admin')
+        const isDbAdmin = profile?.role === "admin";
+        setIsAdmin(simulatedRole === "admin" || (simulatedRole !== "member" && isDbAdmin));
+
+        const displayName = profile?.full_name || "Simulated Account";
+        const initials = displayName.split(" ").map((n: string) => n[0]).join("").slice(0, 2).toUpperCase() || "U";
+        
+        const colorPresets = ["bg-red-600", "bg-blue-600", "bg-purple-600", "bg-emerald-600", "bg-amber-600", "bg-indigo-600"];
+        const idCharCodeSum = targetUserId.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
+        const assignedBg = colorPresets[idCharCodeSum % colorPresets.length];
+
+        const identityPayload = { 
+          id: targetUserId, 
+          connectionId: `${targetUserId}-${Math.random().toString(36).substring(2, 7)}`, 
+          name: displayName, 
+          initials, 
+          bg: assignedBg,
+          avatar: profile?.avatar_url || null,
+          isMD: false
+        };
+
+        localPresenceUserRef.current = identityPayload;
+        setLocalPresenceUser(identityPayload);
+      }
+    }
+    fetchCurrentPresenceIdentity();
+  }, [simulatedUserId, simulatedRole]);
+
   // Tracking references
   const localPresenceUserRef = useRef<any>(null);
   const isChannelSubscribedRef = useRef<boolean>(false);
@@ -459,6 +586,8 @@ export default function SetlistPerformanceRoomPage() {
   const [queuedSectionIndex, setQueuedSectionIndex] = useState<number | null>(null);
   const queuedSectionIndexRef = useRef<number | null>(null);
   const clickTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const pendingQuantizedJumpRef = useRef<{ trackIndex: number; sectionIndex: number; jumpTime: number } | null>(null);
 
   // ✅ SURGICAL REFACTOR: Smart dynamic preloader decodes directly to RAM
   useEffect(() => {
@@ -654,13 +783,19 @@ export default function SetlistPerformanceRoomPage() {
       }
 
       if (targetUserId) {
-        const { data: profile } = await supabase
-          .from("profiles")
-          .select("full_name, avatar_url")
-          .eq("id", targetUserId)
-          .maybeSingle();
+              // ✅ SURGICAL FIX: Added 'role' to the select query
+              const { data: profile } = await supabase
+                .from("profiles")
+                .select("full_name, avatar_url, role") 
+                .eq("id", targetUserId)
+                .maybeSingle();
 
-        const displayName = profile?.full_name || "Simulated Account";
+              // Fallback to actual DB role if the simulator isn't currently overriding it
+              if (!simulatedRole && profile?.role === "admin") {
+                setIsAdmin(true);
+              }
+
+              const displayName = profile?.full_name || "Simulated Account";
         const initials = displayName.split(" ").map((n: string) => n[0]).join("").slice(0, 2).toUpperCase() || "U";
         
         const colorPresets = ["bg-red-600", "bg-blue-600", "bg-purple-600", "bg-emerald-600", "bg-amber-600", "bg-indigo-600"];
@@ -718,67 +853,29 @@ export default function SetlistPerformanceRoomPage() {
       .on("broadcast", { event: "lobby_sync" }, ({ payload }) => {
         if (payload.action === "START") {
           const targetTrackIdx = payload.trackIndex !== undefined ? payload.trackIndex : currentTrackIndex;
-          mountTargetSetlistTrackIndex(targetTrackIdx, tracksListRef.current, false, true);
-
-          if (payload.mdSectionStartTime) mdSectionStartTimeRef.current = payload.mdSectionStartTime;
-
-          // ✅ SURGICAL FIX 1: Smart Latency Detection
-          const apparentLatency = Date.now() - (payload.mdSectionStartTime || Date.now());
-          if (Math.abs(apparentLatency) < 2000) {
-            // It's a live press! Ignore device clock drift and snap exactly to 0 for a perfect Beat 1 start.
-            sectionStartTimeRef.current = performance.now();
-          } else {
-            // Late joiner catching up to a song midway through. Accept the offset.
-            sectionStartTimeRef.current = performance.now() - apparentLatency;
-          }
-
-          currentSectionIndexRef.current = payload.sectionIndex;
-          setCurrentSectionIndex(payload.sectionIndex);
-          lastBeatRef.current = 0;
-          lastAudioBeatRef.current = 0; 
-          lastVisualBeatRef.current = 0; 
-          updateMetronomeUI(1, true); // FAST DOM MUTATION
-          
-          activeLineIndexRef.current = 0;
-          setActiveLineIndex(0);
-
-          if (backdropProgressRef.current) backdropProgressRef.current.style.transform = "scaleX(0)";
-          if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = "scaleX(0)";
-
           isPlayingRef.current = true;
           setIsPlayingFlow(true);
+          executeJumpNow(targetTrackIdx, payload.sectionIndex, payload.mdSectionStartTime);
         } 
         else if (payload.action === "STOP") {
           executeLocalResetSequence();
         } 
         else if (payload.action === "JUMP") {
-          if (payload.trackIndex !== undefined && payload.trackIndex !== playingTrackIndexRef.current) {
-            mountTargetSetlistTrackIndex(payload.trackIndex, tracksListRef.current, false, true);
-          }
-
-          if (payload.mdSectionStartTime) mdSectionStartTimeRef.current = payload.mdSectionStartTime;
-
-          currentSectionIndexRef.current = payload.sectionIndex;
-          setCurrentSectionIndex(payload.sectionIndex);
+          const jumpTime = payload.mdSectionStartTime || getGlobalTime();
+          const timeUntilJump = jumpTime - getGlobalTime();
           
-          lastBeatRef.current = 0;
-          lastAudioBeatRef.current = 0; 
-          lastVisualBeatRef.current = 0; 
-          updateMetronomeUI(1, true); // FAST DOM MUTATION
-          activeLineIndexRef.current = 0;
-          setActiveLineIndex(0);
-
-          if (backdropProgressRef.current) backdropProgressRef.current.style.transform = "scaleX(0)";
-          if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = "scaleX(0)";
-          
-          if (isPlayingRef.current) {
-            // ✅ SURGICAL FIX 2: Apply the same smart latency logic to section jumps
-            const apparentLatency = Date.now() - (payload.mdSectionStartTime || Date.now());
-            if (Math.abs(apparentLatency) < 2000) {
-              sectionStartTimeRef.current = performance.now();
-            } else {
-              sectionStartTimeRef.current = performance.now() - apparentLatency;
-            }
+          // ✅ SURGICAL FIX: If the MD broadcasted a quantized future jump, queue it up!
+          if (isPlayingRef.current && timeUntilJump > 50) {
+            pendingQuantizedJumpRef.current = { trackIndex: payload.trackIndex ?? currentTrackIndexRef.current, sectionIndex: payload.sectionIndex, jumpTime };
+            
+            // Show the purple visual queue badge so the musicians know what's coming
+            setQueuedTrackIndex(payload.trackIndex ?? currentTrackIndexRef.current);
+            setQueuedSectionIndex(payload.sectionIndex);
+            queuedTrackIndexRef.current = payload.trackIndex ?? currentTrackIndexRef.current;
+            queuedSectionIndexRef.current = payload.sectionIndex;
+          } else {
+            // Immediate retroactive jump
+            executeJumpNow(payload.trackIndex ?? currentTrackIndexRef.current, payload.sectionIndex, jumpTime);
           }
         }
         else if (payload.action === "TRACK_CHANGE") {
@@ -820,6 +917,56 @@ export default function SetlistPerformanceRoomPage() {
       if (lobbyChannel) supabase.removeChannel(lobbyChannel);
     };
   }, [setlistId, localPresenceUser]);
+
+  // ✅ SURGICAL REFACTOR: A unified engine to seamlessly execute jumps without freezing the clock
+  const executeJumpNow = (targetTrackIdx: number, targetSectionIdx: number, jumpTime: number) => {
+    // 1. Handle Track Change if necessary
+    if (targetTrackIdx !== undefined && targetTrackIdx !== playingTrackIndexRef.current) {
+      mountTargetSetlistTrackIndex(targetTrackIdx, tracksListRef.current, false, true);
+    }
+
+    // 2. Set the exact global time anchor
+    if (jumpTime) mdSectionStartTimeRef.current = jumpTime;
+
+    // 3. Update Section Pointers
+    currentSectionIndexRef.current = targetSectionIdx;
+    setCurrentSectionIndex(targetSectionIdx);
+    
+    // 4. Reset Clock Math
+    lastBeatRef.current = 0;
+    lastAudioBeatRef.current = 0; 
+    lastVisualBeatRef.current = 0; 
+    updateMetronomeUI(1, true); 
+    activeLineIndexRef.current = 0;
+    setActiveLineIndex(0);
+
+    // 5. Clear ALL Queues
+    setQueuedTrackIndex(null);
+    setQueuedSectionIndex(null);
+    queuedTrackIndexRef.current = null;
+    queuedSectionIndexRef.current = null;
+    pendingQuantizedJumpRef.current = null;
+    
+    // ✅ SURGICAL FIX: Reset the cue lock so the NEXT section gets its 4-beat warning!
+    hasPlayedCueRef.current = false; 
+
+    // 6. Reset UI Progress Bars
+    if (backdropProgressRef.current) backdropProgressRef.current.style.transform = "scaleX(0)";
+    if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = "scaleX(0)";
+    
+    // 7. Voice Cues & Sync Math
+    if (isPlayingRef.current) {
+      // ✅ SURGICAL FIX: Removed playGuideCue from here to stop the echo effect!
+      // The cue will now properly play only in the last 4 beats of the preceding section via the animation loop.
+
+      const apparentLatency = getGlobalTime() - jumpTime;
+      if (Math.abs(apparentLatency) < 2000) {
+        sectionStartTimeRef.current = performance.now() - apparentLatency;
+      } else {
+        sectionStartTimeRef.current = performance.now();
+      }
+    }
+  };
 
   function executeLocalResetSequence() {
     isPlayingRef.current = false;
@@ -1121,6 +1268,13 @@ export default function SetlistPerformanceRoomPage() {
     const clockExecutionTick = (timestamp: number) => {
       if (!isPlayingRef.current || !activeSongRef.current || sectionsRef.current.length === 0) return;
       
+      if (pendingQuantizedJumpRef.current) {
+        const { trackIndex, sectionIndex, jumpTime } = pendingQuantizedJumpRef.current;
+        if (getGlobalTime() >= jumpTime) {
+          executeJumpNow(trackIndex, sectionIndex, jumpTime);
+          // Let the rest of the loop continue normally! It will calculate using the brand new section data.
+        }
+      }
       // ✅ SURGICAL FIX 2: Check MD status via Ref every frame so we don't need it in the dependency array
       const isCurrentlyMD = localPresenceUserRef.current?.isMD === true;
 
@@ -1237,7 +1391,6 @@ export default function SetlistPerformanceRoomPage() {
         
         let nextSectionName = "";
         
-        // Scenario 3: Is there a manually queued section?
         if (queuedSectionIndexRef.current !== null && queuedTrackIndexRef.current !== null) {
           const queuedTrack = tracksListRef.current[queuedTrackIndexRef.current];
           if (queuedTrack && queuedTrack.custom_structure) {
@@ -1249,14 +1402,8 @@ export default function SetlistPerformanceRoomPage() {
           if (nextSectionIdx < secs.length) {
              nextSectionName = secs[nextSectionIdx].section_name;
           } else {
-             // Look ahead to the next track if this is the end of the song
-             const nextTrackIdx = playingTrackIndexRef.current + 1;
-             if (nextTrackIdx < tracksListRef.current.length) {
-                const nextTrack = tracksListRef.current[nextTrackIdx];
-                if (nextTrack && nextTrack.custom_structure) {
-                   nextSectionName = nextTrack.custom_structure[0]?.section_name;
-                }
-             }
+             // ✅ SURGICAL FIX: We are holding at the end of the song, so cue the CURRENT section to loop!
+             nextSectionName = secs[currentSectionIndexRef.current].section_name;
           }
         }
         
@@ -1312,76 +1459,26 @@ export default function SetlistPerformanceRoomPage() {
         if (harmsActiveQueue) {
           nextTrackIdx = queuedTrackIndexRef.current as number;
           nextSectionIdx = queuedSectionIndexRef.current as number;
-          setQueuedSectionIndex(null); 
-          setQueuedTrackIndex(null);
+        } else if (nextSectionIdx >= secs.length) {
+          // ✅ SURGICAL FIX: Loop the last section infinitely!
+          nextSectionIdx = idx; 
         }
 
-        if (nextTrackIdx !== playingTrackIndexRef.current) {
-          const targetTrackItem = tracksListRef.current[nextTrackIdx];
-          if (targetTrackItem && targetTrackItem.songs) {
-            playingTrackIndexRef.current = nextTrackIdx;
-            setPlayingTrackIndex(nextTrackIdx);
-            playingSongRef.current = targetTrackItem.songs;
-            playingSectionsRef.current = targetTrackItem.custom_structure || [];
+        const jumpTime = mdSectionStartTimeRef.current + totalDurationMs;
+        executeJumpNow(nextTrackIdx, nextSectionIdx, jumpTime);
 
-            setActiveSong(targetTrackItem.songs);
-            setCurrentTrackIndex(nextTrackIdx);
-            setActiveDisplayKey(targetTrackItem.custom_key || targetTrackItem.songs.original_key || "G");
-            setSections(targetTrackItem.custom_structure || []);
-
-            if (isCurrentlyMD && realtimeChannelRef.current) {
-              realtimeChannelRef.current.send({
-                type: "broadcast",
-                event: "lobby_sync",
-                payload: { action: "TRACK_CHANGE", trackIndex: nextTrackIdx }
-              });
-            }
-          }
-        }
-
-        const currentPlayingSongSections = playingSectionsRef.current;
-        if (nextSectionIdx < currentPlayingSongSections.length) {
-          
-          // ✅ SURGICAL FIX 1: Advance anchors purely by math. Zero clock drift!
-          sectionStartTimeRef.current += totalDurationMs;
-          if (mdSectionStartTimeRef.current !== null) {
-            mdSectionStartTimeRef.current += totalDurationMs;
-          }
-
-          currentSectionIndexRef.current = nextSectionIdx;
-          setCurrentSectionIndex(nextSectionIdx);
-          
-          activeLineIndexRef.current = 0;
-          setActiveLineIndex(0);
-
-          hasPlayedCueRef.current = false;
-          
-          lastBeatRef.current = 0;
-          updateMetronomeUI(1, true); // ✅ FAST DOM MUTATION
-
-          // ✅ SURGICAL FIX 2: Both viewers and MDs transition instantly. 
-          // Only the MD broadcasts the safety sync packet in the background.
-          if (isCurrentlyMD && realtimeChannelRef.current) {
-            realtimeChannelRef.current.send({
-              type: "broadcast",
-              event: "lobby_sync",
-              payload: { 
-                action: "JUMP", 
-                trackIndex: nextTrackIdx,
-                sectionIndex: nextSectionIdx,
-                mdSectionStartTime: mdSectionStartTimeRef.current
-              }
-            });
-          }
-        } else {
-          hasPlayedCueRef.current = false;
-          handleAdvanceToNextSetlistTrack();
-          return;
+        if (isCurrentlyMD && realtimeChannelRef.current) {
+          realtimeChannelRef.current.send({
+            type: "broadcast", event: "lobby_sync",
+            payload: { action: "JUMP", trackIndex: nextTrackIdx, sectionIndex: nextSectionIdx, mdSectionStartTime: jumpTime }
+          });
         }
       }
 
       animationFrameRef.current = requestAnimationFrame(clockExecutionTick);
     };
+
+     
 
     animationFrameRef.current = requestAnimationFrame(clockExecutionTick);
 
@@ -1443,19 +1540,12 @@ export default function SetlistPerformanceRoomPage() {
   function handleSectionInteractiveSelection(index: number) {
     if (isReadOnlyMode) return; 
     if (!isPlayingFlow) {
-      const jumpTime = Date.now();
-      mdSectionStartTimeRef.current = jumpTime;
-      handleSelectSectionDirectlyLocally(index);
+      const jumpTime = getGlobalTime() + 150;
+      executeJumpNow(currentTrackIndex, index, jumpTime);
       if (realtimeChannelRef.current) {
         realtimeChannelRef.current.send({
-          type: "broadcast",
-          event: "lobby_sync",
-          payload: { 
-            action: "JUMP", 
-            trackIndex: currentTrackIndex, 
-            sectionIndex: index,
-            mdSectionStartTime: jumpTime 
-          }
+          type: "broadcast", event: "lobby_sync",
+          payload: { action: "JUMP", trackIndex: currentTrackIndex, sectionIndex: index, mdSectionStartTime: jumpTime }
         });
       }
       return;
@@ -1464,62 +1554,60 @@ export default function SetlistPerformanceRoomPage() {
     if (clickTimeoutRef.current) {
       clearTimeout(clickTimeoutRef.current);
       clickTimeoutRef.current = null;
-
-      const isSameSelectionCancel = queuedSectionIndexRef.current === index && queuedTrackIndexRef.current === currentTrackIndex;
-      const targetNextQueueIdx = isSameSelectionCancel ? null : index;
-      const targetNextQueueTrackIdx = isSameSelectionCancel ? null : currentTrackIndex;
-
-      setQueuedSectionIndex(targetNextQueueIdx);
-      setQueuedTrackIndex(targetNextQueueTrackIdx);
+      
+      // ✅ SURGICAL FIX: Restored the Double-Click Queue Logic!
+      setQueuedTrackIndex(currentTrackIndex);
+      setQueuedSectionIndex(index);
+      queuedTrackIndexRef.current = currentTrackIndex;
+      queuedSectionIndexRef.current = index;
+      
+      // Cancel the pending quantized jump since we upgraded to a full section queue
+      pendingQuantizedJumpRef.current = null;
 
       if (realtimeChannelRef.current) {
         realtimeChannelRef.current.send({
-          type: "broadcast",
-          event: "lobby_sync",
-          payload: { 
-            action: "QUEUE", 
-            trackIndex: targetNextQueueTrackIdx, 
-            sectionIndex: targetNextQueueIdx 
-          }
+          type: "broadcast", event: "lobby_sync",
+          payload: { action: "QUEUE", trackIndex: currentTrackIndex, sectionIndex: index }
         });
       }
     } else {
       clickTimeoutRef.current = setTimeout(() => {
         clickTimeoutRef.current = null;
         
-        playingTrackIndexRef.current = currentTrackIndex;
-        setPlayingTrackIndex(currentTrackIndex);
-        const targetTrackItem = tracksListRef.current[currentTrackIndex];
-        if (targetTrackItem && targetTrackItem.songs) {
-          playingSongRef.current = targetTrackItem.songs;
-          playingSectionsRef.current = targetTrackItem.custom_structure || [];
-        }
-
         let jumpTime = getGlobalTime() + 150;
+        const targetTrackIdx = currentTrackIndex;
 
-        // ✅ SURGICAL FIX: Continuous Metronome Grid Snapping
-        // Instead of starting the section blindly in 150ms, we snap the start time
-        // to the exact next beat of the already playing metronome grid!
-        if (mdSectionStartTimeRef.current && activeSong) {
-          const beatSpeedMs = (60 / (activeSong.tempo || 75)) * 1000;
+        // Quantize the jump to the next measure!
+        if (mdSectionStartTimeRef.current && activeSongRef.current && isPlayingRef.current) {
+          const beatSpeedMs = (60 / (activeSongRef.current.tempo || 75)) * 1000;
+          const measureDurationMs = beatSpeedMs * 4; 
           const elapsed = getGlobalTime() - mdSectionStartTimeRef.current;
-          const beatsElapsed = Math.ceil((elapsed + 150) / beatSpeedMs);
-          jumpTime = mdSectionStartTimeRef.current + (beatsElapsed * beatSpeedMs);
-        }
+          
+          const timeToNextMeasure = measureDurationMs - (elapsed % measureDurationMs);
+          jumpTime = getGlobalTime() + timeToNextMeasure;
 
-        mdSectionStartTimeRef.current = jumpTime;
-        handleSelectSectionDirectlyLocally(index);
+          // Push the jump to the pending engine
+          pendingQuantizedJumpRef.current = { trackIndex: targetTrackIdx, sectionIndex: index, jumpTime };
+          
+          // Show the purple queue visual immediately for the MD
+          setQueuedTrackIndex(targetTrackIdx);
+          setQueuedSectionIndex(index);
+          queuedTrackIndexRef.current = targetTrackIdx;
+          queuedSectionIndexRef.current = index;
+
+          // ✅ SURGICAL FIX: Trigger the vocal cue instantly on single-click, since the jump happens within 1 measure!
+          const targetSec = sectionsRef.current[index];
+          if (targetSec) playGuideCue(targetSec.section_name);
+          hasPlayedCueRef.current = true; // Lock it so the natural loop doesn't double-fire
+
+        } else {
+          executeJumpNow(targetTrackIdx, index, jumpTime);
+        }
 
         if (realtimeChannelRef.current) {
           realtimeChannelRef.current.send({
-            type: "broadcast",
-            event: "lobby_sync",
-            payload: { 
-              action: "JUMP", 
-              trackIndex: currentTrackIndex, 
-              sectionIndex: index,
-              mdSectionStartTime: jumpTime
-            }
+            type: "broadcast", event: "lobby_sync",
+            payload: { action: "JUMP", trackIndex: targetTrackIdx, sectionIndex: index, mdSectionStartTime: jumpTime }
           });
         }
       }, 250);
@@ -1688,13 +1776,30 @@ export default function SetlistPerformanceRoomPage() {
     e.currentTarget.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
   }
 
-  function handleModalAppendNewSectionItem(sectionName: string) {
+  async function handleModalAppendNewSectionItem(sectionName: string) {
     if (!activeSong) return;
+
+    // 1. Try to find the content in the current active timeline first
+    let sectionContent = sections.find(s => s.section_name === sectionName)?.content;
+
+    // 2. If it was completely removed from the timeline, fetch the original lyrics from the master database!
+    if (!sectionContent || sectionContent.trim() === "") {
+      const { data } = await supabase
+        .from("song_sections")
+        .select("content")
+        .eq("song_id", activeSong.id)
+        .eq("section_name", sectionName)
+        .maybeSingle();
+        
+      if (data && data.content) {
+        sectionContent = data.content;
+      }
+    }
 
     const newBlock: ArrangementSection = {
       id: `local-override-${Date.now()}-${Math.random()}`,
       section_name: sectionName,
-      content: sections.find(s => s.section_name === sectionName)?.content || " "
+      content: sectionContent || " "
     };
 
     const workingBlocks = [...sections, newBlock];
@@ -1702,6 +1807,28 @@ export default function SetlistPerformanceRoomPage() {
     saveMutatedStructurePayload(workingBlocks);
     handleResetFlowTrigger();
   }
+  // ✅ SURGICAL ADDITION: Dynamic context-aware section catalog
+  const availableSectionNames = useMemo(() => {
+    const names = new Set<string>();
+    
+    // Pull every section officially defined in the master timing dictionary
+    if (activeSong?.section_timings) {
+      Object.keys(activeSong.section_timings).forEach(k => names.add(k));
+    }
+    // Fallback: Also include anything currently in the timeline
+    sections.forEach(s => names.add(s.section_name));
+    
+    const presetOrder = ["Intro", "Verse 1", "Verse 2", "Verse 3", "Verse 4", "Pre-Chorus", "Chorus", "Chorus 1", "Chorus 2", "Bridge", "Instrumental", "Interlude", "Tag", "Outro"];
+    
+    return Array.from(names).sort((a, b) => {
+      const idxA = presetOrder.indexOf(a);
+      const idxB = presetOrder.indexOf(b);
+      if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+      if (idxA !== -1) return -1;
+      if (idxB !== -1) return 1;
+      return a.localeCompare(b);
+    });
+  }, [activeSong, sections]);
 
   const runtimeSemitoneDelta = useMemo(() => {
     if (!activeSong || !activeDisplayKey) return 0;
@@ -1807,6 +1934,8 @@ export default function SetlistPerformanceRoomPage() {
     <div className="absolute inset-0 flex flex-col bg-[#f8f9fa] overflow-hidden select-none">
       <style dangerouslySetInnerHTML={{__html: `
         @import url('https://fonts.googleapis.com/css2?family=Nothing+You+Could+Do&display=swap');
+        /* ✅ SURGICAL ADDITION: Import tall condensed font for lyrics/chords */
+        @import url('https://fonts.googleapis.com/css2?family=Roboto+Condensed:wght@400;500;700&display=swap');
         
         /* ✅ SURGICAL FIX: Unidirectional loop for Tab Titles */
         @keyframes marquee-alt {
@@ -1983,538 +2112,553 @@ export default function SetlistPerformanceRoomPage() {
       {/* --- SHEET CANVAS PANE VIEW (STANDARD OR SIMPLIFIED) ------------------- */}
       {/* ======================================================================= */}
       
-      {isSimplifiedMode && (
-        // ✅ SURGICAL ADDITION: The 3-Stack Musician Teleprompter View
-        <div className="flex-1 flex flex-col items-center justify-center p-4 md:p-8 bg-[#f8f9fa] overflow-hidden relative z-0">
-          {(() => {
-            // Helper to extract exact section data and timings
-            const getSecData = (idx: number) => {
-              const ast = memoizedSongAstTree[idx];
-              if (!ast) return null;
-              
-              // ✅ SURGICAL FIX: Added all missing fallback properties so TypeScript is perfectly happy!
-              const timings = activeSong?.section_timings?.[ast.section_name] || { measures: 4, beats: 0, repeats: 0, head_m: 0, tail_m: 0 };
-              
-              const repeats = (timings.repeats || 0) + 1;
-              const totalM = ((timings.measures || 0) * repeats) + (timings.head_m || 0) + (timings.tail_m || 0);
-              return { ast, totalM };
-            };
+      {/* ======================================================================= */}
+      {/* --- SHEET CANVAS PANE VIEW (STANDARD OR SIMPLIFIED) ------------------- */}
+      {/* ======================================================================= */}
+      
+      {(() => {
+        // ✅ SURGICAL ADDITION: Centralized Duration Calculator for both views
+        const getSectionDurationString = (sectionName: string) => {
+          const timings = activeSong?.section_timings?.[sectionName] || { measures: 4, beats: 0, repeats: 0, head_m: 0, tail_m: 0 };
+          const sectionMultiplier = (timings.repeats || 0) + 1;
+          const headBeats = (timings.head_m || 0) * 4;
+          const tailBeats = (timings.tail_m || 0) * 4;
+          const baseBeats = ((timings.measures || 0) * 4) + (timings.beats || 0);
 
-            const prevSec = getSecData(currentSectionIndex - 1);
-            const currSec = getSecData(currentSectionIndex);
-            
-            // Handle cross-section manual queueing
-            const nextIdx = (queuedSectionIndex !== null && queuedTrackIndex === currentTrackIndex) 
-              ? queuedSectionIndex 
-              : currentSectionIndex + 1;
-            const nextSec = getSecData(nextIdx);
+          let totalBeats = (baseBeats * sectionMultiplier) + headBeats + tailBeats;
+          if (totalBeats <= 0) totalBeats = 32;
 
-            // Helper to flatten chords from a specific line
-            const getChords = (ast: any, lineIdx: number) => {
-              if (!ast || !ast.lines[lineIdx]) return [];
-              return ast.lines[lineIdx].words.flatMap((w: any) => w.chords);
-            };
+          const tempo = activeSong?.tempo || 75;
+          const msPerBeat = 60000 / tempo;
+          const totalSeconds = Math.round((totalBeats * msPerBeat) / 1000);
+          
+          const mins = Math.floor(totalSeconds / 60);
+          const secs = (totalSeconds % 60).toString().padStart(2, '0');
+          return `${mins}:${secs}`;
+        };
 
-            return (
-              <div className="w-full max-w-4xl flex flex-col gap-4 md:gap-6 items-center mt-[-8vh]">
-                
-                {/* 1. TOP STACK (PREVIOUS) */}
-                <div className="w-11/12 max-w-3xl h-16 md:h-20 bg-zinc-100 border border-zinc-200 rounded-2xl flex items-center justify-between px-6 opacity-50 shadow-inner">
-                  <span className="font-black text-[10px] uppercase text-zinc-400 bg-zinc-200/50 px-3 py-1 rounded-full">{prevSec ? prevSec.ast.section_name : "START"}</span>
-                  <div className="flex items-center gap-3">
-                    {prevSec && getChords(prevSec.ast, prevSec.ast.lines.length - 1).map((ch: string, i: number) => (
-                      <span key={i} className="font-mono font-bold text-zinc-400 text-sm md:text-base">{ch}</span>
-                    ))}
-                  </div>
-                  <span className="font-mono text-[10px] font-bold text-zinc-400">{prevSec ? `${prevSec.totalM}M` : "--"}</span>
-                </div>
+        return (
+          <>
+            {isSimplifiedMode && (
+              // ✅ SURGICAL FIX: The 3-Stack Musician Teleprompter View with Half-In Badges
+              <div className="flex-1 flex flex-col items-center justify-center p-4 md:p-8 bg-[#f8f9fa] overflow-hidden relative z-0">
+                {(() => {
+                  const getSecData = (idx: number) => {
+                    const ast = memoizedSongAstTree[idx];
+                    if (!ast) return null;
+                    const duration = getSectionDurationString(ast.section_name);
+                    return { ast, duration };
+                  };
 
-                {/* 2. MIDDLE STACK (CURRENT LINE) */}
-                <div className="w-full h-32 md:h-44 bg-white border-2 border-blue-500 rounded-3xl flex flex-col justify-center px-6 md:px-10 shadow-2xl relative overflow-hidden ring-8 ring-blue-500/10">
-                  <div ref={simplifiedProgressBarRef} className="absolute bottom-0 left-0 h-2 md:h-3 bg-blue-500 origin-left scale-x-0 w-full z-0" style={{ willChange: 'transform' }} />
+                  const prevSec = getSecData(currentSectionIndex - 1);
+                  const currSec = getSecData(currentSectionIndex);
                   
-                  <div className="relative z-10 flex items-center justify-between w-full h-full">
-                    <div className="flex flex-col gap-2 w-[20%] shrink-0">
-                       <span className="font-black text-[10px] md:text-xs uppercase text-white bg-blue-600 px-4 py-1.5 rounded-full inline-block w-max shadow-sm">{currSec ? currSec.ast.section_name : "FLOW"}</span>
+                  const nextIdx = (queuedSectionIndex !== null && queuedTrackIndex === currentTrackIndex) 
+                    ? queuedSectionIndex 
+                    : currentSectionIndex + 1;
+                  const nextSec = getSecData(nextIdx);
+
+                  // ✅ SURGICAL FIX: Ensure massive stack chords also respect Nashville Numbers
+                  const getChords = (ast: any, lineIdx: number) => {
+                    if (!ast || !ast.lines[lineIdx]) return [];
+                    const rawChords = ast.lines[lineIdx].words.flatMap((w: any) => w.chords);
+                    return chordFormat === "Numbers" 
+                      ? rawChords.map((ch: string) => chordToRoman(ch, activeDisplayKey))
+                      : rawChords;
+                  };
+
+                  return (
+                    <div className="w-full max-w-4xl flex flex-col gap-6 md:gap-8 items-center mt-[-8vh]">
+                      
+                      {/* 1. TOP STACK (PREVIOUS) */}
+                      <div className="w-11/12 max-w-3xl h-16 md:h-20 bg-zinc-100 border border-zinc-200 rounded-2xl flex items-center justify-center px-6 opacity-50 shadow-inner relative mt-4">
+                        <div className="absolute -top-3.5 left-6 flex items-center bg-zinc-100 border border-zinc-200 rounded-full p-0.5 pr-2.5 shadow-sm z-10">
+                          <div className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-black mr-1.5 shadow-inner bg-zinc-200 text-zinc-500">
+                             {prevSec ? getSectionAbbreviation(prevSec.ast.section_name) : "S"}
+                          </div>
+                          <span className="text-[10px] font-black uppercase tracking-wider text-zinc-500">
+                            {prevSec ? prevSec.ast.section_name : "START"}
+                          </span>
+                        </div>
+                        
+                        <div className="absolute -top-3.5 right-6 flex items-center bg-zinc-100 border border-zinc-200 rounded-full px-2.5 py-1 shadow-sm z-10">
+                          <span className="text-[10px] font-mono font-bold text-zinc-400">⏱ {prevSec ? prevSec.duration : "0:00"}</span>
+                        </div>
+
+                        <div className="flex items-center gap-3">
+                          {prevSec && getChords(prevSec.ast, prevSec.ast.lines.length - 1).map((ch: string, i: number) => (
+                            <span key={i} className="font-mono font-bold text-zinc-400 text-sm md:text-base">{ch}</span>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* 2. MIDDLE STACK (CURRENT LINE) */}
+                      <div className="w-full h-32 md:h-44 bg-white border-2 border-blue-500 rounded-3xl flex flex-col justify-center px-6 md:px-10 shadow-2xl relative ring-8 ring-blue-500/10">
+                        {/* ✅ SURGICAL FIX: Isolated progress bar wrapper prevents absolute badges from clipping */}
+                        <div className="absolute inset-0 rounded-[1.35rem] overflow-hidden pointer-events-none">
+                          <div ref={simplifiedProgressBarRef} className="absolute bottom-0 left-0 h-2 md:h-3 bg-blue-500 origin-left scale-x-0 w-full z-0" style={{ willChange: 'transform' }} />
+                        </div>
+                        
+                        <div className="absolute -top-4 left-6 flex items-center bg-white border-2 border-blue-500 rounded-full p-0.5 pr-3 shadow-sm select-none z-10">
+                          <div className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-black mr-2 shadow-inner bg-blue-600 text-white">
+                             {currSec ? getSectionAbbreviation(currSec.ast.section_name) : "F"}
+                          </div>
+                          <span className="text-xs font-black uppercase tracking-wider text-blue-700">
+                            {currSec ? currSec.ast.section_name : "FLOW"}
+                          </span>
+                        </div>
+
+                        <div className="absolute -top-3.5 right-6 flex items-center bg-white border-2 border-blue-500 rounded-full px-3 py-1 shadow-sm select-none z-10">
+                          <span className="text-[11px] font-mono font-bold text-blue-600">⏱ {currSec ? currSec.duration : "0:00"}</span>
+                        </div>
+
+                        <div className="relative z-10 flex items-center justify-center w-full h-full">
+                          <div className="flex flex-wrap items-center justify-center gap-4 md:gap-6 px-4">
+                            {currSec && getChords(currSec.ast, activeLineIndex).length > 0 ? (
+                              getChords(currSec.ast, activeLineIndex).map((ch: string, i: number) => (
+                                <span key={i} className="font-mono font-black text-blue-600 text-4xl md:text-6xl drop-shadow-sm">{ch}</span>
+                              ))
+                            ) : (
+                              <span className="font-mono font-bold text-zinc-300 text-xl md:text-2xl italic">---</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* 3. BOTTOM STACK (NEXT QUEUED) */}
+                      <div className="w-11/12 max-w-3xl h-16 md:h-20 bg-white border border-zinc-200 rounded-2xl flex items-center justify-center px-6 opacity-90 shadow-sm relative mt-2">
+                        {(queuedSectionIndex !== null && queuedTrackIndex === currentTrackIndex) && (
+                          <div className="absolute -top-3 right-20 bg-purple-600 text-white text-[8px] font-black uppercase px-2 py-0.5 rounded-full shadow-sm z-20 animate-pulse">⚡ QUEUED</div>
+                        )}
+                        
+                        <div className="absolute -top-3.5 left-6 flex items-center bg-white border border-zinc-200 rounded-full p-0.5 pr-2.5 shadow-sm z-10">
+                          <div className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-black mr-1.5 shadow-inner bg-zinc-100 text-zinc-500">
+                             {nextSec ? getSectionAbbreviation(nextSec.ast.section_name) : "N"}
+                          </div>
+                          <span className="text-[10px] font-black uppercase tracking-wider text-zinc-600">
+                            {nextSec ? nextSec.ast.section_name : (upcomingTrackItem ? `NEXT: ${upcomingTrackItem.songs?.title}` : "END")}
+                          </span>
+                        </div>
+
+                        <div className="absolute -top-3.5 right-6 flex items-center bg-white border border-zinc-200 rounded-full px-2.5 py-1 shadow-sm z-10">
+                          <span className="text-[10px] font-mono font-bold text-zinc-400">⏱ {nextSec ? nextSec.duration : "--:--"}</span>
+                        </div>
+
+                        <div className="flex items-center gap-3">
+                          {nextSec && getChords(nextSec.ast, 0).map((ch: string, i: number) => (
+                            <span key={i} className="font-mono font-bold text-zinc-600 text-sm md:text-base">{ch}</span>
+                          ))}
+                        </div>
+                      </div>
+
                     </div>
-
-                    {/* Displays exactly the chords from the currently active line */}
-                    <div className="flex-1 flex flex-wrap items-center justify-center gap-4 md:gap-6 px-4">
-                      {currSec && getChords(currSec.ast, activeLineIndex).length > 0 ? (
-                        getChords(currSec.ast, activeLineIndex).map((ch: string, i: number) => (
-                          <span key={i} className="font-mono font-black text-blue-600 text-4xl md:text-6xl drop-shadow-sm">{ch}</span>
-                        ))
-                      ) : (
-                        <span className="font-mono font-bold text-zinc-300 text-xl md:text-2xl italic">---</span>
-                      )}
-                    </div>
-
-                    <div className="w-[20%] shrink-0 flex justify-end">
-                       <span className="font-mono text-lg md:text-2xl font-black text-zinc-300">{currSec ? `${currSec.totalM}M` : "--"}</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* 3. BOTTOM STACK (NEXT QUEUED) */}
-                <div className="w-11/12 max-w-3xl h-16 md:h-20 bg-white border border-zinc-200 rounded-2xl flex items-center justify-between px-6 opacity-90 shadow-sm relative">
-                  {(queuedSectionIndex !== null && queuedTrackIndex === currentTrackIndex) && (
-                    <div className="absolute -top-2 -right-2 bg-purple-600 text-white text-[8px] font-black uppercase px-2 py-0.5 rounded shadow-sm z-20 animate-pulse">⚡ QUEUED</div>
-                  )}
-                  <span className="font-black text-[10px] uppercase text-zinc-500 bg-zinc-100 px-3 py-1 rounded-full">
-                    {nextSec ? nextSec.ast.section_name : (upcomingTrackItem ? `NEXT: ${upcomingTrackItem.songs?.title}` : "END")}
-                  </span>
-                  <div className="flex items-center gap-3">
-                    {nextSec && getChords(nextSec.ast, 0).map((ch: string, i: number) => (
-                      <span key={i} className="font-mono font-bold text-zinc-600 text-sm md:text-base">{ch}</span>
-                    ))}
-                  </div>
-                  <span className="font-mono text-[10px] font-bold text-zinc-400">{nextSec ? `${nextSec.totalM}M` : "--"}</span>
-                </div>
-
+                  );
+                })()}
               </div>
-            );
-          })()}
-        </div>
-      )}
+            )}
 
-      {!isSimplifiedMode && (
-        // =========================================================
-        // ORIGINAL STANDARD SHEET VIEW
-        // =========================================================
-        <div 
-          ref={scrollContainerRef}
-          className="flex-1 overflow-y-auto p-4 md:p-8 pt-4 custom-scrollbar pb-64" // ✅ Increased pb-64 to let the last line scroll all the way to the center of the screen
-        >
-          <div className="max-w-5xl w-full mx-auto space-y-4 md:space-y-6">
-            
-            {memoizedSongAstTree.map((section, idx) => {
-            const isThisSectionActivePlayback = isPlayingFlow && playingTrackIndex === currentTrackIndex && currentSectionIndex === idx;
-            const isThisSectionQueuedNext = queuedTrackIndex === currentTrackIndex && queuedSectionIndex === idx;
-            const isStagedUnstartedTarget = !isPlayingFlow && currentSectionIndex === idx;
-            const centralizedTimingConfig = activeSong?.section_timings?.[section.section_name] || { measures: 4, beats: 0 };
-
-            return (
-              <div
-                key={section.id}
-                ref={(el) => { sectionRefs.current[section.id] = el; }}
-                onClick={() => handleSectionInteractiveSelection(idx)}
-                className={`bg-white border rounded-xl md:rounded-3xl p-5 md:p-6 shadow-sm transition-all duration-300 relative ${
-                  isThisSectionActivePlayback 
-                    ? "border-blue-500 ring-4 ring-blue-500/10 shadow-md z-10 cursor-pointer" 
-                    : isThisSectionQueuedNext
-                    ? "border-purple-500 ring-4 ring-purple-500/10 scale-[1.001] shadow-md z-10 cursor-pointer" 
-                    : `border-zinc-200 opacity-95 cursor-pointer hover:border-blue-400 hover:bg-zinc-50/30`
-                  }`}
-                style={isStagedUnstartedTarget && !isThisSectionQueuedNext ? { borderColor: '#fbbf24', boxShadow: '0 0 0 4px rgba(251, 191, 36, 0.1)' } : {}}
-              >
-                <div className="flex items-center justify-between border-b border-zinc-100/80 pb-2.5 mb-3.5 select-none">
-                  <div className="flex items-center gap-2">
-                    <span className={`font-black text-[9px] uppercase tracking-wider px-2.5 py-0.5 rounded-full ${
-                      isThisSectionActivePlayback ? "bg-blue-600 text-white shadow-sm" : isStagedUnstartedTarget ? "bg-amber-500 text-white shadow-sm" : "bg-blue-50 text-blue-600"
-                    }`}>
-                      {section.section_name}
-                    </span>
-                    {isStagedUnstartedTarget && !isThisSectionQueuedNext && (
-                      <span className="text-[8px] font-black text-amber-600 uppercase tracking-widest animate-pulse"> Staged </span>
-                    )}
-                    {isThisSectionQueuedNext && (
-                      <span className="text-[8px] font-black bg-purple-600 text-white uppercase tracking-widest px-2 py-0.5 rounded shadow-sm"> ⚡ QUEUED NEXT </span>
-                    )}
-                  </div>
+            {!isSimplifiedMode && (
+              // =========================================================
+              // ORIGINAL STANDARD SHEET VIEW
+              // =========================================================
+              <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4 md:p-8 pt-6 custom-scrollbar pb-64">
+                <div className="max-w-5xl w-full mx-auto space-y-6 md:space-y-7 pt-2">
                   
-                  <div onClick={e => e.stopPropagation()} className="flex items-center gap-1.5">
-                    <div className="flex items-center gap-1 bg-zinc-50 border rounded-lg px-2 py-0.5 text-[9px] font-bold text-zinc-400 shadow-inner">
-                      <span>M:</span>
-                      <input 
-                        type="number" 
-                        min={0}
-                        disabled={isReadOnlyMode}
-                        value={centralizedTimingConfig.measures} 
-                        onChange={e => commitSectionTimingUpdate(section.section_name, "measures", Math.max(0, parseInt(e.target.value, 10) || 0))}
-                        className="w-9 bg-transparent text-center font-black text-zinc-700 outline-none"
-                      />
-                    </div>
-                    <div className="flex items-center gap-1 bg-zinc-50 border rounded-lg px-2 py-0.5 text-[9px] font-bold text-zinc-400 shadow-inner">
-                      <span>B:</span>
-                      <input 
-                        type="number" 
-                        min={0}
-                        max={3}
-                        disabled={isReadOnlyMode}
-                        value={centralizedTimingConfig.beats} 
-                        onChange={e => commitSectionTimingUpdate(section.section_name, "beats", Math.min(3, Math.max(0, parseInt(e.target.value, 10) || 0)))}
-                        className="w-9 bg-transparent text-center font-black text-zinc-700 outline-none"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="pl-0.5 select-text selection:bg-blue-50 text-zinc-800 space-y-2">
-                  {section.lines.length === 0 ? <div className="h-4" /> : section.lines.map((line: ParsedLineToken, lIdx: number) => {
-                    const isCurrentlyPlayingLine = isThisSectionActivePlayback && activeLineIndex === lIdx;
+                  {memoizedSongAstTree.map((section, idx) => {
+                    const isThisSectionActivePlayback = isPlayingFlow && playingTrackIndex === currentTrackIndex && currentSectionIndex === idx;
+                    const isThisSectionQueuedNext = queuedTrackIndex === currentTrackIndex && queuedSectionIndex === idx;
+                    const isStagedUnstartedTarget = !isPlayingFlow && currentSectionIndex === idx;
                     
+                    const formattedDuration = getSectionDurationString(section.section_name);
+
                     return (
-                      // ✅ SURGICAL FIX: Call the Memoized component. 
-                      // If 'isCurrentlyPlayingLine' doesn't flip, React skips rendering this instantly.
-                      <MemoizedLyricLine 
-                        key={lIdx}
-                        line={line}
-                        sectionIndex={idx}
-                        lineIndex={lIdx}
-                        isCurrentlyPlayingLine={isCurrentlyPlayingLine}
-                        showChords={showChords}
-                        lyricsFontSize={lyricsFontSize}
-                        lineSpacing={lineSpacing}
-                      />
+                      <div
+                        key={section.id}
+                        ref={(el) => { sectionRefs.current[section.id] = el; }}
+                        onClick={() => handleSectionInteractiveSelection(idx)}
+                        className={`bg-white border rounded-xl md:rounded-2xl px-4 pb-3 pt-5 md:px-5 md:pb-4 md:pt-6 shadow-sm transition-all duration-300 relative ${
+                          isThisSectionActivePlayback 
+                            ? "border-blue-500 ring-4 ring-blue-500/10 shadow-md z-10 cursor-pointer" 
+                            : isThisSectionQueuedNext
+                            ? "border-purple-500 ring-4 ring-purple-500/10 scale-[1.001] shadow-md z-10 cursor-pointer" 
+                            : `border-zinc-200 opacity-95 cursor-pointer hover:border-blue-400 hover:bg-zinc-50/30`
+                          }`}
+                        style={isStagedUnstartedTarget && !isThisSectionQueuedNext ? { borderColor: '#fbbf24', boxShadow: '0 0 0 4px rgba(251, 191, 36, 0.1)' } : {}}
+                      >
+                        
+                        <div className={`absolute -top-3.5 left-4 flex items-center bg-white border rounded-full p-0.5 pr-3 shadow-sm select-none z-10 transition-colors ${
+                          isThisSectionActivePlayback ? "border-blue-400" : isStagedUnstartedTarget ? "border-amber-400" : "border-blue-200/60"
+                        }`}>
+                          <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-black mr-2 shadow-inner ${
+                            isThisSectionActivePlayback ? "bg-blue-600 text-white" : isStagedUnstartedTarget ? "bg-amber-500 text-white" : "bg-blue-50 text-blue-500"
+                          }`}>
+                            {getSectionAbbreviation(section.section_name)}
+                          </div>
+                          <span className={`text-[11px] font-black uppercase tracking-wider ${
+                            isThisSectionActivePlayback ? "text-blue-700" : isStagedUnstartedTarget ? "text-amber-600" : "text-blue-500"
+                          }`}>
+                            {section.section_name}
+                          </span>
+                          {isThisSectionQueuedNext && (
+                            <span className="ml-2 text-[8px] font-black bg-purple-600 text-white uppercase tracking-widest px-1.5 py-0.5 rounded shadow-sm">⚡ QUEUED</span>
+                          )}
+                        </div>
+                        
+                        {/* ✅ SURGICAL FIX: Perfectly anchored on the top-right border, matching the left badge styling */}
+                        <div className="absolute -top-3.5 right-4 flex items-center bg-white border border-zinc-200 rounded-full px-2.5 py-1 shadow-sm select-none z-10 transition-colors">
+                          <span className="text-[10px] font-mono font-bold text-zinc-400">⏱ {formattedDuration}</span>
+                        </div>
+
+                        <div className="pl-0.5 select-text selection:bg-blue-50 text-zinc-800 space-y-0.5 mt-2">
+                          {section.lines.length === 0 ? <div className="h-4" /> : section.lines.map((line: ParsedLineToken, lIdx: number) => {
+                            const isCurrentlyPlayingLine = isThisSectionActivePlayback && activeLineIndex === lIdx;
+                            
+                            return (
+                              <MemoizedLyricLine 
+                                key={lIdx}
+                                line={line}
+                                sectionIndex={idx}
+                                lineIndex={lIdx}
+                                isCurrentlyPlayingLine={isCurrentlyPlayingLine}
+                                showChords={showChords}
+                                lyricsFontSize={lyricsFontSize}
+                                lineSpacing={lineSpacing}
+                                chordFormat={chordFormat}
+                                activeDisplayKey={activeDisplayKey}
+                              />
+                            );
+                          })}
+                        </div>
+                      </div>
                     );
                   })}
+
+                  {upcomingTrackItem?.songs && (
+                    <div className="pt-2 animate-in fade-in duration-300">
+                      <div 
+                        onClick={() => handleUserSelectTrackBadge(currentTrackIndex + 1)}
+                        className="w-full bg-zinc-50 border border-dashed border-zinc-300/80 hover:bg-zinc-100/50 rounded-2xl p-5 text-center cursor-pointer transition-all select-none group"
+                      >
+                        <span className="text-[8px] font-black tracking-widest text-zinc-400 uppercase block mb-0.5">Up Next</span>
+                        <h4 className="font-black text-xs text-zinc-600 group-hover:text-blue-600 transition-colors">
+                          ⏩ {upcomingTrackItem.songs.title} <span className="font-normal opacity-50 font-mono text-[10px]">({upcomingTrackItem.custom_key || upcomingTrackItem.songs.original_key})</span>
+                        </h4>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
-            );
-          })}
-
-          {upcomingTrackItem?.songs && (
-            <div className="pt-2 animate-in fade-in duration-300">
-              <div 
-                onClick={() => handleUserSelectTrackBadge(currentTrackIndex + 1)}
-                className="w-full bg-zinc-50 border border-dashed border-zinc-300/80 hover:bg-zinc-100/50 rounded-2xl p-5 text-center cursor-pointer transition-all select-none group"
-              >
-                <span className="text-[8px] font-black tracking-widest text-zinc-400 uppercase block mb-0.5">Up Next</span>
-                <h4 className="font-black text-xs text-zinc-600 group-hover:text-blue-600 transition-colors">
-                  ⏩ {upcomingTrackItem.songs.title} <span className="font-normal opacity-50 font-mono text-[10px]">({upcomingTrackItem.custom_key || upcomingTrackItem.songs.original_key})</span>
-                </h4>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-      )} {/* Closes the !isSimplifiedMode block */}
+            )}
+          </>
+        );
+      })()}
+      {/* Closes the !isSimplifiedMode block */}
 
       {showSyncBack && (
         <button
           type="button"
           onClick={handleScrollToActiveSectionAnchor}
+          // ✅ SURGICAL FIX: Lowered z-index so the bottom sheet sits above it
           className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[100000] bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-black uppercase tracking-widest px-5 py-3 rounded-full shadow-2xl flex items-center gap-1.5 animate-in fade-in slide-in-from-bottom-3 duration-200 cursor-pointer active:scale-95 transition-all border border-blue-500/20"
         >
           🎯 Sync Back
         </button>
       )}
 
+      {/* ======================================================================= */}
+      {/* ✅ SURGICAL REFACTOR: CLEAN FULL-WIDTH BOTTOM SHEET SETTINGS           */}
+      {/* ======================================================================= */}
       {isSettingsModalOpen && (
-        <div className="fixed inset-0 bg-zinc-950/50 backdrop-blur-sm z-[150000] flex items-center justify-center p-4 select-none animate-in fade-in duration-100">
-          <div className="bg-[#f8f9fa] border border-zinc-200 rounded-[1rem] shadow-2xl p-6 max-w-sm w-full space-y-5 animate-in zoom-in-95 duration-100 text-left relative">
-            <button 
-              type="button" 
-              onClick={() => setIsSettingsModalOpen(false)} 
-              className="absolute top-6 right-6 w-8 h-8 rounded-full bg-white border text-zinc-400 text-xs font-bold flex items-center justify-center shadow-sm cursor-pointer hover:bg-zinc-50"
-            >
-              ✕
-            </button>
+        <div className="fixed inset-0 bg-zinc-950/40 backdrop-blur-sm z-[200000] flex items-end sm:items-center justify-center select-none animate-in fade-in duration-200">
+          
+          {/* Invisible overlay click-to-close */}
+          <div className="absolute inset-0" onClick={() => setIsSettingsModalOpen(false)} />
+
+          <div className="bg-white w-full sm:max-w-lg max-h-[90vh] sm:max-h-[85vh] rounded-t-3xl sm:rounded-3xl shadow-2xl flex flex-col relative animate-in slide-in-from-bottom-10 sm:slide-in-from-bottom-4 sm:zoom-in-95 duration-300">
             
-            <div className="space-y-0.5">
-              <h3 className="text-lg font-black text-zinc-900 tracking-tight">Setlist Settings</h3>
-              <p className="text-[11px] font-bold text-zinc-400">Tweak accessibility and dynamic track.</p>
-            </div>
-            
-            <div className="space-y-2">
-              <label className="text-[10px] font-black text-zinc-400 uppercase tracking-wider block">Performance Authorization</label>
-              <button
-                type="button"
-                onClick={handleToggleMusicDirectorMode}
-                className={`w-full py-2.5 px-4 rounded-xl font-black text-[10px] uppercase border transition-all cursor-pointer flex justify-between items-center ${
-                  isCurrentlyMD 
-                    ? "bg-purple-600 text-white border-purple-500 shadow-md" 
-                    : activeMDConnection 
-                    ? "bg-zinc-100 border-zinc-200 text-zinc-400 cursor-not-allowed opacity-60"
-                    : "bg-white border-zinc-200 text-zinc-700 hover:bg-zinc-50"
-                }`}
-              >
-                <span>{isCurrentlyMD ? "👑 You are Music Director" : activeMDConnection ? `🔒 MD Mode Active (${activeMDConnection.name})` : "🎧 Take Music Director Control"}</span>
-                <span className="font-mono opacity-60">{isCurrentlyMD ? "ON" : "OFF"}</span>
-              </button>
-            </div>
-            <div className="space-y-2">
-              <label className="text-[10px] font-black text-zinc-400 uppercase tracking-wider block">Chord Notation Display</label>
-              <div className="grid grid-cols-2 gap-1 bg-white border p-1 rounded-xl shadow-inner">
-                <button
-                  type="button"
-                  onClick={() => setShowChords(true)}
-                  className={`py-2 text-center rounded-lg font-black text-[10px] uppercase transition-all cursor-pointer ${
-                    showChords ? "bg-zinc-900 text-white shadow-md" : "text-zinc-500 hover:text-zinc-800 bg-zinc-50/20"
-                  }`}
-                >
-                  👁️ Show Chords
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowChords(false)}
-                  className={`py-2 text-center rounded-lg font-black text-[10px] uppercase transition-all cursor-pointer ${
-                    !showChords ? "bg-zinc-900 text-white shadow-md" : "text-zinc-500 hover:text-zinc-800 bg-zinc-50/20"
-                  }`}
-                >
-                  🙈 Hide Chords
-                </button>
-              </div>
-            </div>
-            {/* ✅ SURGICAL ADDITION: Musician View Mode Toggle */}
-            <div className="space-y-2 pt-1">
-              <label className="text-[10px] font-black text-zinc-400 uppercase tracking-wider block">Setlist View Mode</label>
-              <div className="grid grid-cols-2 gap-1 bg-white border p-1 rounded-xl shadow-inner">
-                <button
-                  type="button"
-                  onClick={() => setIsSimplifiedMode(false)}
-                  className={`py-2 text-center rounded-lg font-black text-[10px] uppercase transition-all cursor-pointer ${
-                    !isSimplifiedMode ? "bg-zinc-900 text-white shadow-md" : "text-zinc-500 hover:text-zinc-800 bg-zinc-50/20"
-                  }`}
-                >
-                  📄 Standard Sheet
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsSimplifiedMode(true)}
-                  className={`py-2 text-center rounded-lg font-black text-[10px] uppercase transition-all cursor-pointer ${
-                    isSimplifiedMode ? "bg-zinc-900 text-white shadow-md" : "text-zinc-500 hover:text-zinc-800 bg-zinc-50/20"
-                  }`}
-                >
-                  🎸 Musician Stack
-                </button>
-              </div>
-            </div>
-            {/* ✅ SURGICAL ADDITION: Metronome Sound Toggle */}
-            <div className="space-y-2 pt-1">
-              <label className="text-[10px] font-black text-zinc-400 uppercase tracking-wider block">Audible Metronome Click</label>
-              <div className="grid grid-cols-2 gap-1 bg-white border p-1 rounded-xl shadow-inner">
-                <button
-                  type="button"
-                  onClick={() => setIsMetronomeSoundEnabled(true)}
-                  className={`py-2 text-center rounded-lg font-black text-[10px] uppercase transition-all cursor-pointer ${
-                    isMetronomeSoundEnabled ? "bg-zinc-900 text-white shadow-md" : "text-zinc-500 hover:text-zinc-800 bg-zinc-50/20"
-                  }`}
-                >
-                  🔊 Click ON
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsMetronomeSoundEnabled(false)}
-                  className={`py-2 text-center rounded-lg font-black text-[10px] uppercase transition-all cursor-pointer ${
-                    !isMetronomeSoundEnabled ? "bg-zinc-900 text-white shadow-md" : "text-zinc-500 hover:text-zinc-800 bg-zinc-50/20"
-                  }`}
-                >
-                  🔇 Click OFF
-                </button>
-              </div>
-            </div>
-
-            {/* ✅ SURGICAL ADDITION: Universal Bluetooth Offset UI (Only shows when click is ON) */}
-            {isMetronomeSoundEnabled && (
-              <div className="bg-zinc-50 border border-zinc-200 rounded-xl p-3 mt-1.5 animate-in slide-in-from-top-2 duration-200 shadow-inner">
-                <div className="flex items-center justify-between mb-2.5">
-                  <label className="text-[10px] font-black text-zinc-500 uppercase tracking-wider block">Bluetooth Sync Offset</label>
-                  <div className="flex items-center gap-1 bg-white border border-zinc-200 rounded-lg px-2 py-1 shadow-sm">
-                    <input 
-                      type="number" 
-                      min={0}
-                      max={2000}
-                      value={audioLatencyOffsetMs}
-                      onChange={(e) => setAudioLatencyOffsetMs(parseInt(e.target.value) || 0)}
-                      className="w-10 bg-transparent text-center font-black text-xs text-zinc-700 outline-none"
-                    />
-                    <span className="text-[9px] font-bold text-zinc-400">ms</span>
-                  </div>
-                </div>
-                
-                <div className="flex items-center gap-2">
-                  {/* Mini Visualizer */}
-                  <div className="flex items-center gap-1 bg-white p-1.5 rounded-lg border border-zinc-200 shadow-inner flex-1 justify-center">
-                    {[1, 2, 3, 4].map((beatNum) => (
-                      <div
-                        key={`test-${beatNum}`}
-                        className={`w-5 h-5 flex items-center justify-center font-mono font-black text-[9px] rounded border transition-all duration-75 select-none ${
-                          isTestingSync && testVisualBeat === beatNum
-                            ? beatNum === 4 ? "bg-[#faba37] text-white border-[#e0a22b]" : "bg-blue-600 text-white border-blue-500"
-                            : "bg-zinc-100 text-zinc-300 border-transparent"
-                        }`}
-                      >
-                        {beatNum}
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* Sync Test Trigger */}
-                  <button
-                    type="button"
-                    onClick={() => setIsTestingSync(!isTestingSync)}
-                    className={`px-3 py-2 rounded-lg text-[9px] font-black uppercase tracking-wider transition-all flex items-center justify-center shadow-sm w-24 ${
-                      isTestingSync 
-                        ? "bg-red-500 text-white border border-red-600" 
-                        : "bg-zinc-900 text-white border border-zinc-800 hover:bg-zinc-800"
-                    }`}
-                  >
-                    {isTestingSync ? "⏹ STOP" : "▶ TEST SYNC"}
-                  </button>
-                </div>
-                <p className="text-[9px] font-bold text-zinc-400 mt-2 leading-tight">
-                  If the sound hits your ears later than the visual dot, increase this offset to delay the visuals until they match.
-                </p>
-              </div>
-            )}
-
-            <div className="space-y-2">
-              <label className="text-[10px] font-black text-zinc-400 uppercase tracking-wider block">Lyrics Font Display Size</label>
-              <div className="grid grid-cols-4 gap-1 bg-white border p-1 rounded-xl shadow-inner">
-                {([
-                  { label: "Default", size: 16 },
-                  { label: "Medium", size: 24 },
-                  { label: "Large", size: 32 },
-                  { label: "Huge", size: 40 }
-                ]).map((preset) => (
-                  <button
-                    key={preset.label}
-                    type="button"
-                    onClick={() => setLyricsFontSize(preset.size)}
-                    className={`py-2 text-center rounded-lg font-black text-[10px] uppercase transition-all cursor-pointer ${
-                      lyricsFontSize === preset.size ? "bg-blue-600 text-white shadow-md" : "text-zinc-500 hover:text-zinc-800 bg-zinc-50/20"
-                    }`}
-                  >
-                    {preset.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-[10px] font-black text-zinc-400 uppercase tracking-wider block">Line Spacing Padding</label>
-              <div className="grid grid-cols-3 gap-1 bg-white border p-1 rounded-xl shadow-inner">
-                {([
-                  { label: "Default", spacing: 16 },
-                  { label: "Medium", spacing: 24 },
-                  { label: "Large", spacing: 32 }
-                ]).map((preset) => (
-                  <button
-                    key={preset.label}
-                    type="button"
-                    onClick={() => setLineSpacing(preset.spacing)}
-                    className={`py-2 text-center rounded-lg font-black text-[10px] uppercase transition-all cursor-pointer ${
-                      lineSpacing === preset.spacing ? "bg-blue-600 text-white shadow-md" : "text-zinc-500 hover:text-zinc-800 bg-zinc-50/20"
-                    }`}
-                  >
-                    {preset.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="space-y-2 pt-1">
-              <label className="text-[10px] font-black text-zinc-400 uppercase tracking-wider block">Arrangement & Transposition</label>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  disabled={isPlayingFlow}
-                  onClick={() => { setIsSettingsModalOpen(false); handleOpenTransposerModal(); }}
-                  className="py-3 bg-white hover:bg-zinc-50 text-zinc-700 border rounded-xl font-extrabold text-xs text-center shadow-sm flex items-center justify-center gap-1 cursor-pointer disabled:opacity-40"
-                >
-                  🎹 Transpose Key
-                </button>
-                <button
-                  type="button"
-                  disabled={isPlayingFlow}
-                  onClick={() => { setIsSettingsModalOpen(false); setIsStructureModalOpen(true); }}
-                  className="py-3 bg-white hover:bg-zinc-50 text-zinc-700 border rounded-xl font-extrabold text-xs text-center shadow-sm flex items-center justify-center gap-1 cursor-pointer disabled:opacity-40"
-                >
-                  🧱 Structure
-                </button>
-              </div>
-            </div>
-
-            <div className="pt-2">
+            {/* CLEAN HEADER: Close left, Title center */}
+            <div className="flex-shrink-0 relative flex items-center justify-center pt-5 pb-4 px-4 border-b border-zinc-100">
+              <div className="absolute top-2 left-1/2 -translate-x-1/2 w-10 h-1 bg-zinc-200 rounded-full sm:hidden" />
               <button 
                 type="button" 
                 onClick={() => setIsSettingsModalOpen(false)} 
-                className="w-full py-3 bg-zinc-950 text-white font-black text-xs uppercase tracking-widest rounded-xl text-center shadow-md cursor-pointer"
+                className="absolute left-5 w-8 h-8 rounded-full bg-zinc-100 text-zinc-500 text-sm font-bold flex items-center justify-center hover:bg-zinc-200 transition-colors"
               >
-                Close Parameters
+                ✕
               </button>
+              <h3 className="text-base font-bold text-zinc-900 tracking-tight">Preferences</h3>
             </div>
-          </div>
-        </div>
-      )}
 
-      {isStructureModalOpen && (
-        <div className="fixed inset-0 bg-zinc-950/50 backdrop-blur-sm z-[250000] flex items-center justify-center p-4 md:p-6 animate-in fade-in duration-100 select-none">
-          <div className="bg-white border border-zinc-200 rounded-[2.5rem] shadow-2xl max-w-3xl w-full max-h-[80vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-150 relative text-left">
-            <button
-              type="button"
-              onClick={() => setIsStructureModalOpen(false)}
-              className="absolute top-6 right-6 w-8 h-8 rounded-full bg-zinc-50 hover:bg-zinc-100 border text-zinc-400 text-xs font-bold flex items-center justify-center shadow-sm cursor-pointer transition-colors"
-            >
-              ✕
-            </button>
-            <div className="p-6 px-8 border-b border-zinc-100 flex-shrink-0 flex items-center justify-between">
-              <div>
-                <h3 className="text-xl font-black text-zinc-900 tracking-tight">Modify Worship Arrangement</h3>
-                <p className="text-xs text-zinc-400 font-bold mt-0.5">Drag blocks to reorganize, or append fields to alter the set timeline overrides.</p>
-              </div>
-              {isSavingStructure && (
-                <span className="text-[10px] bg-blue-50 font-black text-blue-600 border border-blue-100 px-3 py-1 rounded-full animate-pulse">Syncing...</span>
-              )}
-            </div>
-            <div className="flex-1 overflow-hidden flex divide-x divide-zinc-100">
-              <div className="w-7/12 overflow-y-auto p-6 space-y-2 custom-scrollbar">
-                <div className="text-[9px] font-black uppercase text-zinc-400 tracking-wider mb-2">Active Performance Sequence</div>
-                {sections.map((sec, sIdx) => {
-                  const isBeingDragged = draggedSectionIndex === sIdx;
-                  const isHoveredTarget = dragOverIndex === sIdx;
-                  return (
-                    <div
-                      key={sec.id}
-                      draggable
-                      onDragStart={() => handleModalSectionDragStart(sIdx)}
-                      onDragOver={(e) => { e.preventDefault(); if (dragOverIndex !== sIdx) setDragOverIndex(sIdx); }}
-                      onDragLeave={() => { if (dragOverIndex === sIdx) setDragOverIndex(null); }}
-                      onDragEnd={() => { setDraggedSectionIndex(null); setDragOverIndex(null); }}
-                      onDrop={() => handleModalSectionDrop(sIdx)}
-                      className={`flex items-center justify-between p-3.5 border rounded-2xl cursor-grab active:cursor-grabbing transition-all duration-150 relative ${
-                        isBeingDragged ? "opacity-30 bg-zinc-100 border-zinc-300" : isHoveredTarget ? "border-blue-500 bg-blue-50/50 scale-[1.01] ring-2 ring-blue-400/20 shadow-md" : "bg-zinc-50 hover:bg-zinc-100 border-zinc-200 shadow-inner"
-                      }`}
-                    >
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <span className="text-xs text-zinc-400 font-mono font-bold shrink-0">#{sIdx + 1}</span>
-                        <span className="text-xs font-black uppercase tracking-wider text-zinc-700 truncate">{sec.section_name}</span>
-                      </div>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <button type="button" onClick={() => handleModalSectionRemoveItem(sIdx)} className="text-[10px] font-bold text-zinc-400 hover:text-red-500 px-1 cursor-pointer transition-colors">✕ Remove</button>
-                        <span className="text-zinc-300 text-xs font-bold select-none cursor-grab">☰</span>
-                      </div>
+            {/* SCROLLABLE BODY */}
+            <div className="flex-1 overflow-y-auto p-5 md:p-6 space-y-7 custom-scrollbar pb-12">
+              
+              {/* SECTION: PERFORMANCE */}
+              <div className="space-y-3">
+                <label className="text-xs font-bold text-zinc-900 block">Performance Authorization</label>
+                <div className="bg-zinc-50/50 border border-zinc-100 rounded-2xl overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={handleToggleMusicDirectorMode}
+                    className="w-full py-4 px-4 flex justify-between items-center hover:bg-zinc-50 transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className={`w-8 h-8 rounded-full flex items-center justify-center text-sm ${isCurrentlyMD ? "bg-blue-100 text-blue-600" : activeMDConnection ? "bg-zinc-200 text-zinc-500" : "bg-zinc-100 text-zinc-600"}`}>
+                        {isCurrentlyMD ? "👑" : activeMDConnection ? "🔒" : "🎧"}
+                      </span>
+                      <span className="text-sm font-bold text-zinc-700">
+                        {isCurrentlyMD ? "You are Music Director" : activeMDConnection ? `MD Mode Active (${activeMDConnection.name})` : "Take MD Control"}
+                      </span>
                     </div>
-                  );
-                })}
-              </div>
-              <div className="w-5/12 overflow-y-auto p-6 bg-zinc-50/40 space-y-3 custom-scrollbar">
-                <div className="text-[9px] font-black uppercase text-zinc-400 tracking-wider mb-1">Add Block Element</div>
-                <div className="grid grid-cols-1 gap-1.5">
-                  {STRUCTURE_CATALOG_PRESETS.map((presetName) => (
-                    <button
-                      key={presetName}
-                      type="button"
-                      onClick={() => handleModalAppendNewSectionItem(presetName)}
-                      className="w-full text-left p-3 px-4 bg-white hover:bg-blue-50 hover:border-blue-300 hover:text-blue-600 border border-zinc-200 rounded-xl text-xs font-bold text-zinc-700 flex justify-between items-center transition-all shadow-sm cursor-pointer group"
-                    >
-                      <span>🏷️ {presetName}</span>
-                      <span className="text-zinc-300 group-hover:text-blue-500 font-black text-xs font-mono">＋</span>
-                    </button>
-                  ))}
+                    {/* iOS-style toggle switch indicator */}
+                    <div className={`w-11 h-6 rounded-full flex items-center p-1 transition-colors ${isCurrentlyMD ? 'bg-blue-500' : 'bg-zinc-200'}`}>
+                      <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform ${isCurrentlyMD ? 'translate-x-5' : 'translate-x-0'}`} />
+                    </div>
+                  </button>
                 </div>
               </div>
-            </div>
-            <div className="p-5 px-8 bg-zinc-50 border-t flex justify-end flex-shrink-0">
-              <button type="button" onClick={() => setIsStructureModalOpen(false)} className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-black text-sm uppercase tracking-widest rounded-xl shadow-md transition-colors cursor-pointer text-xs">Close & Lock Workspace</button>
+
+              {/* SECTION: DISPLAY OPTIONS */}
+              <div className="space-y-4">
+                <label className="text-xs font-bold text-zinc-900 block">Display Options</label>
+                
+                {/* 3-Column Grid to fit the new format toggle */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="space-y-2">
+                    <span className="text-[11px] font-bold text-zinc-500">Chord Notation</span>
+                    <div className="flex bg-zinc-100 p-1 rounded-xl">
+                      <button onClick={() => setShowChords(true)} className={`flex-1 py-2 text-[11px] font-bold rounded-lg transition-all ${showChords ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"}`}>Show</button>
+                      <button onClick={() => setShowChords(false)} className={`flex-1 py-2 text-[11px] font-bold rounded-lg transition-all ${!showChords ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"}`}>Hide</button>
+                    </div>
+                  </div>
+                  
+                  <div className="space-y-2">
+                    <span className="text-[11px] font-bold text-zinc-500">Chord Format</span>
+                    <div className="flex bg-zinc-100 p-1 rounded-xl">
+                      <button onClick={() => setChordFormat("Key")} className={`flex-1 py-2 text-[11px] font-bold rounded-lg transition-all ${chordFormat === "Key" ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"}`}>Key</button>
+                      <button onClick={() => setChordFormat("Numbers")} className={`flex-1 py-2 text-[11px] font-bold rounded-lg transition-all ${chordFormat === "Numbers" ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"}`}>Numbers</button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <span className="text-[11px] font-bold text-zinc-500">View Mode</span>
+                    <div className="flex bg-zinc-100 p-1 rounded-xl">
+                      <button onClick={() => setIsSimplifiedMode(false)} className={`flex-1 py-2 text-[11px] font-bold rounded-lg transition-all ${!isSimplifiedMode ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"}`}>Sheet</button>
+                      <button onClick={() => setIsSimplifiedMode(true)} className={`flex-1 py-2 text-[11px] font-bold rounded-lg transition-all ${isSimplifiedMode ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"}`}>Stack</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <span className="text-[11px] font-bold text-zinc-500">Line Spacing</span>
+                  <div className="flex bg-zinc-100 p-1 rounded-xl">
+                    {([ { label: "Compact", spacing: 16 }, { label: "Comfort", spacing: 24 }, { label: "Spacious", spacing: 32 } ]).map((preset) => (
+                      <button key={preset.label} onClick={() => setLineSpacing(preset.spacing)} className={`flex-1 py-2 text-[11px] font-bold rounded-lg transition-all ${lineSpacing === preset.spacing ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"}`}>
+                        {preset.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* SECTION: AUDIO & SYNC */}
+              <div className="space-y-3">
+                <label className="text-xs font-bold text-zinc-900 block">Metronome & Audio</label>
+                <div className="flex bg-zinc-100 p-1 rounded-xl">
+                  <button onClick={() => setIsMetronomeSoundEnabled(true)} className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${isMetronomeSoundEnabled ? "bg-blue-500 text-white shadow-sm" : "text-zinc-500 hover:text-zinc-700"}`}>Click ON</button>
+                  <button onClick={() => setIsMetronomeSoundEnabled(false)} className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${!isMetronomeSoundEnabled ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"}`}>Click OFF</button>
+                </div>
+
+                {isMetronomeSoundEnabled && (
+                  <div className="bg-zinc-50 border border-zinc-100 rounded-xl p-4 animate-in slide-in-from-top-2">
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="text-[11px] font-bold text-zinc-600">Bluetooth Sync Offset</span>
+                      <div className="flex items-center gap-1 bg-white border border-zinc-200 rounded-lg px-2 py-1 shadow-sm">
+                        <input type="number" min={0} max={2000} value={audioLatencyOffsetMs} onChange={(e) => setAudioLatencyOffsetMs(parseInt(e.target.value) || 0)} className="w-10 bg-transparent text-center font-bold text-xs text-zinc-900 outline-none" />
+                        <span className="text-[10px] font-bold text-zinc-400">ms</span>
+                      </div>
+                    </div>
+                    
+                    <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-1 bg-white p-1 rounded-lg border border-zinc-200 shadow-inner flex-1 justify-center">
+                        {[1, 2, 3, 4].map((beatNum) => (
+                          <div key={`test-${beatNum}`} className={`w-6 h-6 flex items-center justify-center font-mono font-black text-[10px] rounded border transition-all duration-75 select-none ${isTestingSync && testVisualBeat === beatNum ? (beatNum === 4 ? "bg-amber-400 text-white border-amber-500" : "bg-blue-500 text-white border-blue-600") : "bg-zinc-50 text-zinc-300 border-transparent"}`}>
+                            {beatNum}
+                          </div>
+                        ))}
+                      </div>
+                      <button onClick={() => setIsTestingSync(!isTestingSync)} className={`px-4 py-2 rounded-lg text-[10px] font-bold transition-all w-24 ${isTestingSync ? "bg-red-50 text-red-600 border border-red-200" : "bg-white border border-zinc-200 text-zinc-700 shadow-sm hover:bg-zinc-50"}`}>
+                        {isTestingSync ? "STOP" : "TEST SYNC"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* SECTION: ACTIONS */}
+              <div className="space-y-3">
+                <label className="text-xs font-bold text-zinc-900 block">Actions</label>
+                <div className="bg-white border border-zinc-100 rounded-2xl overflow-hidden shadow-sm divide-y divide-zinc-50">
+                  
+                  {/* ✅ SURGICAL ADDITION: Admin Only - Edit Song Redirect */}
+                  {isAdmin && activeSong && (
+                    <button 
+                      type="button"
+                      disabled={isPlayingFlow} 
+                      onClick={() => { 
+                        setIsSettingsModalOpen(false); 
+                        router.push(`/songs/${activeSong.id}/edit`); 
+                      }} 
+                      className="w-full py-4 px-4 flex justify-between items-center hover:bg-zinc-50 transition-colors disabled:opacity-40"
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="text-blue-500">📝</span>
+                        <span className="text-sm font-bold text-zinc-700">Edit Song</span>
+                      </div>
+                      <span className="text-zinc-300 font-bold">›</span>
+                    </button>
+                  )}
+
+                  <button disabled={isPlayingFlow} onClick={() => { setIsSettingsModalOpen(false); handleOpenTransposerModal(); }} className="w-full py-4 px-4 flex justify-between items-center hover:bg-zinc-50 transition-colors disabled:opacity-40">
+                    <div className="flex items-center gap-3">
+                      <span className="text-blue-500">🎹</span>
+                      <span className="text-sm font-bold text-zinc-700">Transpose Key</span>
+                    </div>
+                    <span className="text-zinc-300 font-bold">›</span>
+                  </button>
+                  <button disabled={isPlayingFlow} onClick={() => { setIsSettingsModalOpen(false); setIsStructureModalOpen(true); }} className="w-full py-4 px-4 flex justify-between items-center hover:bg-zinc-50 transition-colors disabled:opacity-40">
+                    <div className="flex items-center gap-3">
+                      <span className="text-blue-500">🧱</span>
+                      <span className="text-sm font-bold text-zinc-700">Edit Structure</span>
+                    </div>
+                    <span className="text-zinc-300 font-bold">›</span>
+                  </button>
+                </div>
+              </div>
+              
             </div>
           </div>
         </div>
       )}
 
+      {/* ======================================================================= */}
+      {/* ✅ SURGICAL REFACTOR: EDIT STRUCTURE BOTTOM SHEET                       */}
+      {/* ======================================================================= */}
+      {isStructureModalOpen && (
+        <div className="fixed inset-0 bg-zinc-950/40 backdrop-blur-sm z-[250000] flex items-end sm:items-center justify-center select-none animate-in fade-in duration-200">
+          
+          <div className="absolute inset-0" onClick={() => setIsStructureModalOpen(false)} />
+
+          <div className="bg-[#f8f9fa] w-full sm:max-w-lg max-h-[90vh] sm:max-h-[85vh] rounded-t-3xl sm:rounded-3xl shadow-2xl flex flex-col relative animate-in slide-in-from-bottom-10 sm:slide-in-from-bottom-4 sm:zoom-in-95 duration-300">
+            
+            {/* Header */}
+            <div className="flex-shrink-0 relative flex items-center justify-center pt-5 pb-4 px-4 border-b border-zinc-100 bg-white rounded-t-3xl sm:rounded-t-3xl z-10">
+              <div className="absolute top-2 left-1/2 -translate-x-1/2 w-10 h-1 bg-zinc-200 rounded-full sm:hidden" />
+              <button type="button" onClick={() => setIsStructureModalOpen(false)} className="absolute left-5 w-8 h-8 rounded-full bg-zinc-100 text-zinc-500 text-sm font-bold flex items-center justify-center hover:bg-zinc-200 transition-colors cursor-pointer">✕</button>
+              <h3 className="text-base font-bold text-zinc-900 tracking-tight">Edit Structure</h3>
+              {isSavingStructure && <span className="absolute right-5 text-[10px] bg-blue-50 font-black text-blue-600 border border-blue-100 px-2 py-0.5 rounded-full animate-pulse">Saving...</span>}
+            </div>
+
+            {/* Draggable List Body */}
+            <div className="flex-1 overflow-y-auto p-3 md:p-4 space-y-2 custom-scrollbar pb-10">
+              {sections.map((sec, sIdx) => {
+                const isBeingDragged = draggedSectionIndex === sIdx;
+                const isHoveredTarget = dragOverIndex === sIdx;
+                const abbr = getSectionAbbreviation(sec.section_name);
+                const colorClass = getSectionColorClass(sec.section_name);
+                
+                return (
+                  <div
+                    key={sec.id}
+                    draggable
+                    onDragStart={() => handleModalSectionDragStart(sIdx)}
+                    onDragOver={(e) => { e.preventDefault(); if (dragOverIndex !== sIdx) setDragOverIndex(sIdx); }}
+                    onDragLeave={() => { if (dragOverIndex === sIdx) setDragOverIndex(null); }}
+                    onDragEnd={() => { setDraggedSectionIndex(null); setDragOverIndex(null); }}
+                    onDrop={() => handleModalSectionDrop(sIdx)}
+                    className={`flex items-center justify-between p-3.5 bg-white rounded-xl transition-all duration-150 ${
+                      isBeingDragged ? "opacity-30 shadow-none border border-dashed border-zinc-400" : isHoveredTarget ? "border border-blue-500 scale-[1.02] shadow-md z-10" : "border border-transparent hover:border-zinc-200 shadow-sm"
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 md:gap-4 min-w-0">
+                      {/* Drag Handle SVG */}
+                      <div className="cursor-grab active:cursor-grabbing text-zinc-300 pl-1 hover:text-zinc-500 transition-colors">
+                        <svg width="14" height="20" viewBox="0 0 14 20" fill="currentColor"><path d="M4.5 4a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm5 0a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm-5 6a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm5 0a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm-5 6a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm5 0a1.5 1.5 0 110-3 1.5 1.5 0 010 3z"/></svg>
+                      </div>
+                      
+                      {/* Colored Abbreviation Badge */}
+                      <div className={`w-9 h-9 rounded-full border-[1.5px] flex items-center justify-center text-xs font-black ${colorClass}`}>
+                        {abbr}
+                      </div>
+                      
+                      <span className="text-[15px] font-bold text-zinc-800">{sec.section_name}</span>
+                    </div>
+
+                    <button type="button" onClick={() => handleModalSectionRemoveItem(sIdx)} className="w-8 h-8 flex items-center justify-center text-zinc-300 hover:text-red-500 transition-colors rounded-full hover:bg-red-50 cursor-pointer">✕</button>
+                  </div>
+                );
+              })}
+
+              <button 
+                type="button" 
+                onClick={() => setIsAddBlockModalOpen(true)} 
+                className="w-full flex items-center gap-3 p-4 mt-2 text-blue-500 hover:text-blue-600 font-bold hover:bg-blue-50/50 rounded-xl transition-colors cursor-pointer"
+              >
+                <span className="text-2xl leading-none font-light mb-1">+</span> 
+                <span className="text-[15px]">Add New Structures</span>
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================================= */}
+      {/* ✅ SURGICAL ADDITION: ADD BLOCK SUB-MODAL                               */}
+      {/* ======================================================================= */}
+      {isAddBlockModalOpen && (
+        <div className="fixed inset-0 bg-zinc-950/40 backdrop-blur-sm z-[260000] flex items-end sm:items-center justify-center select-none animate-in fade-in duration-200">
+          <div className="absolute inset-0" onClick={() => setIsAddBlockModalOpen(false)} />
+          
+          <div className="bg-white w-full sm:max-w-sm max-h-[80vh] rounded-t-3xl sm:rounded-3xl shadow-2xl flex flex-col relative animate-in slide-in-from-bottom-10 sm:slide-in-from-bottom-4 sm:zoom-in-95 duration-200">
+            <div className="flex-shrink-0 relative flex items-center justify-center pt-5 pb-4 px-4 border-b border-zinc-100">
+              <div className="absolute top-2 left-1/2 -translate-x-1/2 w-10 h-1 bg-zinc-200 rounded-full sm:hidden" />
+              <button type="button" onClick={() => setIsAddBlockModalOpen(false)} className="absolute left-5 w-8 h-8 rounded-full bg-zinc-100 text-zinc-500 text-sm font-bold flex items-center justify-center hover:bg-zinc-200 transition-colors cursor-pointer">✕</button>
+              <h3 className="text-base font-bold text-zinc-900 tracking-tight">Add Block Element</h3>
+            </div>
+            
+            <div className="flex-1 overflow-y-auto p-4 custom-scrollbar pb-10">
+              <div className="grid grid-cols-1 gap-2">
+                {/* ✅ SURGICAL FIX: Driven by the dynamic context-aware catalog */}
+                {availableSectionNames.map((sectionName) => (
+                  <button
+                    key={sectionName}
+                    type="button"
+                    onClick={() => {
+                      handleModalAppendNewSectionItem(sectionName);
+                      setIsAddBlockModalOpen(false);
+                    }}
+                    className="w-full text-left p-4 bg-zinc-50 hover:bg-blue-50 border border-zinc-100 hover:border-blue-200 rounded-xl text-sm font-bold text-zinc-700 flex justify-between items-center transition-all cursor-pointer group"
+                  >
+                    <span>{sectionName}</span>
+                    <span className="text-zinc-300 group-hover:text-blue-500 font-black text-xl leading-none transition-colors">+</span>
+                  </button>
+                ))}
+                
+                {availableSectionNames.length === 0 && (
+                  <div className="text-center p-6 text-xs font-bold text-zinc-400">
+                    No sections available for this song.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* OVERLAY KEY REMODAL TRANSPOSER INTERFACE */}
       {isTransposerOpen && (
-        <div className="fixed inset-0 bg-zinc-950/50 backdrop-blur-sm z-[200000] flex items-center justify-center p-4 md:p-6 animate-in fade-in duration-100 select-none">
+        // ✅ SURGICAL FIX: Bumped z-index to z-[210000] so it stacks flawlessly ON TOP of the bottom sheet
+        <div className="fixed inset-0 bg-zinc-950/50 backdrop-blur-sm z-[210000] flex items-center justify-center p-4 md:p-6 animate-in fade-in duration-100 select-none">
           <form onSubmit={handleCommitTranspositionSave} className="bg-[#f8f9fa] border border-zinc-200 rounded-[2.5rem] shadow-2xl max-w-xl w-full p-7 px-8 space-y-6 animate-in zoom-in-95 duration-150 relative text-left">
             <button type="button" onClick={() => setIsTransposerOpen(false)} className="absolute top-6 right-6 w-8 h-8 rounded-full bg-white hover:bg-zinc-100 border text-zinc-400 text-xs font-bold flex items-center justify-center shadow-sm cursor-pointer transition-colors">✕</button>
             <div className="space-y-1"><h3 className="text-2xl font-black text-zinc-900 tracking-tight">Setlist Transposer</h3><p className="text-xs font-black text-blue-500">Original Song Base {activeSong?.original_key || "--"}</p></div>
