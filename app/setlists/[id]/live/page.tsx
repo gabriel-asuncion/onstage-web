@@ -149,7 +149,8 @@ const MemoizedLyricLine = React.memo(({
     <div 
       id={`line-${sectionIndex}-${lineIndex}`}
       style={{ paddingBottom: `${Math.max(2, lineSpacing - 12)}px` }} 
-      className={`flex flex-col sm:flex-row sm:items-start justify-between gap-1 border-b border-zinc-100/40 last:border-0 px-2 py-1 -mx-2 rounded-xl transition-all duration-300 ${
+      // ✅ QoL #4: Added scroll-mt-[30vh] to force the top 30% padding!
+      className={`scroll-mt-[30vh] flex flex-col sm:flex-row sm:items-start justify-between gap-1 border-b border-zinc-100/40 last:border-0 px-2 py-1 -mx-2 rounded-xl transition-all duration-300 ${
         isCurrentlyPlayingLine 
           ? "bg-zinc-100/80 shadow-sm scale-[1.002] border-transparent z-20" 
           : ""
@@ -406,6 +407,45 @@ export default function SetlistPerformanceRoomPage() {
   const simplifiedProgressBarRef = useRef<HTMLDivElement | null>(null);
 
   const isMetronomeSoundEnabledRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const savedFontSize = localStorage.getItem("wm_prefs_fontSize");
+      if (savedFontSize) setLyricsFontSize(Number(savedFontSize));
+
+      const savedShowChords = localStorage.getItem("wm_prefs_showChords");
+      if (savedShowChords) setShowChords(savedShowChords === "true");
+
+      const savedChordFormat = localStorage.getItem("wm_prefs_chordFormat");
+      if (savedChordFormat) setChordFormat(savedChordFormat as "Key" | "Numbers");
+
+      const savedMode = localStorage.getItem("wm_prefs_simplifiedMode");
+      if (savedMode) setIsSimplifiedMode(savedMode === "true");
+
+      const savedSpacing = localStorage.getItem("wm_prefs_lineSpacing");
+      if (savedSpacing) setLineSpacing(Number(savedSpacing));
+
+      const savedVolume = localStorage.getItem("wm_prefs_clickVolume");
+      if (savedVolume) setLocalClickVolume(Number(savedVolume));
+    }
+  }, []);
+
+  
+
+  // ✅ QoL #2: Music Director "Accidental Exit" Protection
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isPlayingRef.current && localPresenceUserRef.current?.isMD) {
+        e.preventDefault();
+        e.returnValue = "You are currently driving the live set. Are you sure you want to leave?";
+        return e.returnValue;
+      }
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, []);
+
+  const [localClickVolume, setLocalClickVolume] = useState<number>(1.0);
   useEffect(() => {
     isMetronomeSoundEnabledRef.current = isMetronomeSoundEnabled;
   }, [isMetronomeSoundEnabled]);
@@ -424,6 +464,17 @@ export default function SetlistPerformanceRoomPage() {
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false); 
   const [lineSpacing, setLineSpacing] = useState<number>(16); 
   const [isMdLockModalOpen, setIsMdLockModalOpen] = useState<boolean>(false); // ✅ SURGICAL FIX: Added modal state
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("wm_prefs_fontSize", lyricsFontSize.toString());
+      localStorage.setItem("wm_prefs_showChords", showChords.toString());
+      localStorage.setItem("wm_prefs_chordFormat", chordFormat);
+      localStorage.setItem("wm_prefs_simplifiedMode", isSimplifiedMode.toString());
+      localStorage.setItem("wm_prefs_lineSpacing", lineSpacing.toString());
+      localStorage.setItem("wm_prefs_clickVolume", localClickVolume.toString());
+    }
+  }, [lyricsFontSize, showChords, chordFormat, isSimplifiedMode, lineSpacing, localClickVolume]);
 
   const [isAddBlockModalOpen, setIsAddBlockModalOpen] = useState<boolean>(false);
   // ✅ SURGICAL ADDITION: Background loop for the Settings Modal Test Sync
@@ -567,7 +618,8 @@ export default function SetlistPerformanceRoomPage() {
   const triggerMetronomeSound = (beatNum: number, time: number = 0) => {
   if (!isMetronomeSoundEnabledRef.current) return;
   const targetKey = beatNum === 1 ? "metronome_1" : "metronome_2";
-  playZeroLatencyAudio(targetKey, 1.0, time);
+  // ✅ QoL #5: Applies the user's independent volume slider to the audio API
+  playZeroLatencyAudio(targetKey, localClickVolume, time);
 };
  
   // Floating scroll state anchors tracking fields
@@ -1961,7 +2013,7 @@ export default function SetlistPerformanceRoomPage() {
         }
       `}} />
       {/* FULL-WIDTH CONSOLE NAVBAR HEADER */}
-      <div id="fixed-live-header" className="w-full bg-white border-b border-zinc-200 flex-shrink-0 z-50 shadow-sm px-4 md:px-8 py-3.5 relative overflow-hidden">
+      <div id="fixed-live-header" className="w-full bg-white border-b border-zinc-200 flex-shrink-0 z-50 shadow-sm px-4 md:px-8 py-3.5 landscape:py-2 relative overflow-hidden">
         <div 
           ref={backdropProgressRef}
           className="absolute inset-y-0 left-0 bg-blue-500/5 pointer-events-none z-0 origin-left w-full"
@@ -1974,7 +2026,7 @@ export default function SetlistPerformanceRoomPage() {
         <div className="max-w-5xl mx-auto flex flex-col gap-2 relative z-10">
           
           {/* ROW 1: System Badges */}
-          <div className="flex items-center gap-1.5 flex-wrap">
+          <div className="flex items-center gap-1.5 flex-wrap landscape:hidden">
             <span className="bg-zinc-950 text-white font-mono font-black text-[8px] tracking-wider px-1.5 py-0.5 rounded">
               SUBSCRIBED
             </span>
@@ -2057,7 +2109,7 @@ export default function SetlistPerformanceRoomPage() {
           </div>
 
           {/* ROW 3: Active Presence Lobby */}
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1 landscape:hidden">
             <div className="flex -space-x-1.5 overflow-hidden py-0.5">
               {displayedOnlineUsers.map((user, idx) => (
                 <div 
@@ -2079,7 +2131,7 @@ export default function SetlistPerformanceRoomPage() {
           </div>
 
           {/* TRACK LIST TRAY WITH SCROLLING MARQUEE */}
-          <div className="w-full border-t border-zinc-100 pt-2.5 mt-1 flex items-center overflow-x-auto overflow-y-hidden flex-nowrap gap-1.5 scrollbar-none select-none pb-0.5 scroll-smooth">
+          <div className="w-full border-t border-zinc-100 pt-2.5 mt-1 landscape:pt-1.5 landscape:mt-0.5 flex items-center overflow-x-auto overflow-y-hidden flex-nowrap gap-1.5 scrollbar-none select-none pb-0.5 scroll-smooth">
             {tracksList.map((track, trackIdx) => {
               const title = track.songs?.title || "Song";
               const needsScroll = title.length > 10;
@@ -2433,6 +2485,7 @@ export default function SetlistPerformanceRoomPage() {
                   
                   <div className="space-y-2">
                     <span className="text-[11px] font-bold text-zinc-500">Chord Format</span>
+                    <span className="bg-blue-50 text-blue-600 font-mono font-black text-[8px] px-1.5 py-0.5 rounded">Experimental</span>
                     <div className="flex bg-zinc-100 p-1 rounded-xl">
                       <button onClick={() => setChordFormat("Key")} className={`flex-1 py-2 text-[11px] font-bold rounded-lg transition-all ${chordFormat === "Key" ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"}`}>Key</button>
                       <button onClick={() => setChordFormat("Numbers")} className={`flex-1 py-2 text-[11px] font-bold rounded-lg transition-all ${chordFormat === "Numbers" ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"}`}>Numbers</button>
@@ -2441,6 +2494,7 @@ export default function SetlistPerformanceRoomPage() {
 
                   <div className="space-y-2">
                     <span className="text-[11px] font-bold text-zinc-500">View Mode</span>
+                    <span className="bg-blue-50 text-blue-600 font-mono font-black text-[8px] px-1.5 py-0.5 rounded">Experimental</span>
                     <div className="flex bg-zinc-100 p-1 rounded-xl">
                       <button onClick={() => setIsSimplifiedMode(false)} className={`flex-1 py-2 text-[11px] font-bold rounded-lg transition-all ${!isSimplifiedMode ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"}`}>Sheet</button>
                       <button onClick={() => setIsSimplifiedMode(true)} className={`flex-1 py-2 text-[11px] font-bold rounded-lg transition-all ${isSimplifiedMode ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"}`}>Stack</button>
@@ -2448,21 +2502,38 @@ export default function SetlistPerformanceRoomPage() {
                   </div>
                 </div>
 
-                <div className="space-y-2">
-                  <span className="text-[11px] font-bold text-zinc-500">Line Spacing</span>
-                  <div className="flex bg-zinc-100 p-1 rounded-xl">
-                    {([ { label: "Compact", spacing: 16 }, { label: "Comfort", spacing: 24 }, { label: "Spacious", spacing: 32 } ]).map((preset) => (
-                      <button key={preset.label} onClick={() => setLineSpacing(preset.spacing)} className={`flex-1 py-2 text-[11px] font-bold rounded-lg transition-all ${lineSpacing === preset.spacing ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"}`}>
-                        {preset.label}
-                      </button>
-                    ))}
+                {/* ✅ SURGICAL FIX: Wrapped Line Spacing & Font Size in a responsive grid */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                  <div className="space-y-2">
+                    <span className="text-[11px] font-bold text-zinc-500">Line Spacing</span>
+                    <div className="flex bg-zinc-100 p-1 rounded-xl">
+                      {([ { label: "Compact", spacing: 16 }, { label: "Comfort", spacing: 24 }, { label: "Spacious", spacing: 32 } ]).map((preset) => (
+                        <button key={preset.label} onClick={() => setLineSpacing(preset.spacing)} className={`flex-1 py-2 text-[11px] font-bold rounded-lg transition-all ${lineSpacing === preset.spacing ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"}`}>
+                          {preset.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* ✅ SURGICAL ADDITION: Lyrics Font Size Presets */}
+                  <div className="space-y-2">
+                    <span className="text-[11px] font-bold text-zinc-500">Lyrics Size</span>
+                    <div className="flex bg-zinc-100 p-1 rounded-xl">
+                      {([ { label: "Small", size: 14 }, { label: "Medium", size: 16 }, { label: "Large", size: 20 }, { label: "Huge", size: 24 } ]).map((preset) => (
+                        <button key={preset.label} onClick={() => setLyricsFontSize(preset.size)} className={`flex-1 py-2 text-[11px] font-bold rounded-lg transition-all ${lyricsFontSize === preset.size ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"}`}>
+                          {preset.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
               </div>
 
               {/* SECTION: AUDIO & SYNC */}
               <div className="space-y-3">
-                <label className="text-xs font-bold text-zinc-900 block">Metronome & Audio</label>
+                <label className="text-xs font-bold text-zinc-900 block">Metronome & Audio
+                      <span className="bg-blue-50 text-blue-600 font-mono font-black text-[8px] px-1.5 py-0.5 rounded">Experimental</span>
+                </label>
                 <div className="flex bg-zinc-100 p-1 rounded-xl">
                   <button onClick={() => setIsMetronomeSoundEnabled(true)} className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${isMetronomeSoundEnabled ? "bg-blue-500 text-white shadow-sm" : "text-zinc-500 hover:text-zinc-700"}`}>Click ON</button>
                   <button onClick={() => setIsMetronomeSoundEnabled(false)} className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${!isMetronomeSoundEnabled ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"}`}>Click OFF</button>
@@ -2470,6 +2541,19 @@ export default function SetlistPerformanceRoomPage() {
 
                 {isMetronomeSoundEnabled && (
                   <div className="bg-zinc-50 border border-zinc-100 rounded-xl p-4 animate-in slide-in-from-top-2">
+                    
+                    {/* ✅ QoL #5: Independent Local Volume Slider */}
+                    <div className="flex items-center justify-between mb-4 border-b border-zinc-200/60 pb-4">
+                      <span className="text-[11px] font-bold text-zinc-600">Local Click Volume</span>
+                      <input 
+                        type="range" 
+                        min="0" max="1" step="0.05" 
+                        value={localClickVolume} 
+                        onChange={(e) => setLocalClickVolume(parseFloat(e.target.value))} 
+                        className="w-24 accent-blue-600" 
+                      />
+                    </div>
+
                     <div className="flex items-center justify-between mb-3">
                       <span className="text-[11px] font-bold text-zinc-600">Bluetooth Sync Offset</span>
                       <div className="flex items-center gap-1 bg-white border border-zinc-200 rounded-lg px-2 py-1 shadow-sm">
@@ -2733,7 +2817,7 @@ export default function SetlistPerformanceRoomPage() {
           onPointerCancel={handleScrubberPointerUp}
           // 1. Replaced percentage bounds with hard pixel bounds (top-[140px]) to completely clear the header.
           // 2. Added overflow-y-auto so if the list is massive, it can safely scroll if needed.
-          className={`fixed right-0 top-[140px] bottom-24 z-40 flex flex-col overflow-y-auto custom-scrollbar pl-12 pr-1 md:pr-3 touch-none transition-all duration-300 select-none ${
+          className={`fixed right-0 top-[140px] landscape:top-[80px] bottom-24 z-40 flex flex-col overflow-y-auto custom-scrollbar pl-12 pr-1 md:pr-3 touch-none transition-all duration-300 select-none ${
             isScrubberActive ? "w-48" : "w-10"
           }`}
         >

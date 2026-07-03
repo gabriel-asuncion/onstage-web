@@ -170,6 +170,31 @@ export default function SongEditPage() {
   const filteredArtistSuggestions = availableArtists
     .filter(a => a.toLowerCase().includes(formArtist.toLowerCase()) && a.toLowerCase() !== formArtist.toLowerCase())
     .slice(0, 6); // Keep UI clean by limiting to 6 results
+  
+  // ✅ SURGICAL ADDITION: Title Dropdown & Duplicate Detection States
+  const [availableSongs, setAvailableSongs] = useState<{id: string, title: string, artist: string}[]>([]);
+  const [isTitleDropdownFocused, setIsTitleDropdownFocused] = useState(false);
+  const [duplicateWarning, setDuplicateWarning] = useState<{id: string, title: string, artist: string} | null>(null);
+  const [dismissedDuplicateIds, setDismissedDuplicateIds] = useState<string[]>([]);
+
+  // Filter existing songs for the autocomplete dropdown (limit to 6 results)
+  const filteredTitleSuggestions = availableSongs
+    .filter(s => s.title.toLowerCase().includes(formTitle.toLowerCase()) && s.title.toLowerCase() !== formTitle.toLowerCase())
+    .slice(0, 6);
+
+  // Monitor Title & Artist for duplicates in real-time
+  useEffect(() => {
+    if (!formTitle.trim() || !formArtist.trim()) return;
+    const duplicate = availableSongs.find(
+      s => s.title.toLowerCase() === formTitle.trim().toLowerCase() &&
+           s.artist.toLowerCase() === formArtist.trim().toLowerCase() &&
+           s.id !== editingSongId // Don't flag itself if we are just editing it
+    );
+
+    if (duplicate && !dismissedDuplicateIds.includes(duplicate.id) && duplicateWarning?.id !== duplicate.id) {
+      setDuplicateWarning(duplicate);
+    }
+  }, [formTitle, formArtist, availableSongs, editingSongId, dismissedDuplicateIds]);
 
   const [formThemes, setFormThemes] = useState<string[]>([]);
   const [themeInputSearchValue, setThemeInputSearchValue] = useState("");
@@ -256,20 +281,28 @@ export default function SongEditPage() {
   const [draggedStructureIndex, setDraggedStructureIndex] = useState<number | null>(null);
   const [dragOverStructureIndex, setDragOverStructureIndex] = useState<number | null>(null);
 
-  // ✅ SURGICAL FIX: Standalone Artist Dictionary Fetcher (Runs even on brand new songs!)
+  // ✅ SURGICAL FIX: Unified Dictionary Fetcher (Gets Titles & Artists)
   useEffect(() => {
-    const fetchArtistDictionary = async () => {
+    const fetchDictionary = async () => {
       try {
-        const { data } = await supabase.from("songs").select("artist").not("artist", "is", null);
+        const { data } = await supabase.from("songs").select("id, title, artist");
         if (data) {
-          const uniqueArtists = Array.from(new Set(data.map(s => s.artist.trim()))).filter(Boolean);
+          // Deduplicate artists for the Artist Dropdown
+          const uniqueArtists = Array.from(new Set(data.map(s => s.artist?.trim()).filter(Boolean)));
           setAvailableArtists(uniqueArtists as string[]);
+          
+          // Store full song profiles for the Title Dropdown & Duplicate Engine
+          setAvailableSongs(data.map(s => ({ 
+            id: s.id, 
+            title: s.title?.trim() || "", 
+            artist: s.artist?.trim() || "Unknown Artist" 
+          })));
         }
       } catch (err) {
-        console.error("Failed to fetch artists", err);
+        console.error("Failed to fetch dictionary", err);
       }
     };
-    fetchArtistDictionary();
+    fetchDictionary();
   }, [supabase]);
 
   // Data Hydration Stream
@@ -514,22 +547,29 @@ export default function SongEditPage() {
     setCustomCommentInputValue("");
   };
 
+  // ✅ SURGICAL FIX: Upgraded Import Parser to extract AI-generated Matrix metrics!
   const executeRawLyricsImportAction = () => {
     if (!pastedRawLyricsText.trim()) return;
     setHasUnsavedChanges(true);
     const cleanLines = pastedRawLyricsText.split(/\r?\n/).map(l => l.trim());
+    
     let currentSectionType = "";
     let currentBuffer: string[] = [];
     const parsedBlocks: SongSectionBlock[] = [];
     let unassignedCounter = 1;
+    
+    // Temporary object to hold the timings we extract during import
+    const newExtractedTimings: SectionTimingMap = {};
 
     const flushBuffer = () => {
-      if (currentBuffer.length === 0) return;
+      if (currentBuffer.length === 0 && !currentSectionType) return;
+      
       let finalType = currentSectionType;
       if (!finalType) {
         finalType = `Unassigned ${unassignedCounter}`;
         unassignedCounter++;
       }
+      
       parsedBlocks.push({
         id: `sec-imp-${Date.now()}-${Math.random()}`,
         type: finalType,
@@ -537,24 +577,65 @@ export default function SongEditPage() {
         content: currentBuffer.join("\n"),
         repetitions: 1
       });
+      
       currentBuffer = [];
       currentSectionType = "";
     };
 
     cleanLines.forEach(line => {
-      const match = line.match(/^\[([^\]]+)\]$/);
+      // Regex detects tags like: [Verse 1] OR [Verse 1] (M: 8, B: 2, R: 1, H: 0, T: 4)
+      const match = line.match(/^\[([^\]]+)\](?:\s*\(([^)]+)\))?$/);
+      
       if (match) {
         flushBuffer();
-        currentSectionType = match[1];
+        currentSectionType = match[1].trim();
+        
+        // If the AI provided timing metadata in parentheses, parse it!
+        if (match[2]) {
+          const metricsStr = match[2];
+          const extractedMetrics = { measures: 4, beats: 0, repeats: 0, head_m: 0, tail_m: 0 };
+          
+          const mMatch = metricsStr.match(/M:\s*(\d+)/i);
+          const bMatch = metricsStr.match(/B:\s*(\d+)/i);
+          const rMatch = metricsStr.match(/R:\s*(\d+)/i);
+          const hMatch = metricsStr.match(/H:\s*(\d+)/i);
+          const tMatch = metricsStr.match(/T:\s*(\d+)/i);
+
+          if (mMatch) extractedMetrics.measures = parseInt(mMatch[1], 10);
+          if (bMatch) extractedMetrics.beats = parseInt(bMatch[1], 10);
+          if (rMatch) extractedMetrics.repeats = parseInt(rMatch[1], 10);
+          if (hMatch) extractedMetrics.head_m = parseInt(hMatch[1], 10);
+          if (tMatch) extractedMetrics.tail_m = parseInt(tMatch[1], 10);
+
+          newExtractedTimings[currentSectionType] = extractedMetrics;
+        }
       } else if (line === "") {
-        flushBuffer();
+        // We no longer aggressively flush on empty lines to allow for AI spacing,
+        // but if you requested strict spacing in the prompt, this acts as a safe fallback.
+        if (currentBuffer.length > 0) flushBuffer(); 
       } else {
         currentBuffer.push(line);
       }
     });
 
     flushBuffer();
-    setFormSections(parsedBlocks.length > 0 ? parsedBlocks : formSections);
+    
+    if (parsedBlocks.length > 0) {
+      setFormSections(parsedBlocks);
+      
+      // Inject the extracted timings directly into the app state!
+      setSectionTimings(prev => {
+        const mergedTimings = { ...prev };
+        Object.keys(newExtractedTimings).forEach(key => {
+          mergedTimings[key] = {
+            ...mergedTimings[key],
+            ...newExtractedTimings[key]
+          };
+        });
+        return mergedTimings;
+      });
+    }
+
     setIsImportModalOpen(false); 
     setPastedRawLyricsText("");
     setEditorActiveTab("content");
@@ -831,7 +912,39 @@ export default function SongEditPage() {
         {editorActiveTab === "details" && (
           <div className="w-full animate-in fade-in">
             <div className="bg-white p-4 md:p-6 rounded-xl md:rounded-2xl border border-zinc-200 space-y-4 shadow-sm">
-              <div><label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Track Title Signature *</label><input type="text" value={formTitle} className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-2.5 text-xs font-bold text-zinc-800 bg-zinc-50/50 outline-none" onChange={e => { setHasUnsavedChanges(true); setFormTitle(e.target.value); }} /></div>
+              {/* ✅ SURGICAL FIX: Title Input with Auto-Suggest Dropdown */}
+              <div className="relative">
+                <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Track Title Signature *</label>
+                <input 
+                  type="text" 
+                  value={formTitle} 
+                  onFocus={() => setIsTitleDropdownFocused(true)}
+                  onBlur={() => setTimeout(() => setIsTitleDropdownFocused(false), 200)}
+                  onChange={e => { setHasUnsavedChanges(true); setFormTitle(e.target.value); }} 
+                  className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-2.5 text-xs font-bold text-zinc-800 bg-zinc-50/50 outline-none transition-all" 
+                  placeholder="e.g. Washed"
+                />
+                {isTitleDropdownFocused && filteredTitleSuggestions.length > 0 && (
+                  <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-zinc-200 rounded-xl max-h-48 overflow-y-auto z-[3000] shadow-xl custom-scrollbar">
+                    {filteredTitleSuggestions.map(song => (
+                      <button 
+                        key={song.id} 
+                        type="button" 
+                        className="w-full px-3 py-2 text-left block border-b border-zinc-100 last:border-0 hover:bg-zinc-50 transition-colors" 
+                        onClick={() => { 
+                          setHasUnsavedChanges(true); 
+                          setFormTitle(song.title); 
+                          // Auto-fill artist to instantly trigger duplicate check
+                          if (song.artist && song.artist !== "Unknown Artist") setFormArtist(song.artist);
+                        }}
+                      >
+                        <div className="text-xs font-bold text-zinc-700">{song.title}</div>
+                        <div className="text-[9px] font-bold text-zinc-400">{song.artist}</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {/* ✅ SURGICAL FIX: Upgraded BPM Input with Inline TAP Trigger */}
                 <div>
@@ -1325,6 +1438,45 @@ export default function SongEditPage() {
             <div className="grid grid-cols-2 gap-2 pt-1">
               <button type="button" onClick={() => setIsConfirmExitModalOpen(false)} className="py-2.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 text-[11px] font-black uppercase tracking-wider rounded-xl transition-all cursor-pointer">Keep Editing</button>
               <button type="button" onClick={() => { setHasUnsavedChanges(false); setIsConfirmExitModalOpen(false); router.push("/songs"); }} className="py-2.5 bg-red-600 hover:bg-red-700 text-white text-[11px] font-black uppercase tracking-wider rounded-xl shadow-md transition-all active:scale-95 cursor-pointer">Discard & Exit</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ✅ SURGICAL ADDITION: Duplicate Song Warning Modal */}
+      {duplicateWarning && (
+        <div className="fixed inset-0 bg-zinc-900/40 backdrop-blur-sm z-[200000] flex items-center justify-center p-4 select-none animate-in fade-in duration-150">
+          <div className="bg-white border border-zinc-200 rounded-2xl shadow-2xl p-6 max-w-sm w-full space-y-4 animate-in zoom-in-95 duration-150">
+            <div className="w-12 h-12 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center text-2xl mb-2 shadow-sm border border-amber-200">
+              <span className="font-black">!</span>
+            </div>
+            <div className="space-y-1">
+              <h4 className="font-extrabold text-base text-zinc-900 tracking-tight">Duplicate Song Detected</h4>
+              <p className="text-[13px] text-zinc-500 font-medium leading-relaxed">
+                <strong className="text-zinc-800">"{duplicateWarning.title}"</strong> by <strong className="text-zinc-800">{duplicateWarning.artist}</strong> is already in the database.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 gap-2 pt-2">
+              {/* Teleports them straight to the existing song! */}
+              <button 
+                type="button" 
+                onClick={() => router.push(`/songs/${duplicateWarning.id}/edit`)} 
+                className="py-3 bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-black uppercase tracking-wider rounded-xl shadow-md transition-all active:scale-95 cursor-pointer"
+              >
+                Open Existing Song
+              </button>
+              
+              {/* Dismisses the warning so they can create a specific variation if they want to */}
+              <button 
+                type="button" 
+                onClick={() => {
+                  setDismissedDuplicateIds(prev => [...prev, duplicateWarning.id]);
+                  setDuplicateWarning(null);
+                }} 
+                className="py-3 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 text-[11px] font-black uppercase tracking-wider rounded-xl transition-all cursor-pointer"
+              >
+                Ignore & Create Anyway
+              </button>
             </div>
           </div>
         </div>

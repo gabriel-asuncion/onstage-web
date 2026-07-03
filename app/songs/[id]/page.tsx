@@ -4,6 +4,7 @@ import React, { useEffect, useState, useMemo, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { createClient } from "../../../utils/supabase/client";
 import { useEngine } from "../../context/EngineContext";
+import GlobalLoader from "../../../components/GlobalLoader";
 
 // =======================================================
 // INTERFACES
@@ -538,9 +539,13 @@ export default function MasterSongProfilePage() {
     large: "py-5 gap-6"
   }[lineSpacing];
 
-  if (loading) return <div className="p-8 text-center text-xs font-black uppercase tracking-widest text-zinc-400 animate-pulse">Syncing Master Sheet Engine...</div>;
-  if (!song) return <div className="p-12 text-center text-sm font-bold text-zinc-500">Song master record profile missing or deleted.</div>;
-
+  if (loading) {
+    return <GlobalLoader message="SYNCING MASTER SHEET ENGINE..." />;
+  }
+  
+  if (!song) {
+    return <div className="p-12 text-center text-sm font-bold text-zinc-500">Song master record profile missing or deleted.</div>;
+  }
   return (
     <div className="absolute inset-0 flex flex-col bg-[#f8f9fa] overflow-hidden select-none">
       <style dangerouslySetInnerHTML={{__html: `@import url('https://fonts.googleapis.com/css2?family=Nothing+You+Could+Do&display=swap');`}} />

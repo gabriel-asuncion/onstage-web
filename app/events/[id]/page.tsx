@@ -602,7 +602,17 @@ export default function EventCockpitPage() {
               {isSongDropdownOpen && songSearchQuery.trim() !== "" && (
                 <div className="absolute top-full left-0 right-0 mt-2 bg-white border border-zinc-200 rounded-2xl shadow-2xl z-[999999] max-h-48 overflow-y-auto custom-scrollbar divide-y">
                   {songFilteredDatabaseSongs.map(s => (
-                    <div key={s.id} onClick={() => { setSelectedNewSongId(s.id); setSongSearchQuery(s.title); setIsSongDropdownOpen(false); }} className="px-5 py-3.5 hover:bg-blue-50 text-xs font-bold text-zinc-700 cursor-pointer transition-colors">🎵 {s.title}</div>
+                    <div 
+                      key={s.id} 
+                      onClick={() => { setSelectedNewSongId(s.id); setSongSearchQuery(s.title); setIsSongDropdownOpen(false); }} 
+                      className="px-5 py-3 hover:bg-blue-50 cursor-pointer transition-colors flex flex-col justify-center"
+                    >
+                      <span className="text-[13px] font-bold text-zinc-800 leading-tight">🎵 {s.title}</span>
+                      {/* ✅ SURGICAL ADDITION: Show the artist right below the title! */}
+                      <span className="text-[10px] font-bold text-zinc-400 mt-0.5 ml-5">
+                        {s.artist || "Unknown Artist"}
+                      </span>
+                    </div>
                   ))}
                 </div>
               )}

@@ -228,7 +228,9 @@ export default function Sidebar() {
       {/* ======================================================= */}
       {/* 1. DESKTOP VIEWPORT SIDEBAR (Hidden on mobile panels)   */}
       {/* ======================================================= */}
-      <aside className="w-20 min-h-screen bg-white border-r border-zinc-200 flex-col items-center justify-between shrink-0 select-none z-40 sticky top-0 hidden md:flex">
+      <aside className={`w-20 min-h-screen bg-white border-r border-zinc-200 shrink-0 select-none z-40 sticky top-0 transition-all duration-300 flex-col items-center justify-between hidden md:flex ${
+        isPlaymodeActive ? "-ml-20 opacity-0 pointer-events-none" : "ml-0 opacity-100"
+      }`}>
         {/* We added py-6 specifically to the top logo container so it breathes, but doesn't affect the bottom profile */}
         <div className="flex flex-col items-center gap-8 w-full pt-6">
           <Link href="/dashboard" className="w-10 h-10 flex items-center justify-center transition-transform active:scale-95">

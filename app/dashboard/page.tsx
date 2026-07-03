@@ -261,7 +261,7 @@ export default function DashboardPage() {
 }
 
   return (
-    <div className="p-4 md:p-4 max-w-7xl w-full mx-auto space-y-4 md:space-y-8 animate-in fade-in duration-150">
+    <div className="h-full max-h-screen overflow-y-auto custom-scrollbar p-4 md:p-4 max-w-7xl w-full mx-auto space-y-4 md:space-y-8 animate-in fade-in duration-150 pb-24 md:pb-4">
       
       {/* MASTER HERO HEADER CONTAINER BLOCK */}
       <div className="bg-white border border-zinc-200 rounded-2xl p-6 shadow-sm space-y-4">

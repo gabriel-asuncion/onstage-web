@@ -490,19 +490,25 @@ export default function DevFab() {
         </div>
       )}
 
-      <button
-        type="button"
-        onPointerDown={handlePointerDown}
-        style={{ left: `${position.x}px`, top: `${position.y}px` }}
-        className={`fixed w-14 h-14 rounded-full bg-[#0c1527] border border-zinc-800 text-white flex items-center justify-center shadow-2xl z-[999998] select-none transition-transform hover:scale-105 active:scale-95 duration-75 touch-none ${
-          isDragging ? "cursor-grabbing opacity-75" : "cursor-grab"
-        } ${isOpen || isGlobalModalOpen ? "ring-4 ring-blue-500/30 border-blue-500 bg-zinc-950" : ""}`}
-        title="Drag anywhere to reposition workspace tools. Click once to pull up global configuration panel overrides."
-      >
-        <span className="text-lg pointer-events-none select-none">
-          {simulatedRole === "admin" ? "🛠️" : simulatedRole === "member" ? "🎵" : "👤"}
-        </span>
-      </button>
+      {/* Inside your Dev Simulator FAB render block */}
+        <button
+          type="button"
+          onPointerDown={handlePointerDown}
+          style={{ left: `${position.x}px`, top: `${position.y}px` }}
+          className={`fixed w-14 h-14 rounded-full bg-[#0c1527] border border-zinc-800 text-white flex items-center justify-center shadow-2xl z-[999998] select-none transition-transform hover:scale-105 active:scale-95 duration-75 touch-none ${
+            isDragging ? "cursor-grabbing opacity-75" : "cursor-grab"
+          } ${isOpen || isGlobalModalOpen ? "ring-4 ring-blue-500/30 border-blue-500 bg-zinc-950" : ""}`}
+          title="Drag anywhere to reposition workspace tools. Click once to pull up global configuration panel overrides."
+        >
+          <span className="text-lg pointer-events-none select-none flex items-center justify-center">
+             <img 
+              src="/assets/account.svg" 
+              alt="Dev Simulator" 
+              className="w-5 h-5 object-contain"
+              style={{ filter: "brightness(0) invert(1)" }} 
+            />
+          </span>
+        </button>
     </>
   );
 }

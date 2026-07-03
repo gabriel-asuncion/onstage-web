@@ -255,7 +255,12 @@ export default function SongsListPage() {
                   {song.title}
                 </h4>
                 <p className="text-[11px] font-bold text-indigo-600/90 flex items-center gap-1">
-                  <span className="text-xs">👤</span> {song.artist || "Unknown Artist"}
+                  <img 
+                    src="/assets/artist.svg" 
+                    alt="Artist" 
+                    className="w-3 h-3 object-contain opacity-80" 
+                  />
+                  {song.artist || "Unknown Artist"}
                 </p>
               </div>
               
