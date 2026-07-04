@@ -446,14 +446,20 @@ export default function SetlistPerformanceRoomPage() {
   }, []);
 
   const [localClickVolume, setLocalClickVolume] = useState<number>(1.0);
+  const localClickVolumeRef = useRef<number>(1.0);
   useEffect(() => {
     isMetronomeSoundEnabledRef.current = isMetronomeSoundEnabled;
-  }, [isMetronomeSoundEnabled]);
+    localClickVolumeRef.current = localClickVolume; // ✅ Keep the ref synced with the state
+  }, [isMetronomeSoundEnabled, localClickVolume]);
 
   // ✅ SURGICAL ADDITION: Latency Offset & Test Engine States
   const [audioLatencyOffsetMs, setAudioLatencyOffsetMs] = useState<number>(0);
+  const [currentDriftMs, setCurrentDriftMs] = useState<number | null>(null); // ✅ Added state for the UI Monitor
   const [isTestingSync, setIsTestingSync] = useState<boolean>(false);
   const [testVisualBeat, setTestVisualBeat] = useState<number>(1);
+  
+  const [countdownValue, setCountdownValue] = useState<number | null>(null);
+  const countdownValueRef = useRef<number | null>(null);
   
   // ✅ SURGICAL FIX: Split the clock engine so audio and visuals can run on different timelines!
   const lastAudioBeatRef = useRef<number>(1);
@@ -616,11 +622,11 @@ export default function SetlistPerformanceRoomPage() {
   }, []);
 
   const triggerMetronomeSound = (beatNum: number, time: number = 0) => {
-  if (!isMetronomeSoundEnabledRef.current) return;
-  const targetKey = beatNum === 1 ? "metronome_1" : "metronome_2";
-  // ✅ QoL #5: Applies the user's independent volume slider to the audio API
-  playZeroLatencyAudio(targetKey, localClickVolume, time);
-};
+    if (!isMetronomeSoundEnabledRef.current) return;
+    const targetKey = beatNum === 1 ? "metronome_1" : "metronome_2";
+    // ✅ SURGICAL FIX: The loop now reads the live ref instead of the stale state!
+    playZeroLatencyAudio(targetKey, localClickVolumeRef.current, time);
+  };
  
   // Floating scroll state anchors tracking fields
   const [showSyncBack, setShowSyncBack] = useState<boolean>(false);
@@ -638,6 +644,8 @@ export default function SetlistPerformanceRoomPage() {
   const [queuedSectionIndex, setQueuedSectionIndex] = useState<number | null>(null);
   const queuedSectionIndexRef = useRef<number | null>(null);
   const clickTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const playClickTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const pendingQuantizedJumpRef = useRef<{ trackIndex: number; sectionIndex: number; jumpTime: number } | null>(null);
 
@@ -806,6 +814,7 @@ export default function SetlistPerformanceRoomPage() {
   const lastBeatRef = useRef<number>(1);
   const animationFrameRef = useRef<number | null>(null);
   const sectionRefs = useRef<{ [key: string]: HTMLDivElement | null }>({});
+  const audioContextStartTimeRef = useRef<number | null>(null);
   
   // Need to cache AST tree so clock execution can read line counts without triggering hooks
   const astTreeRef = useRef<CompiledSectionToken[]>([]);
@@ -937,6 +946,34 @@ export default function SetlistPerformanceRoomPage() {
           setQueuedTrackIndex(payload.trackIndex);
           setQueuedSectionIndex(payload.sectionIndex);
         }
+        // ✅ SURGICAL ADDITION: The Follower Heartbeat Receiver & Nudge Engine
+        else if (payload.action === "HEARTBEAT" && !localPresenceUserRef.current?.isMD) {
+          // ✅ SURGICAL FIX: Added strict null check for mdSectionStartTimeRef.current
+          if (audioContextStartTimeRef.current !== null && mdSectionStartTimeRef.current !== null && isPlayingRef.current) {
+            const { mdAbsoluteBeat, mdGlobalBeatTime } = payload;
+            
+            // 1. Where does the MD think we should be in global time?
+            const localExpectedGlobalTime = mdSectionStartTimeRef.current + (mdAbsoluteBeat * (60 / (activeSongRef.current?.tempo || 75)) * 1000);
+            
+            // 2. How far off is our local math from the MD's reality?
+            const driftMs = localExpectedGlobalTime - mdGlobalBeatTime;
+            setCurrentDriftMs(driftMs);
+            // 3. If we have drifted by more than 15ms, gently nudge the hardware anchor!
+            if (Math.abs(driftMs) > 9) {
+              const nudgeSeconds = driftMs / 1000;
+              
+              // ✅ SURGICAL FIX: Corrected the '+-' typo to '+='
+              audioContextStartTimeRef.current += nudgeSeconds;
+              
+              // Conversely, we push the visual anchor BACKWARD into the past, so the UI 
+              // immediately visually jumps forward to match where the MD is right now.
+              mdSectionStartTimeRef.current -= driftMs; 
+              
+              console.log(`⏱️ Auto-corrected clock drift by ${Math.round(driftMs)}ms`);
+            }
+          }
+        }
+        
         // ✅ SURGICAL FIX: Catch takeover events and force the old MD to step down!
         else if (payload.action === "MD_TAKEOVER") {
           if (localPresenceUserRef.current?.isMD && localPresenceUserRef.current.id !== payload.newMdId) {
@@ -978,7 +1015,24 @@ export default function SetlistPerformanceRoomPage() {
     }
 
     // 2. Set the exact global time anchor
-    if (jumpTime) mdSectionStartTimeRef.current = jumpTime;
+    if (jumpTime) {
+      mdSectionStartTimeRef.current = jumpTime;
+      
+      initAudioContext(); 
+      if (globalAudioContext) {
+        const timeUntilJumpMs = jumpTime - getGlobalTime();
+        const anchorTime = globalAudioContext.currentTime + (timeUntilJumpMs / 1000);
+        audioContextStartTimeRef.current = anchorTime;
+
+        // ✅ SURGICAL ADDITION: Pre-schedule the hardware 3-2-1 countdown blips!
+        if (timeUntilJumpMs >= 3000) {
+          // triggerMetronomeSound(2) plays blip_2.wav, triggerMetronomeSound(1) plays blip_1.wav
+          triggerMetronomeSound(2, anchorTime - 3); // "3" -> Blip 2
+          triggerMetronomeSound(2, anchorTime - 2); // "2" -> Blip 2
+          triggerMetronomeSound(1, anchorTime - 1); // "1" -> Blip 1
+        }
+      }
+    }
 
     // 3. Update Section Pointers
     currentSectionIndexRef.current = targetSectionIdx;
@@ -1036,6 +1090,7 @@ export default function SetlistPerformanceRoomPage() {
     setActiveLineIndex(0);
     setQueuedTrackIndex(null);
     setQueuedSectionIndex(null);
+    setCurrentDriftMs(null);
 
     if (backdropProgressRef.current) backdropProgressRef.current.style.transform = "scaleX(0)";
     if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = "scaleX(0)";
@@ -1388,11 +1443,33 @@ export default function SetlistPerformanceRoomPage() {
       // ✅ SURGICAL FIX 1: Pure Network Sync. No clock drift!
       let elapsedMs = getGlobalTime() - mdSectionStartTimeRef.current;
       
-      // If elapsed is negative, it means the MD broadcasted a future start time 
-      // and we are just waiting for that exact physical millisecond to arrive.
-      if (elapsedMs < 0) {
+      // ✅ SURGICAL FIX: The Visual Countdown Engine (Silent for Instant Starts)
+      if (elapsedMs < -500) {
+        const secondsLeft = Math.ceil(Math.abs(elapsedMs) / 1000);
+        
+        // Only trigger React state updates if the number actually changes to save performance
+        if (secondsLeft <= 3 && secondsLeft > 0) {
+          if (countdownValueRef.current !== secondsLeft) {
+            countdownValueRef.current = secondsLeft;
+            setCountdownValue(secondsLeft);
+          }
+        }
         animationFrameRef.current = requestAnimationFrame(clockExecutionTick);
         return; 
+      } else if (elapsedMs < 0) {
+        // ✅ We are in the tiny 150ms network buffer for an instant start. Wait silently!
+        if (countdownValueRef.current !== null) {
+          countdownValueRef.current = null;
+          setCountdownValue(null);
+        }
+        animationFrameRef.current = requestAnimationFrame(clockExecutionTick);
+        return;
+      } else {
+        // Clear the countdown exactly when playback hits 0
+        if (countdownValueRef.current !== null) {
+          countdownValueRef.current = null;
+          setCountdownValue(null);
+        }
       }
       
       // Split Audio (Real) Time and Visual (Delayed) Time
@@ -1403,27 +1480,48 @@ export default function SetlistPerformanceRoomPage() {
       const progressRatio = Math.min(1, visualElapsedMs / totalDurationMs);
       if (backdropProgressRef.current) backdropProgressRef.current.style.transform = `scaleX(${progressRatio})`;
       if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = `scaleX(${progressRatio})`;
-
-      // ✅ SURGICAL ADDITION: Drive the new Musician Stack progress bar
       if (simplifiedProgressBarRef.current) simplifiedProgressBarRef.current.style.transform = `scaleX(${progressRatio})`;
 
-      // ✅ SURGICAL FIX 2: THE HARDWARE LOOKAHEAD SCHEDULER (Immune to React lag)
-      const lookaheadMs = 150; 
-      const timeToNextBeatMs = beatSpeedMsCurrent - (trueElapsedMs % beatSpeedMsCurrent);
+      // ✅ SURGICAL FIX 2: THE HARDWARE-LOCKED SCHEDULER (Immune to clock drift!)
+      if (audioContextStartTimeRef.current !== null && globalAudioContext) {
+        const lookaheadSecs = 0.200; // 200ms lookahead window
+        const beatSpeedSecs = beatSpeedMsCurrent / 1000;
+        const currentAudioTime = globalAudioContext.currentTime;
 
-      // If the next beat is going to happen within our 150ms lookahead window...
-      if (timeToNextBeatMs <= lookaheadMs) {
-        const absoluteBeatIndex = Math.floor(trueElapsedMs / beatSpeedMsCurrent) + 1;
+        // Calculate the exact hardware time the *next* beat is supposed to play
+        let nextBeatTime = audioContextStartTimeRef.current + (lastAudioBeatRef.current * beatSpeedSecs);
         
-        if (absoluteBeatIndex > lastAudioBeatRef.current) {
-          lastAudioBeatRef.current = absoluteBeatIndex;
-          const nextBeatPulse = (absoluteBeatIndex % 4) + 1;
+        // Use a while loop just in case the React UI thread lagged and we need to schedule multiple beats at once to catch up!
+        while (nextBeatTime < currentAudioTime + lookaheadSecs) {
+          const nextBeatPulse = (lastAudioBeatRef.current % 4) + 1;
           
-          // Calculate the exact hardware time it should play, and hand it off to the Web Audio API!
-          const audioContextTimeDelay = timeToNextBeatMs / 1000;
-          const scheduleTime = (globalAudioContext?.currentTime || 0) + audioContextTimeDelay;
+          // Hand the exact, unshakeable hardware timestamp to the Audio API
+          triggerMetronomeSound(nextBeatPulse, nextBeatTime);
           
-          triggerMetronomeSound(nextBeatPulse, scheduleTime);
+          lastAudioBeatRef.current++;
+          nextBeatTime = audioContextStartTimeRef.current + (lastAudioBeatRef.current * beatSpeedSecs);
+        }
+        if (isCurrentlyMD && realtimeChannelRef.current) {
+          // Broadcast a sync checkpoint exactly every 16 beats
+          if (lastAudioBeatRef.current > 0 && lastAudioBeatRef.current % 16 === 0) {
+            // Prevent spamming multiple broadcasts for the same beat
+            if ((window as any)._lastHeartbeatBeat !== lastAudioBeatRef.current) {
+              (window as any)._lastHeartbeatBeat = lastAudioBeatRef.current;
+              
+              // We tell the band: "I am playing Beat X, and it happened at exactly this Global Time"
+              const exactGlobalBeatTime = mdSectionStartTimeRef.current + (lastAudioBeatRef.current * beatSpeedSecs * 1000);
+              
+              realtimeChannelRef.current.send({
+                type: "broadcast", 
+                event: "lobby_sync",
+                payload: { 
+                  action: "HEARTBEAT", 
+                  mdAbsoluteBeat: lastAudioBeatRef.current, 
+                  mdGlobalBeatTime: exactGlobalBeatTime 
+                }
+              });
+            }
+          }
         }
       }
 
@@ -1540,39 +1638,65 @@ export default function SetlistPerformanceRoomPage() {
   // ✅ SURGICAL FIX 3: Stripped out all state variables! The engine never tears itself down during a song now.
   }, [isPlayingFlow]);
 
+  // ✅ SURGICAL ADDITION: Helper function to execute the actual start
+  function executeStartSequence(useCountdown: boolean) {
+    playingTrackIndexRef.current = currentTrackIndex;
+    setPlayingTrackIndex(currentTrackIndex);
+    playingSongRef.current = activeSong;
+    playingSectionsRef.current = sections;
+
+    isPlayingRef.current = true;
+    setIsPlayingFlow(true);
+
+    // Instant start gets 150ms buffer. Countdown gets 3150ms buffer.
+    const delayMs = useCountdown ? 3150 : 150; 
+    const startTimestamp = getGlobalTime() + delayMs;
+    mdSectionStartTimeRef.current = startTimestamp;
+
+    if (realtimeChannelRef.current) {
+      realtimeChannelRef.current.send({
+        type: "broadcast",
+        event: "lobby_sync",
+        payload: { 
+          action: "START", 
+          trackIndex: currentTrackIndex, 
+          sectionIndex: currentSectionIndex,
+          mdSectionStartTime: startTimestamp 
+        }
+      });
+    }
+  }
+
+  // ✅ SURGICAL FIX: The Double-Tap Smart Play Button
   function handleToggleFlowPlaybackState() {
     initAudioContext();
     if (!localPresenceUser?.isMD) {
       setIsMdLockModalOpen(true);
       return;
     }
+    
     if (isPlayingFlow) {
+      // Stop immediately and cancel any pending double-click logic
+      if (playClickTimeoutRef.current) {
+        clearTimeout(playClickTimeoutRef.current);
+        playClickTimeoutRef.current = null;
+      }
       handleResetFlowTrigger();
     } else {
       if (sections.length === 0 || !activeSong) return;
-      
-      playingTrackIndexRef.current = currentTrackIndex;
-      setPlayingTrackIndex(currentTrackIndex);
-      playingSongRef.current = activeSong;
-      playingSectionsRef.current = sections;
 
-      isPlayingRef.current = true;
-      setIsPlayingFlow(true);
-
-      const startTimestamp = getGlobalTime() + 150; 
-      mdSectionStartTimeRef.current = startTimestamp;
-
-      if (realtimeChannelRef.current) {
-        realtimeChannelRef.current.send({
-          type: "broadcast",
-          event: "lobby_sync",
-          payload: { 
-            action: "START", 
-            trackIndex: currentTrackIndex, 
-            sectionIndex: currentSectionIndex,
-            mdSectionStartTime: startTimestamp 
-          }
-        });
+      if (playClickTimeoutRef.current) {
+        // ⚡ DOUBLE TAP DETECTED: Cancel timer and use 3-second countdown!
+        clearTimeout(playClickTimeoutRef.current);
+        playClickTimeoutRef.current = null;
+        executeStartSequence(true); 
+      } else {
+        // Wait 250ms to see if they click again
+        playClickTimeoutRef.current = setTimeout(() => {
+          playClickTimeoutRef.current = null;
+          // ⚡ SINGLE TAP DETECTED: Instant start!
+          executeStartSequence(false);
+        }, 250);
       }
     }
   }
@@ -2059,20 +2183,30 @@ export default function SetlistPerformanceRoomPage() {
             </div>
 
             <div className="flex items-center gap-1.5 shrink-0 ml-1">
-              <div className="flex items-center gap-1 bg-zinc-50 p-1 rounded-lg border border-zinc-200 shadow-inner shrink-0 mr-1">
-                {[1, 2, 3, 4].map((beatNum) => (
-                  <div
-                    key={beatNum}
-                    ref={(el) => { metronomeRefs.current[beatNum - 1] = el; }}
-                    className={`w-6 h-6 flex items-center justify-center font-mono font-black text-[10px] rounded border transition-all duration-75 select-none ${
-                      isPlayingFlow && currentBeat === beatNum
-                        ? beatNum === 4 ? "bg-[#faba37] text-white border-[#e0a22b]" : "bg-blue-600 text-white border-blue-500"
-                        : "bg-white text-zinc-200 border-zinc-100"
-                    }`}
-                  >
-                    {beatNum}
-                  </div>
-                ))}
+              
+              {/* ✅ SURGICAL FIX: Wrapped the metronome in a relative div to anchor the absolute drift text */}
+              <div className="relative flex items-center">
+                {currentDriftMs !== null && !localPresenceUser?.isMD && isPlayingFlow && (
+                  <span className="absolute -top-3.5 left-1/2 -translate-x-1/2 text-[8px] font-mono font-black text-red-500 tracking-tighter w-max animate-in fade-in duration-150">
+                    [{Math.round(currentDriftMs)}ms]
+                  </span>
+                )}
+                
+                <div className="flex items-center gap-1 bg-zinc-50 p-1 rounded-lg border border-zinc-200 shadow-inner shrink-0 mr-1">
+                  {[1, 2, 3, 4].map((beatNum) => (
+                    <div
+                      key={beatNum}
+                      ref={(el) => { metronomeRefs.current[beatNum - 1] = el; }}
+                      className={`w-6 h-6 flex items-center justify-center font-mono font-black text-[10px] rounded border transition-all duration-75 select-none ${
+                        isPlayingFlow && currentBeat === beatNum
+                          ? beatNum === 4 ? "bg-[#faba37] text-white border-[#e0a22b]" : "bg-blue-600 text-white border-blue-500"
+                          : "bg-white text-zinc-200 border-zinc-100"
+                      }`}
+                    >
+                      {beatNum}
+                    </div>
+                  ))}
+                </div>
               </div>
 
               <button
@@ -2877,6 +3011,17 @@ export default function SetlistPerformanceRoomPage() {
               );
             })}
           </div>
+        </div>
+      )}
+      {/* ✅ SURGICAL ADDITION: Massive 3-Second Pre-Warm Overlay */}
+      {countdownValue !== null && (
+        <div className="fixed inset-0 z-[400000] bg-zinc-950/90 backdrop-blur-md flex flex-col items-center justify-center animate-in fade-in duration-100 select-none touch-none">
+          <span className="text-blue-500 font-black tracking-widest uppercase mb-4 text-xl md:text-2xl animate-pulse">
+            Pre-Warming Sync Engine
+          </span>
+          <span className="text-[150px] md:text-[250px] font-black text-white leading-none tracking-tighter drop-shadow-2xl">
+            {countdownValue}
+          </span>
         </div>
       )}
     </div>
