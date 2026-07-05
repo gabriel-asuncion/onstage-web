@@ -47,6 +47,21 @@ interface ArrangementSection {
   content: string;
 }
 
+// ✅ SURGICAL ADDITION: Global Master Grid Interfaces
+interface BeatNode {
+  absoluteBeatIndex: number; // The global beat number (e.g., Beat 142 of the song)
+  measureBeatIndex: number;  // The local beat number (e.g., Beat 3 of the current measure)
+  measureLength: number;     // How long THIS measure is (e.g., 4 for 4/4, 2 for 2/4)
+  sectionIndex: number;      // Which section this beat belongs to
+  isDownbeat: boolean;       // True if this is beat 1 of the measure (trigger high click)
+}
+
+interface CompiledBeatMap {
+  totalBeats: number;
+  nodes: BeatNode[];
+  sectionStartBeats: number[]; // Tracks the absolute start beat of every section
+}
+
 interface ParsedWordToken {
   chords: string[];
   word: string;
@@ -149,8 +164,8 @@ const MemoizedLyricLine = React.memo(({
     <div 
       id={`line-${sectionIndex}-${lineIndex}`}
       style={{ paddingBottom: `${Math.max(2, lineSpacing - 12)}px` }} 
-      // ✅ QoL #4: Added scroll-mt-[30vh] to force the top 30% padding!
-      className={`scroll-mt-[30vh] flex flex-col sm:flex-row sm:items-start justify-between gap-1 border-b border-zinc-100/40 last:border-0 px-2 py-1 -mx-2 rounded-xl transition-all duration-300 ${
+      // ✅ SURGICAL FIX: Removed scroll-mt-[30vh] so the line centers perfectly!
+      className={`flex flex-col sm:flex-row sm:items-start justify-between gap-1 border-b border-zinc-100/40 last:border-0 px-2 py-1 -mx-2 rounded-xl transition-all duration-300 ${
         isCurrentlyPlayingLine 
           ? "bg-zinc-100/80 shadow-sm scale-[1.002] border-transparent z-20" 
           : ""
@@ -262,13 +277,15 @@ const normalizeKeyNote = (note: string): string => {
 };
 
 const transposeBracketContent = (contentStr: string, semitones: number): string => {
+  // ✅ SURGICAL FIX: Handle slash chords with spaces gracefully
+  if (contentStr.includes("/")) {
+    return contentStr.split("/").map(part => {
+      const cleanPart = part.trim();
+      const m = cleanPart.match(/^([A-G][#b]?)(.*)$/);
+      return m ? `${transposeSingleNote(m[1], semitones)}${m[2]}` : cleanPart;
+    }).join("/");
+  }
   return contentStr.replace(/([A-G][#b]?\S*)/g, (match) => {
-    if (match.includes("/")) {
-      return match.split("/").map(part => {
-        const m = part.match(/^([A-G][#b]?)(.*)$/);
-        return m ? `${transposeSingleNote(m[1], semitones)}${m[2]}` : part;
-      }).join("/");
-    }
     const matchResult = match.match(/^([A-G][#b]?)(.*)$/);
     if (!matchResult) return match;
     return `${transposeSingleNote(matchResult[1], semitones)}${matchResult[2]}`;
@@ -283,27 +300,27 @@ const transposeSingleNote = (note: string, semitones: number): string => {
 };
 
 const chordToRomanBase = (bassStr: string, activeKey: string): string => {
-  const match = bassStr.match(/^([A-G][#b]?)(.*)$/);
-  if (!match) return bassStr;
+  const match = bassStr.trim().match(/^([A-G][#b]?)(.*)$/); // ✅ Trim whitespace
+  if (!match) return bassStr.trim();
   const chordRoot = match[1];
   const keyBase = activeKey.replace(/m$/, '');
   const rootIdx = CHROMATIC_SCALE.indexOf(normalizeKeyNote(keyBase));
   const chordIdx = CHROMATIC_SCALE.indexOf(normalizeKeyNote(chordRoot));
-  if (rootIdx === -1 || chordIdx === -1) return bassStr;
+  if (rootIdx === -1 || chordIdx === -1) return bassStr.trim();
   const diff = (chordIdx - rootIdx + 12) % 12;
   const romanBases = ["I", "♭II", "II", "♭III", "III", "IV", "♭V", "V", "♭VI", "VI", "♭VII", "VII"];
   return romanBases[diff] + match[2];
 };
 
 const chordToRoman = (chordStr: string, activeKey: string): string => {
-  // Recursively handle slash chords (e.g., G/B -> I/III)
+  // ✅ SURGICAL FIX: Trim slash chord parts for Roman Numeral conversion
   if (chordStr.includes('/')) {
     const [main, bass] = chordStr.split('/');
-    return `${chordToRoman(main, activeKey)}/${chordToRomanBase(bass, activeKey)}`;
+    return `${chordToRoman(main.trim(), activeKey)}/${chordToRomanBase(bass.trim(), activeKey)}`;
   }
 
-  const match = chordStr.match(/^([A-G][#b]?)(.*)$/);
-  if (!match) return chordStr;
+  const match = chordStr.trim().match(/^([A-G][#b]?)(.*)$/);
+  if (!match) return chordStr.trim();
 
   const chordRoot = match[1];
   let suffix = match[2];
@@ -312,13 +329,12 @@ const chordToRoman = (chordStr: string, activeKey: string): string => {
   const rootIdx = CHROMATIC_SCALE.indexOf(normalizeKeyNote(keyBase));
   const chordIdx = CHROMATIC_SCALE.indexOf(normalizeKeyNote(chordRoot));
 
-  if (rootIdx === -1 || chordIdx === -1) return chordStr;
+  if (rootIdx === -1 || chordIdx === -1) return chordStr.trim();
 
   const diff = (chordIdx - rootIdx + 12) % 12;
   const romanBases = ["I", "♭II", "II", "♭III", "III", "IV", "♭V", "V", "♭VI", "VI", "♭VII", "VII"];
   let roman = romanBases[diff];
 
-  // Detect Minor or Diminished qualities and cast to lowercase
   if (suffix.match(/^m(?!aj)/)) {
     roman = roman.toLowerCase();
     suffix = suffix.replace(/^m/, '');
@@ -465,7 +481,9 @@ export default function SetlistPerformanceRoomPage() {
   const lastAudioBeatRef = useRef<number>(1);
   const lastVisualBeatRef = useRef<number>(1);
 
-  
+  // ✅ SURGICAL ADDITION: Phase 3 Visual Measure Trackers
+  const [currentMeasureLength, setCurrentMeasureLength] = useState<number>(4);
+  const lastVisualMeasureLengthRef = useRef<number>(4);
 
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false); 
   const [lineSpacing, setLineSpacing] = useState<number>(16); 
@@ -592,17 +610,26 @@ export default function SetlistPerformanceRoomPage() {
   // ✅ SURGICAL ADDITION: Direct DOM Pointers for the Metronome
   const metronomeRefs = useRef<(HTMLDivElement | null)[]>([null, null, null, null]);
 
-  // ✅ DOM Mutator: Bypasses React to instantly paint the metronome colors
-  const updateMetronomeUI = (activeBeat: number, isPlaying: boolean) => {
+  // ✅ DOM Mutator: Bypasses React to instantly paint and resize the metronome 
+  const updateMetronomeUI = (activeBeat: number, isPlaying: boolean, measureLength: number = 4) => {
     metronomeRefs.current.forEach((el, index) => {
       if (!el) return;
       const beatNum = index + 1;
       
+      // ✅ SURGICAL FIX: Dynamically hide boxes outside the current measure's length
+      if (beatNum > measureLength) {
+          el.style.display = 'none';
+          return;
+      } else {
+          el.style.display = 'flex';
+      }
+
       // Wipe existing color classes
-      el.className = "w-6 h-6 flex items-center justify-center font-mono font-black text-[10px] rounded border transition-all duration-75 select-none";
+      el.className = "w-6 h-6 items-center justify-center font-mono font-black text-[10px] rounded border transition-all duration-75 select-none";
 
       if (isPlaying && activeBeat === beatNum) {
-        if (beatNum === 4) {
+        // Highlight the LAST beat of the measure as yellow/orange (e.g. Beat 4 of 4, or Beat 2 of 2)
+        if (beatNum === measureLength) {
           el.classList.add("bg-[#faba37]", "text-white", "border-[#e0a22b]");
         } else {
           el.classList.add("bg-blue-600", "text-white", "border-blue-500");
@@ -1014,22 +1041,27 @@ export default function SetlistPerformanceRoomPage() {
       mountTargetSetlistTrackIndex(targetTrackIdx, tracksListRef.current, false, true);
     }
 
-    // 2. Set the exact global time anchor
+    // 2. Set the exact global time anchor (THE THEORETICAL MASTER ANCHOR)
     if (jumpTime) {
       mdSectionStartTimeRef.current = jumpTime;
       
       initAudioContext(); 
       if (globalAudioContext) {
         const timeUntilJumpMs = jumpTime - getGlobalTime();
-        const anchorTime = globalAudioContext.currentTime + (timeUntilJumpMs / 1000);
-        audioContextStartTimeRef.current = anchorTime;
+        const absoluteHardwareTimeAtJump = globalAudioContext.currentTime + (timeUntilJumpMs / 1000);
+        
+        // ✅ SURGICAL FIX: Calculate the Theoretical Song Start
+        const targetAbsoluteBeat = beatMapRef.current.sectionStartBeats[targetSectionIdx] || 0;
+        const beatSpeedSecs = 60 / (activeSongRef.current?.tempo || 75);
+        const theoreticalSongStartOffset = targetAbsoluteBeat * beatSpeedSecs;
+        
+        // Anchor the infinite grid to the theoretical beginning of the song!
+        audioContextStartTimeRef.current = absoluteHardwareTimeAtJump - theoreticalSongStartOffset;
 
-        // ✅ SURGICAL ADDITION: Pre-schedule the hardware 3-2-1 countdown blips!
         if (timeUntilJumpMs >= 3000) {
-          // triggerMetronomeSound(2) plays blip_2.wav, triggerMetronomeSound(1) plays blip_1.wav
-          triggerMetronomeSound(2, anchorTime - 3); // "3" -> Blip 2
-          triggerMetronomeSound(2, anchorTime - 2); // "2" -> Blip 2
-          triggerMetronomeSound(1, anchorTime - 1); // "1" -> Blip 1
+          triggerMetronomeSound(2, absoluteHardwareTimeAtJump - 3); 
+          triggerMetronomeSound(2, absoluteHardwareTimeAtJump - 2); 
+          triggerMetronomeSound(1, absoluteHardwareTimeAtJump - 1); 
         }
       }
     }
@@ -1039,12 +1071,12 @@ export default function SetlistPerformanceRoomPage() {
     setCurrentSectionIndex(targetSectionIdx);
     
     // 4. Reset Clock Math
-    lastBeatRef.current = 0;
-    lastAudioBeatRef.current = 0; 
-    lastVisualBeatRef.current = 0; 
-    updateMetronomeUI(1, true); 
-    activeLineIndexRef.current = 0;
-    setActiveLineIndex(0);
+    // ✅ SURGICAL FIX: We no longer reset to 0. We jump exactly to the absolute beat on the grid!
+    const jumpTargetBeat = beatMapRef.current.sectionStartBeats[targetSectionIdx] || 0;
+    lastAudioBeatRef.current = jumpTargetBeat; 
+    
+    lastBeatRef.current = 0; // Legacy visual visual fallback
+    lastVisualBeatRef.current = 0;
 
     // 5. Clear ALL Queues
     setQueuedTrackIndex(null);
@@ -1310,7 +1342,7 @@ export default function SetlistPerformanceRoomPage() {
     }
   }, [activeLineIndex, currentSectionIndex, isPlayingFlow]);
 
-  // ✅ SURGICAL PERFORMANCE FIX: Hardware-Accelerated IntersectionObserver
+  // ✅ SURGICAL PERFORMANCE FIX: User Intent Scroll Detector
   useEffect(() => {
     const containerNode = scrollContainerRef.current;
     if (!containerNode || !isPlayingFlow) return;
@@ -1320,39 +1352,22 @@ export default function SetlistPerformanceRoomPage() {
       return;
     }
 
-    const activeLineId = `line-${currentSectionIndex}-${activeLineIndex}`;
-    const targetElement = document.getElementById(activeLineId);
+    const handleUserScrollIntent = () => {
+      // If the engine is currently doing an auto-scroll, ignore this event
+      if (isAutoScrollingRef.current) return;
+      // Otherwise, the user physically scrolled/swiped. Hand them the keys!
+      setShowSyncBack(true);
+    };
 
-    if (!targetElement) return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const entry = entries[0];
-        
-        // Ignore the trigger if the engine itself is auto-scrolling
-        if (isAutoScrollingRef.current) return;
-
-        // If the line leaves the 60% boundary, it is no longer intersecting
-        if (!entry.isIntersecting) {
-          setShowSyncBack(true);
-        } else {
-          setShowSyncBack(false);
-        }
-      },
-      {
-        root: containerNode,
-        // ✅ The Magic Box: Shrinks the detection zone by 20% on top and bottom
-        rootMargin: "-20% 0px -20% 0px", 
-        threshold: 0 // Triggers the exact millisecond it crosses the line
-      }
-    );
-
-    observer.observe(targetElement);
+    // We listen to wheel (mouse) and touchmove (mobile) for direct human interaction
+    containerNode.addEventListener("wheel", handleUserScrollIntent, { passive: true });
+    containerNode.addEventListener("touchmove", handleUserScrollIntent, { passive: true });
 
     return () => {
-      observer.disconnect();
+      containerNode.removeEventListener("wheel", handleUserScrollIntent);
+      containerNode.removeEventListener("touchmove", handleUserScrollIntent);
     };
-  }, [isPlayingFlow, currentSectionIndex, activeLineIndex, currentTrackIndex]);
+  }, [isPlayingFlow, currentTrackIndex]);
 
   // ==========================================================
   // --- COMPOSER ENGINE HARDWARE ANIMATION TIMELINE LOOP -----
@@ -1482,22 +1497,47 @@ export default function SetlistPerformanceRoomPage() {
       if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = `scaleX(${progressRatio})`;
       if (simplifiedProgressBarRef.current) simplifiedProgressBarRef.current.style.transform = `scaleX(${progressRatio})`;
 
-      // ✅ SURGICAL FIX 2: THE HARDWARE-LOCKED SCHEDULER (Immune to clock drift!)
+      // ✅ SURGICAL ADDITION: The Guide Cue Audio Engine
+      // If we are within the final 4 beats (roughly 1 measure) of the section, fire the cue!
+      const msRemaining = totalDurationMs - visualElapsedMs;
+      const fourBeatsMs = beatSpeedMsCurrent * 4;
+
+      if (!hasPlayedCueRef.current && msRemaining > 0 && msRemaining <= fourBeatsMs + 50) {
+        hasPlayedCueRef.current = true; // Lock it so it only fires once per section!
+        
+        const nextSecIndex = (queuedSectionIndexRef.current !== null) ? queuedSectionIndexRef.current : idx + 1;
+        const targetSec = secs[nextSecIndex];
+        
+        if (targetSec) {
+          playGuideCue(targetSec.section_name);
+        }
+      }
+
+      // ✅ SURGICAL FIX 2: THE HARDWARE-LOCKED SCHEDULER (Immune to clock drift & Double Clicks!)
       if (audioContextStartTimeRef.current !== null && globalAudioContext) {
         const lookaheadSecs = 0.200; // 200ms lookahead window
         const beatSpeedSecs = beatSpeedMsCurrent / 1000;
         const currentAudioTime = globalAudioContext.currentTime;
 
-        // Calculate the exact hardware time the *next* beat is supposed to play
+        // ✅ SURGICAL FIX: Calculate the exact absolute end of this section
+        const sectionEndAudioTime = audioContextStartTimeRef.current + (totalBeats * beatSpeedSecs);
+
         let nextBeatTime = audioContextStartTimeRef.current + (lastAudioBeatRef.current * beatSpeedSecs);
         
-        // Use a while loop just in case the React UI thread lagged and we need to schedule multiple beats at once to catch up!
         while (nextBeatTime < currentAudioTime + lookaheadSecs) {
-          const nextBeatPulse = (lastAudioBeatRef.current % 4) + 1;
-          
-          // Hand the exact, unshakeable hardware timestamp to the Audio API
-          triggerMetronomeSound(nextBeatPulse, nextBeatTime);
-          
+          // ✅ SURGICAL FIX: Query the Master Beat Map!
+          const absoluteBeatIndex = lastAudioBeatRef.current;
+          const mapNodes = beatMapRef.current.nodes;
+
+          // As long as we haven't reached the end of the song's pre-compiled map...
+          if (absoluteBeatIndex < mapNodes.length) {
+            const beatNode = mapNodes[absoluteBeatIndex];
+            
+            // If the map says this is the first beat of a measure, play the High Blip!
+            const nextBeatPulse = beatNode.isDownbeat ? 1 : 2;
+            triggerMetronomeSound(nextBeatPulse, nextBeatTime);
+          }
+
           lastAudioBeatRef.current++;
           nextBeatTime = audioContextStartTimeRef.current + (lastAudioBeatRef.current * beatSpeedSecs);
         }
@@ -1525,39 +1565,28 @@ export default function SetlistPerformanceRoomPage() {
         }
       }
 
-      // 3. VISUAL METRONOME UI (Runs on delayed Visual Time)
-      const currentVisualBeatPulse = Math.floor(visualElapsedMs / beatSpeedMsCurrent) % 4 + 1;
-      if (currentVisualBeatPulse !== lastVisualBeatRef.current) {
-        lastVisualBeatRef.current = currentVisualBeatPulse;
-        updateMetronomeUI(currentVisualBeatPulse, true); 
-      }
-      
-      // Guide Cues trigger based on True Time
-      const remainingBeats = (totalDurationMs - trueElapsedMs) / beatSpeedMsCurrent;
-      
-      // If we are in the last 4 beats, and haven't played the cue yet
-      if (remainingBeats <= 4.05 && remainingBeats > 0 && !hasPlayedCueRef.current) {
-        hasPlayedCueRef.current = true; // Lock it so it only plays once
-        
-        let nextSectionName = "";
-        
-        if (queuedSectionIndexRef.current !== null && queuedTrackIndexRef.current !== null) {
-          const queuedTrack = tracksListRef.current[queuedTrackIndexRef.current];
-          if (queuedTrack && queuedTrack.custom_structure) {
-             nextSectionName = queuedTrack.custom_structure[queuedSectionIndexRef.current]?.section_name;
-          }
-        } else {
-          // Scenario 1: Normal playback flow
-          const nextSectionIdx = currentSectionIndexRef.current + 1;
-          if (nextSectionIdx < secs.length) {
-             nextSectionName = secs[nextSectionIdx].section_name;
-          } else {
-             // ✅ SURGICAL FIX: We are holding at the end of the song, so cue the CURRENT section to loop!
-             nextSectionName = secs[currentSectionIndexRef.current].section_name;
-          }
+      // ==========================================
+      // 3. VISUAL METRONOME UI (Runs on delayed Visual Time mapped to the Global Grid)
+      // ==========================================
+      const localSectionElapsedBeats = visualElapsedMs / beatSpeedMsCurrent;
+      const absoluteVisualBeatFloat = (beatMapRef.current.sectionStartBeats[idx] || 0) + localSectionElapsedBeats;
+      const absoluteVisualBeatIndex = Math.floor(absoluteVisualBeatFloat);
+
+      if (absoluteVisualBeatIndex < beatMapRef.current.nodes.length) {
+        const beatNode = beatMapRef.current.nodes[absoluteVisualBeatIndex];
+        const currentVisualBeatPulse = beatNode.measureBeatIndex;
+        const activeMeasureLength = beatNode.measureLength;
+
+        // If the grid says the time signature/measure length just changed, update React!
+        if (activeMeasureLength !== lastVisualMeasureLengthRef.current) {
+          lastVisualMeasureLengthRef.current = activeMeasureLength;
+          setCurrentMeasureLength(activeMeasureLength);
         }
-        
-        if (nextSectionName) playGuideCue(nextSectionName);
+
+        if (currentVisualBeatPulse !== lastVisualBeatRef.current) {
+          lastVisualBeatRef.current = currentVisualBeatPulse;
+          updateMetronomeUI(currentVisualBeatPulse, true, activeMeasureLength); 
+        }
       }
 
       // ==========================================
@@ -1609,19 +1638,49 @@ export default function SetlistPerformanceRoomPage() {
         if (harmsActiveQueue) {
           nextTrackIdx = queuedTrackIndexRef.current as number;
           nextSectionIdx = queuedSectionIndexRef.current as number;
+          
+          // ✅ SURGICAL FIX: Since the MD manually queued a jump, we MUST use executeJumpNow
+          // because they are likely jumping out of order (e.g., Verse 1 -> Outro).
+          const jumpTime = mdSectionStartTimeRef.current + totalDurationMs;
+          executeJumpNow(nextTrackIdx, nextSectionIdx, jumpTime);
+
+          if (isCurrentlyMD && realtimeChannelRef.current) {
+            realtimeChannelRef.current.send({
+              type: "broadcast", event: "lobby_sync",
+              payload: { action: "JUMP", trackIndex: nextTrackIdx, sectionIndex: nextSectionIdx, mdSectionStartTime: jumpTime }
+            });
+          }
         } else if (nextSectionIdx >= secs.length) {
-          // ✅ SURGICAL FIX: Loop the last section infinitely!
-          nextSectionIdx = idx; 
-        }
-
-        const jumpTime = mdSectionStartTimeRef.current + totalDurationMs;
-        executeJumpNow(nextTrackIdx, nextSectionIdx, jumpTime);
-
-        if (isCurrentlyMD && realtimeChannelRef.current) {
-          realtimeChannelRef.current.send({
-            type: "broadcast", event: "lobby_sync",
-            payload: { action: "JUMP", trackIndex: nextTrackIdx, sectionIndex: nextSectionIdx, mdSectionStartTime: jumpTime }
-          });
+          // ✅ SURGICAL FIX: The song has ended naturally. We loop back to the start!
+          // Since we are ripping the timeline backward, we MUST use executeJumpNow.
+          const jumpTime = mdSectionStartTimeRef.current + totalDurationMs;
+          executeJumpNow(nextTrackIdx, 0, jumpTime);
+          
+          if (isCurrentlyMD && realtimeChannelRef.current) {
+            realtimeChannelRef.current.send({
+              type: "broadcast", event: "lobby_sync",
+              payload: { action: "JUMP", trackIndex: nextTrackIdx, sectionIndex: 0, mdSectionStartTime: jumpTime }
+            });
+          }
+        } else {
+          // ========================================================================
+          // ⚡ THE MAGIC SAUCE: NATURAL SEQUENTIAL TRANSITION!
+          // ========================================================================
+          // We are simply moving to the next block in the song. 
+          // DO NOT TOUCH THE AUDIO ANCHORS. DO NOT CALL executeJumpNow().
+          // Just update the React UI pointers so the teleprompter catches up with the Grid!
+          
+          currentSectionIndexRef.current = nextSectionIdx;
+          setCurrentSectionIndex(nextSectionIdx);
+          
+          // Reset the vocal cue lock so the next section gets its warning
+          hasPlayedCueRef.current = false;
+          
+          // Update the visual elapsed time offset for the new section
+          mdSectionStartTimeRef.current = mdSectionStartTimeRef.current + totalDurationMs;
+          
+          // We don't need to broadcast anything! The follower devices are running the exact same 
+          // deterministic math, so they will naturally transition to the next section at the exact same millisecond.
         }
       }
 
@@ -2051,6 +2110,74 @@ export default function SetlistPerformanceRoomPage() {
     });
   }, [sections, runtimeSemitoneDelta]); // ✅ Added runtime dependency
   
+  // ==========================================================
+  // ✅ SURGICAL ADDITION: PHASE 1 - THE BEAT MAP PRE-COMPILER
+  // ==========================================================
+  const masterBeatMap: CompiledBeatMap = useMemo(() => {
+    const map: BeatNode[] = [];
+    const sectionStartBeats: number[] = [];
+    let currentAbsoluteBeat = 0;
+
+    if (!activeSong || sections.length === 0) {
+      return { totalBeats: 0, nodes: [], sectionStartBeats: [] };
+    }
+
+    sections.forEach((section, sIdx) => {
+      sectionStartBeats.push(currentAbsoluteBeat);
+
+      const timings = activeSong.section_timings?.[section.section_name] || { measures: 4, beats: 0, repeats: 0, head_m: 0, tail_m: 0 };
+      const sectionMultiplier = (timings.repeats || 0) + 1;
+      
+      const headMeasures = timings.head_m || 0;
+      const coreMeasures = timings.measures || 0;
+      const coreLeftoverBeats = timings.beats || 0;
+      const tailMeasures = timings.tail_m || 0;
+
+      // Helper function to stamp a measure onto the timeline
+      const stampMeasure = (length: number) => {
+        if (length <= 0) return;
+        for (let b = 1; b <= length; b++) {
+          map.push({
+            absoluteBeatIndex: currentAbsoluteBeat,
+            measureBeatIndex: b,
+            measureLength: length,
+            sectionIndex: sIdx,
+            isDownbeat: b === 1
+          });
+          currentAbsoluteBeat++;
+        }
+      };
+
+      // 1. Stamp Head Padding
+      for (let m = 0; m < headMeasures; m++) stampMeasure(4);
+
+      // 2. Stamp Core block (and repeat it if necessary)
+      for (let r = 0; r < sectionMultiplier; r++) {
+         for (let m = 0; m < coreMeasures; m++) stampMeasure(4);
+         
+         // ⚡ THE MAGIC SAUCE: If there are leftover beats, it generates a truncated measure!
+         if (coreLeftoverBeats > 0) stampMeasure(coreLeftoverBeats); 
+      }
+
+      // 3. Stamp Tail Padding
+      for (let m = 0; m < tailMeasures; m++) stampMeasure(4);
+    });
+
+    return {
+      totalBeats: currentAbsoluteBeat,
+      nodes: map,
+      sectionStartBeats
+    };
+  }, [activeSong, sections]);
+
+  // Cache it in a ref so our high-speed execution loop can read it later without React state lag
+  const beatMapRef = useRef<CompiledBeatMap>({ totalBeats: 0, nodes: [], sectionStartBeats: [] });
+  useEffect(() => {
+    beatMapRef.current = masterBeatMap;
+    // Log it out so we can inspect the generated timeline!
+    console.log("🎵 Master Beat Map Compiled:", masterBeatMap);
+  }, [masterBeatMap]);
+
   // ✅ Update AST cache dependency
   useEffect(() => {
     astTreeRef.current = memoizedSongAstTree;
@@ -2193,13 +2320,15 @@ export default function SetlistPerformanceRoomPage() {
                 )}
                 
                 <div className="flex items-center gap-1 bg-zinc-50 p-1 rounded-lg border border-zinc-200 shadow-inner shrink-0 mr-1">
-                  {[1, 2, 3, 4].map((beatNum) => (
+                  {/* ✅ SURGICAL FIX: Render up to 8 beats to support 6/8 or odd signatures, hidden dynamically by the mutator */}
+                  {[1, 2, 3, 4, 5, 6, 7, 8].map((beatNum) => (
                     <div
                       key={beatNum}
                       ref={(el) => { metronomeRefs.current[beatNum - 1] = el; }}
-                      className={`w-6 h-6 flex items-center justify-center font-mono font-black text-[10px] rounded border transition-all duration-75 select-none ${
+                      style={{ display: beatNum <= currentMeasureLength ? 'flex' : 'none' }}
+                      className={`w-6 h-6 items-center justify-center font-mono font-black text-[10px] rounded border transition-all duration-75 select-none ${
                         isPlayingFlow && currentBeat === beatNum
-                          ? beatNum === 4 ? "bg-[#faba37] text-white border-[#e0a22b]" : "bg-blue-600 text-white border-blue-500"
+                          ? beatNum === currentMeasureLength ? "bg-[#faba37] text-white border-[#e0a22b]" : "bg-blue-600 text-white border-blue-500"
                           : "bg-white text-zinc-200 border-zinc-100"
                       }`}
                     >
