@@ -17,6 +17,8 @@ interface SongRecord {
   artist: string;
   original_key: string;
   tempo: number;
+  youtube_url?: string;             // ✅ SURGICAL ADDITION: Phase 3
+  youtube_sync_offset_ms?: number;  // ✅ SURGICAL ADDITION: Phase 3
   section_timings: {
     [sectionName: string]: { 
       measures: number; 
@@ -261,6 +263,7 @@ const playZeroLatencyAudio = (key: string, volume: number = 1.0, time: number = 
   
   // Schedules it on the hardware timeline (0 means instantly)
   source.start(time); 
+  return source; // ✅ SURGICAL FIX: Return the node so we can cancel it later!
 };
 
 const playGuideCue = (rawSectionName: string) => {
@@ -424,6 +427,14 @@ export default function SetlistPerformanceRoomPage() {
 
   const isMetronomeSoundEnabledRef = useRef<boolean>(false);
 
+  // ✅ SURGICAL ADDITION: Double Metronome Engine
+  const [isDoubleMetronomeEnabled, setIsDoubleMetronomeEnabled] = useState<boolean>(false);
+  const isDoubleMetronomeEnabledRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    isDoubleMetronomeEnabledRef.current = isDoubleMetronomeEnabled;
+  }, [isDoubleMetronomeEnabled]);
+
   useEffect(() => {
     if (typeof window !== "undefined") {
       const savedFontSize = localStorage.getItem("wm_prefs_fontSize");
@@ -443,6 +454,9 @@ export default function SetlistPerformanceRoomPage() {
 
       const savedVolume = localStorage.getItem("wm_prefs_clickVolume");
       if (savedVolume) setLocalClickVolume(Number(savedVolume));
+
+      const savedYtVolume = localStorage.getItem("wm_prefs_ytVolume");
+      if (savedYtVolume) setYoutubeVolume(Number(savedYtVolume));
     }
   }, []);
 
@@ -476,6 +490,123 @@ export default function SetlistPerformanceRoomPage() {
   
   const [countdownValue, setCountdownValue] = useState<number | null>(null);
   const countdownValueRef = useRef<number | null>(null);
+
+  // =========================================================================
+  // ✅ SURGICAL ADDITION: PHASE 3 & 4 - YOUTUBE LIVE SYNC ENGINE
+  // =========================================================================
+  const [isYoutubeSyncEnabled, setIsYoutubeSyncEnabled] = useState<boolean>(false); // Defaults to OFF for followers!
+  const [youtubeVideoId, setYoutubeVideoId] = useState<string | null>(null);
+  const [isYtBuffering, setIsYtBuffering] = useState<boolean>(false);
+  const ytPlayerRef = useRef<any>(null);
+  const ytSyncPendingRef = useRef<boolean>(false);
+  const loadedVideoIdRef = useRef<string | null>(null);
+
+  const isYtPlayerReadyRef = useRef<boolean>(false);
+
+  // ✅ SURGICAL ADDITION: YouTube Volume Engine
+  const [youtubeVolume, setYoutubeVolume] = useState<number>(0.8);
+  const youtubeVolumeRef = useRef<number>(0.8);
+
+  useEffect(() => {
+    youtubeVolumeRef.current = youtubeVolume;
+    // ✅ SURGICAL FIX: Check the Readiness Lock before touching the volume!
+    if (isYtPlayerReadyRef.current && ytPlayerRef.current && typeof ytPlayerRef.current.setVolume === 'function') {
+      try { ytPlayerRef.current.pauseVideo(); } catch(e) {}
+    }
+  }, [youtubeVolume]);
+
+  // Link Validator: Extracts Video ID only if the song changes and has a link
+  useEffect(() => {
+    if (!activeSong?.youtube_url) {
+      setYoutubeVideoId(null);
+      return;
+    }
+    const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+    const match = activeSong.youtube_url.match(regExp);
+    if (match && match[2].length === 11) {
+      setYoutubeVideoId(match[2]);
+    } else {
+      setYoutubeVideoId(null);
+    }
+  }, [activeSong?.youtube_url]);
+
+  // The IFrame Loader & Phase 4 Pre-Warm Hack
+  useEffect(() => {
+    if (!youtubeVideoId || !isYoutubeSyncEnabled) return;
+
+    const initPlayer = () => {
+      if (!(window as any).YT || !(window as any).YT.Player) {
+        setTimeout(initPlayer, 200);
+        return;
+      }
+      
+      // ✅ SURGICAL FIX: Require the Readiness Lock before trying to cue a new video
+      if (ytPlayerRef.current && isYtPlayerReadyRef.current && typeof ytPlayerRef.current.cueVideoById === 'function') {
+        if (loadedVideoIdRef.current !== youtubeVideoId) {
+          loadedVideoIdRef.current = youtubeVideoId;
+          try { ytPlayerRef.current.cueVideoById(youtubeVideoId); } catch(e) {}
+        }
+      // Only create a new player if one doesn't exist at all
+      } else if (!ytPlayerRef.current) {
+        loadedVideoIdRef.current = youtubeVideoId;
+        ytPlayerRef.current = new (window as any).YT.Player('yt-live-player-container', {
+          height: '10px', width: '10px', videoId: youtubeVideoId,
+          playerVars: { 'playsinline': 1, 'controls': 0, 'disablekb': 1 },
+          events: {
+            'onReady': (event: any) => {
+              // ✅ SURGICAL FIX: Open the lock! The player is officially attached to the DOM.
+              isYtPlayerReadyRef.current = true; 
+              console.log("📺 Live YT Player Ready. Initiating Pre-Warm Hack...");
+              event.target.setVolume(youtubeVolumeRef.current * 100);
+              // ⚡ THE PRE-WARM HACK: Force the browser to cache the video RAM instantly
+              event.target.mute();
+              event.target.playVideo();
+              setTimeout(() => {
+                if (event.target && typeof event.target.pauseVideo === 'function') {
+                  event.target.pauseVideo();
+                  event.target.seekTo(0);
+                  event.target.unMute();
+                  console.log("✅ YT Player Pre-Warmed and Ready.");
+                }
+              }, 500);
+            },
+            'onStateChange': (event: any) => {
+              if (event.data === 1 && ytSyncPendingRef.current) {
+                ytSyncPendingRef.current = false;
+                setIsYtBuffering(false);
+                
+                const currentVideoTimeMs = (event.target.getCurrentTime() || 0) * 1000;
+                const offsetMs = activeSongRef.current?.youtube_sync_offset_ms || 0;
+                
+                const timeUntilBeat1 = offsetMs - currentVideoTimeMs;
+                const exactStartTimestamp = getGlobalTime() + timeUntilBeat1;
+                
+                // ✅ SURGICAL FIX: Pass `true` to activate the Silencer Flag!
+                executeStartSequence(false, exactStartTimestamp, true);
+              }
+            }
+          }
+        });
+      }
+    };
+
+    if (!(window as any).YT) {
+      const tag = document.createElement('script');
+      tag.src = "https://www.youtube.com/iframe_api";
+      const firstScriptTag = document.getElementsByTagName('script')[0];
+      firstScriptTag?.parentNode?.insertBefore(tag, firstScriptTag);
+    }
+    initPlayer();
+
+    // Cleanup pause if they disable the toggle
+    return () => {
+      if (ytPlayerRef.current && typeof ytPlayerRef.current.pauseVideo === 'function') {
+        ytPlayerRef.current.pauseVideo();
+      }
+    };
+  // ✅ SURGICAL FIX: Removed `getGlobalTime` from dependencies so it NEVER re-triggers on line changes!
+  }, [youtubeVideoId, isYoutubeSyncEnabled]);
+  // =========================================================================
   
   // ✅ SURGICAL FIX: Split the clock engine so audio and visuals can run on different timelines!
   const lastAudioBeatRef = useRef<number>(1);
@@ -497,6 +628,8 @@ export default function SetlistPerformanceRoomPage() {
       localStorage.setItem("wm_prefs_simplifiedMode", isSimplifiedMode.toString());
       localStorage.setItem("wm_prefs_lineSpacing", lineSpacing.toString());
       localStorage.setItem("wm_prefs_clickVolume", localClickVolume.toString());
+      localStorage.setItem("wm_prefs_ytVolume", youtubeVolume.toString());
+      localStorage.setItem("wm_prefs_doubleMetronome", isDoubleMetronomeEnabled.toString());
     }
   }, [lyricsFontSize, showChords, chordFormat, isSimplifiedMode, lineSpacing, localClickVolume]);
 
@@ -519,6 +652,11 @@ export default function SetlistPerformanceRoomPage() {
         if (audioBeat !== testAudioRef.current) {
            testAudioRef.current = audioBeat;
            triggerMetronomeSound(audioBeat);
+           
+           // ✅ SURGICAL FIX: Schedule the "And" beat exactly 250ms (half a 120bpm beat) in the future!
+           if (isDoubleMetronomeEnabledRef.current && globalAudioContext) {
+             triggerMetronomeSound(2, globalAudioContext.currentTime + 0.25);
+           }
         }
 
         // Visuals run on delayed offset time
@@ -609,6 +747,7 @@ export default function SetlistPerformanceRoomPage() {
 
   // ✅ SURGICAL ADDITION: Direct DOM Pointers for the Metronome
   const metronomeRefs = useRef<(HTMLDivElement | null)[]>([null, null, null, null]);
+  const scheduledClicksRef = useRef<{ source: AudioBufferSourceNode, audioTime: number }[]>([]);
 
   // ✅ DOM Mutator: Bypasses React to instantly paint and resize the metronome 
   const updateMetronomeUI = (activeBeat: number, isPlaying: boolean, measureLength: number = 4) => {
@@ -651,8 +790,19 @@ export default function SetlistPerformanceRoomPage() {
   const triggerMetronomeSound = (beatNum: number, time: number = 0) => {
     if (!isMetronomeSoundEnabledRef.current) return;
     const targetKey = beatNum === 1 ? "metronome_1" : "metronome_2";
-    // ✅ SURGICAL FIX: The loop now reads the live ref instead of the stale state!
-    playZeroLatencyAudio(targetKey, localClickVolumeRef.current, time);
+    
+    // ✅ SURGICAL FIX: Capture the returned hardware source
+    const source = playZeroLatencyAudio(targetKey, localClickVolumeRef.current, time);
+    
+    if (source) {
+      scheduledClicksRef.current.push({ source, audioTime: time });
+      
+      // Garbage collect the reference once the sound finishes playing
+      source.onended = () => {
+        const idx = scheduledClicksRef.current.findIndex(s => s.source === source);
+        if (idx > -1) scheduledClicksRef.current.splice(idx, 1);
+      };
+    }
   };
  
   // Floating scroll state anchors tracking fields
@@ -675,7 +825,7 @@ export default function SetlistPerformanceRoomPage() {
   const playClickTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const pendingQuantizedJumpRef = useRef<{ trackIndex: number; sectionIndex: number; jumpTime: number } | null>(null);
-
+  const isYtBackingTrackStartRef = useRef<boolean>(false);
   // ✅ SURGICAL REFACTOR: Smart dynamic preloader decodes directly to RAM
   useEffect(() => {
     if (typeof window === "undefined" || tracksList.length === 0) return;
@@ -943,8 +1093,12 @@ export default function SetlistPerformanceRoomPage() {
           const targetTrackIdx = payload.trackIndex !== undefined ? payload.trackIndex : currentTrackIndex;
           isPlayingRef.current = true;
           setIsPlayingFlow(true);
+          
+          // ✅ SURGICAL FIX: Suppress follower countdown if MD used YouTube
+          isYtBackingTrackStartRef.current = payload.isYtSource || false;
+
           executeJumpNow(targetTrackIdx, payload.sectionIndex, payload.mdSectionStartTime);
-        } 
+        }
         else if (payload.action === "STOP") {
           executeLocalResetSequence();
         } 
@@ -975,12 +1129,13 @@ export default function SetlistPerformanceRoomPage() {
         }
         // ✅ SURGICAL ADDITION: The Follower Heartbeat Receiver & Nudge Engine
         else if (payload.action === "HEARTBEAT" && !localPresenceUserRef.current?.isMD) {
-          // ✅ SURGICAL FIX: Added strict null check for mdSectionStartTimeRef.current
           if (audioContextStartTimeRef.current !== null && mdSectionStartTimeRef.current !== null && isPlayingRef.current) {
             const { mdAbsoluteBeat, mdGlobalBeatTime } = payload;
             
-            // 1. Where does the MD think we should be in global time?
-            const localExpectedGlobalTime = mdSectionStartTimeRef.current + (mdAbsoluteBeat * (60 / (activeSongRef.current?.tempo || 75)) * 1000);
+            // ✅ SURGICAL FIX: Match the exact section-offset math the MD used
+            const sectionStartAbsoluteBeat = beatMapRef.current.sectionStartBeats[currentSectionIndexRef.current] || 0;
+            const localBeatCount = mdAbsoluteBeat - sectionStartAbsoluteBeat;
+            const localExpectedGlobalTime = mdSectionStartTimeRef.current + (localBeatCount * (60 / (activeSongRef.current?.tempo || 75)) * 1000);
             
             // 2. How far off is our local math from the MD's reality?
             const driftMs = localExpectedGlobalTime - mdGlobalBeatTime;
@@ -1058,7 +1213,7 @@ export default function SetlistPerformanceRoomPage() {
         // Anchor the infinite grid to the theoretical beginning of the song!
         audioContextStartTimeRef.current = absoluteHardwareTimeAtJump - theoreticalSongStartOffset;
 
-        if (timeUntilJumpMs >= 3000) {
+        if (timeUntilJumpMs >= 3000 && !isYtBackingTrackStartRef.current) {
           triggerMetronomeSound(2, absoluteHardwareTimeAtJump - 3); 
           triggerMetronomeSound(2, absoluteHardwareTimeAtJump - 2); 
           triggerMetronomeSound(1, absoluteHardwareTimeAtJump - 1); 
@@ -1086,6 +1241,10 @@ export default function SetlistPerformanceRoomPage() {
     pendingQuantizedJumpRef.current = null;
     
     // ✅ SURGICAL FIX: Reset the cue lock so the NEXT section gets its 4-beat warning!
+    scheduledClicksRef.current.forEach(click => {
+      try { click.source.stop(); click.source.disconnect(); } catch(e) {}
+    });
+    scheduledClicksRef.current = [];
     hasPlayedCueRef.current = false; 
 
     // 6. Reset UI Progress Bars
@@ -1112,6 +1271,16 @@ export default function SetlistPerformanceRoomPage() {
     hasPlayedCueRef.current = false;
     
     if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+
+    // ✅ SURGICAL FIX: Wipe oscillators when hitting stop
+    scheduledClicksRef.current.forEach(click => {
+      try { click.source.stop(); click.source.disconnect(); } catch(e) {}
+    });
+    scheduledClicksRef.current = [];
+
+    if (ytPlayerRef.current && typeof ytPlayerRef.current.pauseVideo === 'function') {
+       ytPlayerRef.current.pauseVideo();
+    }
     
     currentSectionIndexRef.current = 0;
     lastBeatRef.current = 0;
@@ -1458,11 +1627,10 @@ export default function SetlistPerformanceRoomPage() {
       // ✅ SURGICAL FIX 1: Pure Network Sync. No clock drift!
       let elapsedMs = getGlobalTime() - mdSectionStartTimeRef.current;
       
-      // ✅ SURGICAL FIX: The Visual Countdown Engine (Silent for Instant Starts)
-      if (elapsedMs < -500) {
+      // ✅ SURGICAL FIX: The Visual Countdown Engine (Silent for Instant Starts AND YouTube Syncs!)
+      if (elapsedMs < -500 && !isYtBackingTrackStartRef.current) {
         const secondsLeft = Math.ceil(Math.abs(elapsedMs) / 1000);
         
-        // Only trigger React state updates if the number actually changes to save performance
         if (secondsLeft <= 3 && secondsLeft > 0) {
           if (countdownValueRef.current !== secondsLeft) {
             countdownValueRef.current = secondsLeft;
@@ -1472,7 +1640,7 @@ export default function SetlistPerformanceRoomPage() {
         animationFrameRef.current = requestAnimationFrame(clockExecutionTick);
         return; 
       } else if (elapsedMs < 0) {
-        // ✅ We are in the tiny 150ms network buffer for an instant start. Wait silently!
+        // ✅ We are waiting for the YT intro to finish OR in the 150ms network buffer. Wait silently!
         if (countdownValueRef.current !== null) {
           countdownValueRef.current = null;
           setCountdownValue(null);
@@ -1525,17 +1693,30 @@ export default function SetlistPerformanceRoomPage() {
         let nextBeatTime = audioContextStartTimeRef.current + (lastAudioBeatRef.current * beatSpeedSecs);
         
         while (nextBeatTime < currentAudioTime + lookaheadSecs) {
-          // ✅ SURGICAL FIX: Query the Master Beat Map!
           const absoluteBeatIndex = lastAudioBeatRef.current;
           const mapNodes = beatMapRef.current.nodes;
 
-          // As long as we haven't reached the end of the song's pre-compiled map...
+          // ✅ SURGICAL FIX: Prevent Old Section from scheduling beats that overlap with a queued jump!
+          if (pendingQuantizedJumpRef.current) {
+            const timeUntilBeatSecs = nextBeatTime - currentAudioTime;
+            const exactGlobalBeatTime = getGlobalTime() + (timeUntilBeatSecs * 1000);
+            
+            // If this scheduled beat falls ON or AFTER the exact jump time, skip it!
+            if (exactGlobalBeatTime >= pendingQuantizedJumpRef.current.jumpTime - 10) {
+              break; 
+            }
+          }
+
           if (absoluteBeatIndex < mapNodes.length) {
             const beatNode = mapNodes[absoluteBeatIndex];
             
-            // If the map says this is the first beat of a measure, play the High Blip!
             const nextBeatPulse = beatNode.isDownbeat ? 1 : 2;
             triggerMetronomeSound(nextBeatPulse, nextBeatTime);
+
+            // ✅ SURGICAL FIX: Inject the 8th-note subdivision directly into the Web Audio API
+            if (isDoubleMetronomeEnabledRef.current) {
+              triggerMetronomeSound(2, nextBeatTime + (beatSpeedSecs / 2));
+            }
           }
 
           lastAudioBeatRef.current++;
@@ -1548,6 +1729,10 @@ export default function SetlistPerformanceRoomPage() {
             if ((window as any)._lastHeartbeatBeat !== lastAudioBeatRef.current) {
               (window as any)._lastHeartbeatBeat = lastAudioBeatRef.current;
               
+
+              const sectionStartAbsoluteBeat = beatMapRef.current.sectionStartBeats[currentSectionIndexRef.current] || 0;
+              const localBeatCount = lastAudioBeatRef.current - sectionStartAbsoluteBeat;
+            
               // We tell the band: "I am playing Beat X, and it happened at exactly this Global Time"
               const exactGlobalBeatTime = mdSectionStartTimeRef.current + (lastAudioBeatRef.current * beatSpeedSecs * 1000);
               
@@ -1697,19 +1882,21 @@ export default function SetlistPerformanceRoomPage() {
   // ✅ SURGICAL FIX 3: Stripped out all state variables! The engine never tears itself down during a song now.
   }, [isPlayingFlow]);
 
-  // ✅ SURGICAL ADDITION: Helper function to execute the actual start
-  function executeStartSequence(useCountdown: boolean) {
-    playingTrackIndexRef.current = currentTrackIndex;
-    setPlayingTrackIndex(currentTrackIndex);
-    playingSongRef.current = activeSong;
-    playingSectionsRef.current = sections;
+  // ✅ SURGICAL FIX: Upgraded to use strict Refs to avoid Stale Closures from the YouTube Player
+  function executeStartSequence(useCountdown: boolean, forcedStartTimestamp?: number, isYtSource: boolean = false) {
+    isYtBackingTrackStartRef.current = isYtSource; // Lock the silencer flag locally
+    
+    // ✅ SURGICAL FIX: We pull exclusively from Refs so this function is immune to stale closures!
+    playingTrackIndexRef.current = currentTrackIndexRef.current;
+    setPlayingTrackIndex(currentTrackIndexRef.current);
+    playingSongRef.current = activeSongRef.current;
+    playingSectionsRef.current = sectionsRef.current;
 
     isPlayingRef.current = true;
     setIsPlayingFlow(true);
 
-    // Instant start gets 150ms buffer. Countdown gets 3150ms buffer.
     const delayMs = useCountdown ? 3150 : 150; 
-    const startTimestamp = getGlobalTime() + delayMs;
+    const startTimestamp = forcedStartTimestamp ?? (getGlobalTime() + delayMs);
     mdSectionStartTimeRef.current = startTimestamp;
 
     if (realtimeChannelRef.current) {
@@ -1718,15 +1905,16 @@ export default function SetlistPerformanceRoomPage() {
         event: "lobby_sync",
         payload: { 
           action: "START", 
-          trackIndex: currentTrackIndex, 
-          sectionIndex: currentSectionIndex,
-          mdSectionStartTime: startTimestamp 
+          trackIndex: currentTrackIndexRef.current,     // ✅ Protected from closure
+          sectionIndex: currentSectionIndexRef.current, // ✅ Protected from closure
+          mdSectionStartTime: startTimestamp,
+          isYtSource: isYtSource 
         }
       });
     }
   }
 
-  // ✅ SURGICAL FIX: The Double-Tap Smart Play Button
+  // ✅ SURGICAL FIX: The Smart Play Button (Upgraded with YT Sync Dance)
   function handleToggleFlowPlaybackState() {
     initAudioContext();
     if (!localPresenceUser?.isMD) {
@@ -1735,26 +1923,46 @@ export default function SetlistPerformanceRoomPage() {
     }
     
     if (isPlayingFlow) {
-      // Stop immediately and cancel any pending double-click logic
       if (playClickTimeoutRef.current) {
         clearTimeout(playClickTimeoutRef.current);
         playClickTimeoutRef.current = null;
+      }
+      
+      // ✅ Kill YT Player if running
+      if (ytPlayerRef.current && typeof ytPlayerRef.current.pauseVideo === 'function') {
+        ytPlayerRef.current.pauseVideo();
       }
       handleResetFlowTrigger();
     } else {
       if (sections.length === 0 || !activeSong) return;
 
+      // The execution trigger for YouTube Mode
+      const triggerYoutubeSync = () => {
+        if (ytPlayerRef.current && typeof ytPlayerRef.current.playVideo === 'function') {
+          setIsYtBuffering(true);
+          ytSyncPendingRef.current = true;
+          ytPlayerRef.current.seekTo(0);
+          ytPlayerRef.current.playVideo();
+        } else {
+          console.warn("YT Player not ready. Falling back.");
+          executeStartSequence(true);
+        }
+      };
+
       if (playClickTimeoutRef.current) {
-        // ⚡ DOUBLE TAP DETECTED: Cancel timer and use 3-second countdown!
         clearTimeout(playClickTimeoutRef.current);
         playClickTimeoutRef.current = null;
-        executeStartSequence(true); 
+        
+        // ⚡ DOUBLE TAP DETECTED: Youtube Sync OR 3-second countdown!
+        if (isYoutubeSyncEnabled && youtubeVideoId) triggerYoutubeSync();
+        else executeStartSequence(true); 
       } else {
-        // Wait 250ms to see if they click again
         playClickTimeoutRef.current = setTimeout(() => {
           playClickTimeoutRef.current = null;
-          // ⚡ SINGLE TAP DETECTED: Instant start!
-          executeStartSequence(false);
+          
+          // ⚡ SINGLE TAP DETECTED: Youtube Sync OR Instant start!
+          if (isYoutubeSyncEnabled && youtubeVideoId) triggerYoutubeSync();
+          else executeStartSequence(false);
         }, 250);
       }
     }
@@ -1823,6 +2031,22 @@ export default function SetlistPerformanceRoomPage() {
 
           // Push the jump to the pending engine
           pendingQuantizedJumpRef.current = { trackIndex: targetTrackIdx, sectionIndex: index, jumpTime };
+          
+          // ✅ SURGICAL FIX: Cancel any old beats that were ALREADY pushed to the hardware buffer
+          // for the exact moment of the jump, so we don't get overlapping downbeats!
+          if (globalAudioContext) {
+            const timeUntilJumpSecs = (jumpTime - getGlobalTime()) / 1000;
+            const audioJumpTime = globalAudioContext.currentTime + timeUntilJumpSecs;
+            
+            scheduledClicksRef.current.forEach(click => {
+              // If the click was scheduled on or after the jump boundary (with a 50ms grace margin), kill it!
+              if (click.audioTime >= audioJumpTime - 0.05) {
+                try { click.source.stop(); click.source.disconnect(); } catch(e) {}
+              }
+            });
+            // Filter the killed clicks out of the tracker
+            scheduledClicksRef.current = scheduledClicksRef.current.filter(click => click.audioTime < audioJumpTime - 0.05);
+          }
           
           // Show the purple queue visual immediately for the MD
           setQueuedTrackIndex(targetTrackIdx);
@@ -2805,6 +3029,21 @@ export default function SetlistPerformanceRoomPage() {
                 {isMetronomeSoundEnabled && (
                   <div className="bg-zinc-50 border border-zinc-100 rounded-xl p-4 animate-in slide-in-from-top-2">
                     
+                    {/* ✅ SURGICAL ADDITION: Double Metronome Toggle */}
+                    <div className="flex items-center justify-between mb-4 border-b border-zinc-200/60 pb-4">
+                      <div className="flex flex-col">
+                        <span className="text-[11px] font-bold text-zinc-600">Double Metronome</span>
+                        <span className="text-[9px] font-bold text-zinc-400">Play 8th-note subdivisions</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setIsDoubleMetronomeEnabled(!isDoubleMetronomeEnabled)}
+                        className={`w-11 h-6 rounded-full flex items-center p-1 transition-colors shadow-inner ${isDoubleMetronomeEnabled ? 'bg-blue-500' : 'bg-zinc-200'}`}
+                      >
+                        <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform ${isDoubleMetronomeEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                      </button>
+                    </div>
+
                     {/* ✅ QoL #5: Independent Local Volume Slider */}
                     <div className="flex items-center justify-between mb-4 border-b border-zinc-200/60 pb-4">
                       <span className="text-[11px] font-bold text-zinc-600">Local Click Volume</span>
@@ -2837,6 +3076,40 @@ export default function SetlistPerformanceRoomPage() {
                         {isTestingSync ? "STOP" : "TEST SYNC"}
                       </button>
                     </div>
+                  </div>
+                )}
+                {/* ✅ SURGICAL ADDITION: Phase 3 YouTube Sync Toggle & Volume */}
+                {activeSong?.youtube_url && activeSong?.youtube_sync_offset_ms !== undefined && (
+                  <div className="mt-5 border-t border-zinc-200/60 pt-4 animate-in fade-in space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex flex-col">
+                        <span className="text-[11px] font-bold text-zinc-800 flex items-center gap-1.5">
+                          <span className="text-red-600 text-sm">▶</span> YouTube Sync Engine
+                        </span>
+                        <span className="text-[9px] font-bold text-zinc-400 mt-0.5">Lock stage metronome to the backing track</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setIsYoutubeSyncEnabled(!isYoutubeSyncEnabled)}
+                        className={`w-11 h-6 rounded-full flex items-center p-1 transition-colors shadow-inner ${isYoutubeSyncEnabled ? 'bg-red-500' : 'bg-zinc-200'}`}
+                      >
+                        <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform ${isYoutubeSyncEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                      </button>
+                    </div>
+
+                    {/* ✅ SURGICAL ADDITION: YouTube Mix Volume Slider */}
+                    {isYoutubeSyncEnabled && (
+                      <div className="flex items-center justify-between bg-red-50/50 border border-red-100 rounded-xl p-3 animate-in slide-in-from-top-1">
+                        <span className="text-[11px] font-bold text-red-800">Track Mix Volume</span>
+                        <input 
+                          type="range" 
+                          min="0" max="1" step="0.05" 
+                          value={youtubeVolume} 
+                          onChange={(e) => setYoutubeVolume(parseFloat(e.target.value))} 
+                          className="w-24 accent-red-600" 
+                        />
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -3150,6 +3423,23 @@ export default function SetlistPerformanceRoomPage() {
           </span>
           <span className="text-[150px] md:text-[250px] font-black text-white leading-none tracking-tighter drop-shadow-2xl">
             {countdownValue}
+          </span>
+        </div>
+      )}
+
+    {/* ✅ SURGICAL ADDITION: YouTube Hidden Container */}
+      <div className="absolute opacity-0 pointer-events-none w-[1px] h-[1px] overflow-hidden -z-50">
+        <div id="yt-live-player-container"></div>
+      </div>
+
+      {/* ✅ SURGICAL ADDITION: Buffering YouTube Overlay */}
+      {isYtBuffering && (
+        <div className="fixed inset-0 z-[400000] bg-zinc-950/90 backdrop-blur-md flex flex-col items-center justify-center animate-in fade-in duration-100 select-none touch-none">
+          <span className="text-red-500 font-black tracking-widest uppercase mb-4 text-xl md:text-2xl animate-pulse">
+            Buffering Backing Track
+          </span>
+          <span className="text-[100px] md:text-[150px] font-black text-white leading-none tracking-tighter drop-shadow-2xl">
+            ∞
           </span>
         </div>
       )}

@@ -20,7 +20,7 @@ const DIATONIC_MODES_MAP: { [key: string]: { root: string; suffix: string }[] } 
   "F#": [{root:"F#",suffix:""},{root:"G#",suffix:"m"},{root:"A#",suffix:"m"},{root:"B",suffix:""}, {root:"C#",suffix:""},{root:"D#",suffix:"m"}, {root:"F",suffix:"dim"}],
   "G":  [{root:"G",suffix:""}, {root:"A",suffix:"m"}, {root:"B",suffix:"m"}, {root:"C",suffix:""}, {root:"D",suffix:""}, {root:"E",suffix:"m"}, {root:"F#",suffix:"dim"}],
   "Ab": [{root:"Ab",suffix:""},{root:"Bb",suffix:"m"},{root:"C",suffix:"m"}, {root:"Db",suffix:""},{root:"Eb",suffix:""},{root:"F",suffix:"m"}, {root:"G",suffix:"dim"}],
-  "A":  [{root:"A",suffix:"m"}, {root:"B",suffix:"m"}, {root:"C#",suffix:"m"},{root:"D",suffix:""}, {root:"E",suffix:""}, {root:"F#",suffix:"m"},{root:"G#",suffix:"dim"}],
+  "A":  [{root:"A",suffix:""}, {root:"B",suffix:"m"}, {root:"C#",suffix:"m"},{root:"D",suffix:""}, {root:"E",suffix:""}, {root:"F#",suffix:"m"},{root:"G#",suffix:"dim"}],
   "Bb": [{root:"Bb",suffix:""},{root:"C",suffix:"m"}, {root:"D",suffix:"m"}, {root:"Eb",suffix:""},{root:"F",suffix:""}, {root:"G",suffix:"m"}, {root:"A",suffix:"dim"}],
   "B":  [{root:"B",suffix:""}, {root:"C#",suffix:"m"},{root:"D#",suffix:"m"},{root:"E",suffix:""}, {root:"F#",suffix:""},{root:"G#",suffix:"m"},{root:"A#",suffix:"dim"}],
   "Am": [{root:"A",suffix:"m"}, {root:"B",suffix:"dim"},{root:"C",suffix:""}, {root:"D",suffix:"m"}, {root:"E",suffix:"m"}, {root:"F",suffix:""}, {root:"G",suffix:""}],
@@ -55,12 +55,11 @@ interface SectionTimingMap {
     measures: number;
     beats: number;
     repeats?: number;
-    // ✅ SURGICAL ADDITION: Head and Tail padding measures
     head_m?: number;
     tail_m?: number;
   };
 }
-// ✅ SURGICAL REPLACEMENT: Dynamic Base Section Catalog
+
 const SECTION_BASE_CATALOG = [
   { id: "V", display: "Verse", abbr: "V", color: "text-sky-500 border-sky-300 bg-sky-50" },
   { id: "PC", display: "Pre-Chorus", abbr: "PC", color: "text-orange-500 border-orange-300 bg-orange-50" },
@@ -119,7 +118,7 @@ export default function SongEditPage() {
   const editingSongId = params.id as string;
 
   const editorContentContainerRef = useRef<HTMLDivElement | null>(null);
-  const { activeRole, simulatedUserId } = useEngine();
+  const { activeRole } = useEngine();
 
   // Primary Hydration States
   const [loading, setLoading] = useState(true);
@@ -127,37 +126,59 @@ export default function SongEditPage() {
   const [isConfirmExitModalOpen, setIsConfirmExitModalOpen] = useState(false);
   const [editorActiveTab, setEditorActiveTab] = useState<"details" | "content" | "structure">("details");
 
-  // ✅ SURGICAL ADDITION: Save Engine States
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
   const [saveErrorMessage, setSaveErrorMessage] = useState("");
-
   const [isScrollingDown, setIsScrollingDown] = useState(false);
   const lastScrollY = useRef(0);
 
   const handleCanvasScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const currentScrollY = e.currentTarget.scrollTop;
-    // 5px threshold prevents jittering
-    if (currentScrollY > lastScrollY.current + 5) {
-      setIsScrollingDown(true);
-    } else if (currentScrollY < lastScrollY.current - 5) {
-      setIsScrollingDown(false);
-    }
+    if (currentScrollY > lastScrollY.current + 5) setIsScrollingDown(true);
+    else if (currentScrollY < lastScrollY.current - 5) setIsScrollingDown(false);
     lastScrollY.current = currentScrollY;
   };
   
   const [formTitle, setFormTitle] = useState("");
   const [formTempo, setFormTempo] = useState("");
-
-  // ✅ SURGICAL ADDITION: Tap BPM States
   const [isTapBpmModalOpen, setIsTapBpmModalOpen] = useState(false);
   const [tapTimestamps, setTapTimestamps] = useState<number[]>([]);
 
-  // Automatically clear the tap visualizer if inactive for 3 seconds
+  // ✅ SURGICAL ADDITION: Phase 1 & 2 YouTube Engine States
+  const [formYoutubeUrl, setFormYoutubeUrl] = useState("");
+  const [formYoutubeSyncOffset, setFormYoutubeSyncOffset] = useState<number>(0);
+  const [youtubeVideoId, setYoutubeVideoId] = useState<string | null>(null);
+  
+  const ytPlayerRef = useRef<any>(null);
+  const isTestingSyncRef = useRef<boolean>(false);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+
+  const isYtPlayerReadyRef = useRef<boolean>(false);
+
+  const activeOscillatorsRef = useRef<OscillatorNode[]>([]);
+  const liveTempoRef = useRef(formTempo);
+  const liveOffsetRef = useRef(formYoutubeSyncOffset);
+
+  useEffect(() => { liveTempoRef.current = formTempo; }, [formTempo]);
+  useEffect(() => { liveOffsetRef.current = formYoutubeSyncOffset; }, [formYoutubeSyncOffset]);
+
+  // Link Validator: Extracts the 11-character video ID from any standard or shortened YT link
+  useEffect(() => {
+    if (!formYoutubeUrl.trim()) {
+      setYoutubeVideoId(null);
+      return;
+    }
+    const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+    const match = formYoutubeUrl.match(regExp);
+    if (match && match[2].length === 11) {
+      setYoutubeVideoId(match[2]);
+    } else {
+      setYoutubeVideoId(null);
+    }
+  }, [formYoutubeUrl]);
+
   useEffect(() => {
     if (tapTimestamps.length > 0) {
-      const idleTimer = setTimeout(() => {
-        setTapTimestamps([]);
-      }, 3000);
+      const idleTimer = setTimeout(() => setTapTimestamps([]), 3000);
       return () => clearTimeout(idleTimer);
     }
   }, [tapTimestamps]);
@@ -165,32 +186,27 @@ export default function SongEditPage() {
   const [formKey, setFormKey] = useState("G");
   const [formArtist, setFormArtist] = useState("");
 
-  // ✅ SURGICAL ADDITION: Artist Database State & Filtering
   const [availableArtists, setAvailableArtists] = useState<string[]>([]);
   const filteredArtistSuggestions = availableArtists
     .filter(a => a.toLowerCase().includes(formArtist.toLowerCase()) && a.toLowerCase() !== formArtist.toLowerCase())
-    .slice(0, 6); // Keep UI clean by limiting to 6 results
+    .slice(0, 6);
   
-  // ✅ SURGICAL ADDITION: Title Dropdown & Duplicate Detection States
   const [availableSongs, setAvailableSongs] = useState<{id: string, title: string, artist: string}[]>([]);
   const [isTitleDropdownFocused, setIsTitleDropdownFocused] = useState(false);
   const [duplicateWarning, setDuplicateWarning] = useState<{id: string, title: string, artist: string} | null>(null);
   const [dismissedDuplicateIds, setDismissedDuplicateIds] = useState<string[]>([]);
 
-  // Filter existing songs for the autocomplete dropdown (limit to 6 results)
   const filteredTitleSuggestions = availableSongs
     .filter(s => s.title.toLowerCase().includes(formTitle.toLowerCase()) && s.title.toLowerCase() !== formTitle.toLowerCase())
     .slice(0, 6);
 
-  // Monitor Title & Artist for duplicates in real-time
   useEffect(() => {
     if (!formTitle.trim() || !formArtist.trim()) return;
     const duplicate = availableSongs.find(
       s => s.title.toLowerCase() === formTitle.trim().toLowerCase() &&
            s.artist.toLowerCase() === formArtist.trim().toLowerCase() &&
-           s.id !== editingSongId // Don't flag itself if we are just editing it
+           s.id !== editingSongId
     );
-
     if (duplicate && !dismissedDuplicateIds.includes(duplicate.id) && duplicateWarning?.id !== duplicate.id) {
       setDuplicateWarning(duplicate);
     }
@@ -210,15 +226,38 @@ export default function SongEditPage() {
 
   const [isRealtimePreviewActive, setIsRealtimePreviewActive] = useState(false);
 
-  // ✅ SURGICAL ADDITION: Unified Section Assignment Modal States
+  // ✅ SURGICAL ADDITION: 3-State Chords Toggle Engine State
+  const [chordMode, setChordMode] = useState<"Off" | "Chords" | "Keyboard">("Off");
+  const [isAddNotesModeActive, setIsAddNotesModeActive] = useState(false); 
+
+  // ✅ SURGICAL ADDITION: Mobile-Friendly Bottom Sheet Config States
+  const [sectionAdjustmentsConfig, setSectionAdjustmentsConfig] = useState<{ isOpen: boolean; sectionType: string | null }>({ isOpen: false, sectionType: null });
+  const [adjustmentsModalTab, setAdjustmentsModalTab] = useState<"section" | "lines">("section"); // ✅ Added tab tracker
+  const [chordPickerConfig, setChordPickerConfig] = useState<{ isOpen: boolean; sectionType: string | null; lineIdx: number; wordIdx: number; cleanWord: string }>({ isOpen: false, sectionType: null, lineIdx: -1, wordIdx: -1, cleanWord: "" });
+  const [pickerLayoutView, setPickerLayoutView] = useState<"family" | "manual">("family");
+  const [stagedChordsText, setStagedChordsText] = useState("");
+  const [manualExtensionNumber, setManualExtensionNumber] = useState("");
+
   const [sectionModalConfig, setSectionModalConfig] = useState<{ isOpen: boolean, mode: "add" | "reassign", targetId?: string }>({ isOpen: false, mode: "add" });
   const [sectionModalSearch, setSectionModalSearch] = useState("");
   const [sectionModalSelected, setSectionModalSelected] = useState<string | null>(null);
 
-  // ✅ SURGICAL ADDITION: Computes the next available auto-incremented number for each section type
+  const [chordTargetCoordinate, setChordTargetCoordinate] = useState<{ sectionType: string; lineIdx: number; wordIdx: number } | null>(null);
+  const [notesTargetCoordinate, setNotesTargetCoordinate] = useState<{ sectionType: string; lineIdx: number } | null>(null); 
+
+  const [selectedChordRoot, setSelectedChordRoot] = useState("G");
+  const [customChordInputValue, setCustomChordInputValue] = useState("G");
+  const [customCommentInputValue, setCustomCommentInputValue] = useState("");
+
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [pastedRawLyricsText, setPastedRawLyricsText] = useState("");
+
+  const [selectedSequenceId, setSelectedSequenceId] = useState<string | null>(null);
+  const [draggedStructureIndex, setDraggedStructureIndex] = useState<number | null>(null);
+  const [dragOverStructureIndex, setDragOverStructureIndex] = useState<number | null>(null);
+
   const dynamicCatalogOptions = useMemo(() => {
     return SECTION_BASE_CATALOG.map(base => {
-      // Find highest existing number for this exact base type in the current arrangement
       const regex = new RegExp(`^${base.display}\\s+(\\d+)$`, 'i');
       let maxNum = 0;
       formSections.forEach(sec => {
@@ -229,18 +268,20 @@ export default function SongEditPage() {
         }
       });
       const nextName = `${base.display} ${maxNum + 1}`;
-      return {
-        ...base,
-        computedId: nextName, // Uses "Verse 2" as the unique ID
-        computedDisplay: nextName
-      };
+      return { ...base, computedId: nextName, computedDisplay: nextName };
     });
   }, [formSections]);
 
+  // ✅ Cycle through 3 states cleanly
+  const cycleChordMode = () => {
+    if (chordMode === "Off") setChordMode("Chords");
+    else if (chordMode === "Chords") setChordMode("Keyboard");
+    else setChordMode("Off");
+    setChordTargetCoordinate(null);
+  };
+
   const handleSectionModalSubmit = () => {
     if (!sectionModalSelected) return;
-    
-    // Look up against our newly generated dynamic list instead of the static catalog
     const tmpl = dynamicCatalogOptions.find(x => x.computedId === sectionModalSelected);
     if (!tmpl) return;
 
@@ -264,34 +305,13 @@ export default function SongEditPage() {
     setSectionModalConfig({ isOpen: false, mode: "add" });
   };
 
-  const [isAddChordsModeActive, setIsAddChordsModeActive] = useState(false);
-  const [isAddNotesModeActive, setIsAddNotesModeActive] = useState(false); 
-  const [chordTargetCoordinate, setChordTargetCoordinate] = useState<{ sectionType: string; lineIdx: number; wordIdx: number } | null>(null);
-  const [notesTargetCoordinate, setNotesTargetCoordinate] = useState<{ sectionType: string; lineIdx: number } | null>(null); 
-
-  const [selectedChordRoot, setSelectedChordRoot] = useState("G");
-  const [customChordInputValue, setCustomChordInputValue] = useState("G");
-  const [customCommentInputValue, setCustomCommentInputValue] = useState("");
-
-  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
-  const [pastedRawLyricsText, setPastedRawLyricsText] = useState("");
-
-  const [selectedSequenceId, setSelectedSequenceId] = useState<string | null>(null);
-  
-  const [draggedStructureIndex, setDraggedStructureIndex] = useState<number | null>(null);
-  const [dragOverStructureIndex, setDragOverStructureIndex] = useState<number | null>(null);
-
-  // ✅ SURGICAL FIX: Unified Dictionary Fetcher (Gets Titles & Artists)
   useEffect(() => {
     const fetchDictionary = async () => {
       try {
         const { data } = await supabase.from("songs").select("id, title, artist");
         if (data) {
-          // Deduplicate artists for the Artist Dropdown
           const uniqueArtists = Array.from(new Set(data.map(s => s.artist?.trim()).filter(Boolean)));
           setAvailableArtists(uniqueArtists as string[]);
-          
-          // Store full song profiles for the Title Dropdown & Duplicate Engine
           setAvailableSongs(data.map(s => ({ 
             id: s.id, 
             title: s.title?.trim() || "", 
@@ -305,18 +325,14 @@ export default function SongEditPage() {
     fetchDictionary();
   }, [supabase]);
 
-  // Data Hydration Stream
   useEffect(() => {
     const hydrateArrangementWorkspace = async () => {
       if (!editingSongId) return;
-      
-      // ✅ SURGICAL FIX: Prevent DB fetch crash if this is a brand new song
       if (editingSongId === "new") {
         setFormSections([{ id: "sec-1", type: "Verse 1", label: "Verse 1", content: "", repetitions: 1 }]);
         setLoading(false);
         return;
       }
-
       try {
         setLoading(true);
         const { data: song, error: songFetchError } = await supabase
@@ -331,10 +347,10 @@ export default function SongEditPage() {
         setFormTempo(song.tempo || "");
         setFormKey(song.original_key || "G");
         setFormArtist(song.artist || "");
+        setFormYoutubeUrl(song.youtube_url || "");
+        setFormYoutubeSyncOffset(song.youtube_sync_offset_ms || 0);
         setFormThemes(song.themes ? song.themes.split(",").map((t: string) => t.trim()).filter(Boolean) : []);
         setSectionTimings(song.section_timings || {});
-
-        
 
         const sectionsRaw = await getSongChordChart(editingSongId);
         if (sectionsRaw && sectionsRaw.length > 0) {
@@ -365,11 +381,9 @@ export default function SongEditPage() {
         setHasUnsavedChanges(false);
       }
     };
-
     hydrateArrangementWorkspace();
   }, [editingSongId]);
 
-  // Global Key Escape Interceptor
   useEffect(() => {
     const handleModalHardwareEscapeKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") handleAttemptDismissal();
@@ -380,10 +394,10 @@ export default function SongEditPage() {
 
   const activeScaleDiatonicDeck = useMemo(() => DIATONIC_MODES_MAP[formKey] || DIATONIC_MODES_MAP["G"], [formKey]);
 
-  // Nashville Input Listener
+  // Keyboard Mode Input Listener (Diatonic Quick Keys)
   useEffect(() => {
     const handleNashvilleNumberKeyInjections = (e: KeyboardEvent) => {
-      if (!isAddChordsModeActive || !chordTargetCoordinate || document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA") return;
+      if (chordMode !== "Keyboard" || !chordTargetCoordinate || document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA") return;
       
       if (["1", "2", "3", "4", "5", "6", "7"].includes(e.key)) {
         e.preventDefault();
@@ -423,17 +437,129 @@ export default function SongEditPage() {
     };
     window.addEventListener("keydown", handleNashvilleNumberKeyInjections);
     return () => window.removeEventListener("keydown", handleNashvilleNumberKeyInjections);
-  }, [isAddChordsModeActive, chordTargetCoordinate, activeScaleDiatonicDeck]);
+  }, [chordMode, chordTargetCoordinate, activeScaleDiatonicDeck]);
 
-  // Transposition Actions (Surgically linked back up)
+  // ✅ SURGICAL ADDITION: Phase 2 YouTube Player API & Metronome Synthesizer
+  useEffect(() => {
+    if (!youtubeVideoId) return;
+
+    const runTestMetronome = () => {
+      if (!audioCtxRef.current) return;
+
+      // 1. Clear any currently scheduled clicks so they don't overlap!
+      activeOscillatorsRef.current.forEach(osc => {
+        try { osc.stop(); osc.disconnect(); } catch (e) {}
+      });
+      activeOscillatorsRef.current = [];
+
+      // 2. Read from the silent Live Refs instead of React state!
+      const bpm = parseInt(liveTempoRef.current) || 75;
+      const beatDuration = 60 / bpm;
+      const offsetSecs = liveOffsetRef.current / 1000;
+      const startTime = audioCtxRef.current.currentTime + offsetSecs;
+
+      // Synthesize 16 beats of testing blips
+      for (let i = 0; i < 16; i++) {
+        const osc = audioCtxRef.current.createOscillator();
+        const gain = audioCtxRef.current.createGain();
+        osc.connect(gain);
+        gain.connect(audioCtxRef.current.destination);
+        osc.frequency.value = i % 4 === 0 ? 1200 : 800; // Accent on downbeat
+        osc.type = "sine";
+        const t = startTime + (i * beatDuration);
+        gain.gain.setValueAtTime(0, t);
+        gain.gain.linearRampToValueAtTime(0.5, t + 0.005);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+        osc.start(t);
+        osc.stop(t + 0.1);
+        
+        // Track this specific beep so we can kill it later if needed
+        activeOscillatorsRef.current.push(osc);
+      }
+    };
+
+    const initPlayer = () => {
+      if (!(window as any).YT || !(window as any).YT.Player) {
+        setTimeout(initPlayer, 200);
+        return;
+      }
+      if (ytPlayerRef.current) {
+        // Only load if the actual Video ID changed!
+        ytPlayerRef.current.loadVideoById(youtubeVideoId);
+      } else {
+        ytPlayerRef.current = new (window as any).YT.Player('yt-player-container', {
+          height: '100%', width: '100%', videoId: youtubeVideoId,
+          playerVars: { 'playsinline': 1, 'controls': 1 },
+          events: {
+            // ✅ SURGICAL FIX: Explicitly handle the ready state to guarantee the API loaded
+            'onReady': () => {
+              isYtPlayerReadyRef.current = true;
+               console.log("📺 YouTube Player API fully loaded and ready for commands.");
+            },
+            'onStateChange': (event: any) => {
+              // 1 === YT.PlayerState.PLAYING. The moment audio actually starts!
+              if (event.data === 1 && isTestingSyncRef.current) { 
+                isTestingSyncRef.current = false;
+                runTestMetronome();
+              }
+            }
+          }
+        });
+      }
+    };
+
+    if (!(window as any).YT) {
+      const tag = document.createElement('script');
+      tag.src = "https://www.youtube.com/iframe_api";
+      const firstScriptTag = document.getElementsByTagName('script')[0];
+      firstScriptTag?.parentNode?.insertBefore(tag, firstScriptTag);
+    }
+    initPlayer();
+    
+  // ✅ SURGICAL FIX: Removed formTempo and formYoutubeSyncOffset from the dependency array 
+  // so the player does NOT reload while the user is typing!
+  }, [youtubeVideoId]);
+
+  const handleTestYoutubeSync = () => {
+    if (!audioCtxRef.current) {
+      audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+    }
+    if (audioCtxRef.current?.state === "suspended") audioCtxRef.current.resume();
+    
+    // Immediately kill any clicks that were currently ringing out from a previous test click
+    activeOscillatorsRef.current.forEach(osc => {
+      try { osc.stop(); osc.disconnect(); } catch (e) {}
+    });
+    activeOscillatorsRef.current = [];
+
+    if (isYtPlayerReadyRef.current && ytPlayerRef.current && typeof ytPlayerRef.current.seekTo === 'function') {
+      isTestingSyncRef.current = true;
+      try {
+        ytPlayerRef.current.seekTo(0);
+        ytPlayerRef.current.playVideo();
+      } catch(e) {}
+    } else {
+      console.warn("YouTube Player is still initializing in the DOM. Please wait a moment.");
+    }
+  };
+
+  const handleCaptureSyncPoint = () => {
+    // ✅ SURGICAL FIX: Check the lock!
+    if (isYtPlayerReadyRef.current && ytPlayerRef.current && typeof ytPlayerRef.current.getCurrentTime === 'function') {
+      try {
+        const currentTimeSecs = ytPlayerRef.current.getCurrentTime();
+        setFormYoutubeSyncOffset(Math.round(currentTimeSecs * 1000));
+        setHasUnsavedChanges(true);
+      } catch(e) {}
+    }
+  };
+
   const handleOpenKeySelectionPopup = () => {
     const cleanKeyBase = formKey.endsWith("m") ? formKey.slice(0, -1) : formKey;
     let baseLetter = cleanKeyBase.charAt(0);
     let accidentalSign: "" | "#" | "b" = "";
-    
     if (cleanKeyBase.includes("#")) accidentalSign = "#";
     else if (cleanKeyBase.includes("b")) accidentalSign = "b";
-
     setModalKeyRoot(baseLetter);
     setModalKeyAccidental(accidentalSign);
     setIsKeyPopupOpen(true);
@@ -464,7 +590,6 @@ export default function SongEditPage() {
     handleSelectNewKeySignature(nextKeyComputedName);
   };
 
-  // ✅ SURGICAL FIX: Include head_m and tail_m in the tuple
   const getCentralizedMetricsTuple = (sectionType: string) => {
     const savedMetrics = sectionTimings[sectionType];
     return {
@@ -488,10 +613,8 @@ export default function SongEditPage() {
     const newSection = { id: `sec-${Date.now()}-${Math.random()}`, type: tmpl.type, label: tmpl.label, content: tmpl.content, repetitions: 1 };
     const updatedSections = [...formSections];
     const selectedIndex = updatedSections.findIndex(s => s.id === selectedSequenceId);
-    
     if (selectedIndex > -1) updatedSections.splice(selectedIndex + 1, 0, newSection);
     else updatedSections.push(newSection);
-    
     setHasUnsavedChanges(true);
     setFormSections(updatedSections);
   };
@@ -530,6 +653,70 @@ export default function SongEditPage() {
     setCustomChordInputValue("");
   };
 
+  // ✅ Advanced Chord Sheet Submission Engine (Multi-Chord & Slash Rules Support)
+  const executeChordPickerConfirm = () => {
+    const { sectionType, lineIdx, wordIdx } = chordPickerConfig;
+    if (!sectionType || lineIdx === -1 || wordIdx === -1) return;
+
+    setHasUnsavedChanges(true);
+    setFormSections(prev => prev.map(sec => {
+      if (sec.type !== sectionType) return sec;
+      const lines = sec.content.split("\n");
+      let realWordCounter = 0;
+      
+      lines[lineIdx] = (lines[lineIdx] || "").replace(/(?:\[[^\]]+\]|\{\s*[^\}]+\s*\}|\S)+/g, (match) => {
+        if (realWordCounter === wordIdx) {
+          realWordCounter++;
+          const cleanTextWord = match.replace(/\[[^\]]+\]/g, "").replace(/\{[^\}]+\}/g, "");
+          
+          // Split space-separated entries into clean individual chord blocks
+          const compiledBrackets = stagedChordsText.trim().split(/\s+/).map(ch => {
+            if (!ch.trim()) return "";
+            return `[${ch.trim()}]`;
+          }).join("");
+
+          return `${compiledBrackets}${cleanTextWord}`;
+        }
+        realWordCounter++;
+        return match;
+      });
+      return { ...sec, content: lines.join("\n") };
+    }));
+
+    setChordPickerConfig({ isOpen: false, sectionType: null, lineIdx: -1, wordIdx: -1, cleanWord: "" });
+  };
+
+  // ✅ Advanced Chord Sheet Removal Engine
+  const executeChordPickerRemoval = () => {
+    const { sectionType, lineIdx, wordIdx } = chordPickerConfig;
+    if (!sectionType || lineIdx === -1 || wordIdx === -1) return;
+
+    setHasUnsavedChanges(true);
+    setFormSections(prev => prev.map(sec => {
+      if (sec.type !== sectionType) return sec;
+      const lines = sec.content.split("\n");
+      let realWordCounter = 0;
+      lines[lineIdx] = (lines[lineIdx] || "").replace(/(?:\[[^\]]+\]|\{\s*[^\}]+\s*\}|\S)+/g, (match) => {
+        if (realWordCounter === wordIdx) { realWordCounter++; return match.replace(/\[[^\]]+\]/g, ""); }
+        realWordCounter++; return match;
+      });
+      return { ...sec, content: lines.join("\n") };
+    }));
+
+    setChordPickerConfig({ isOpen: false, sectionType: null, lineIdx: -1, wordIdx: -1, cleanWord: "" });
+  };
+
+  // ✅ Helper builder to merge chords intelligently or format trailing slashes
+  const handlePickerChordTap = (chordComponent: string) => {
+    setStagedChordsText(prev => {
+      const cleanPrev = prev.trim();
+      if (!cleanPrev || cleanPrev.endsWith("/")) {
+        return `${prev}${chordComponent}`;
+      }
+      return `${cleanPrev} ${chordComponent}`;
+    });
+  };
+
   const executeLineCommentInjection = (injectedCommentStr: string) => {
     if (!notesTargetCoordinate) return;
     const { sectionType, lineIdx } = notesTargetCoordinate;
@@ -547,7 +734,6 @@ export default function SongEditPage() {
     setCustomCommentInputValue("");
   };
 
-  // ✅ SURGICAL FIX: Upgraded Import Parser to extract AI-generated Matrix metrics!
   const executeRawLyricsImportAction = () => {
     if (!pastedRawLyricsText.trim()) return;
     setHasUnsavedChanges(true);
@@ -557,19 +743,15 @@ export default function SongEditPage() {
     let currentBuffer: string[] = [];
     const parsedBlocks: SongSectionBlock[] = [];
     let unassignedCounter = 1;
-    
-    // Temporary object to hold the timings we extract during import
     const newExtractedTimings: SectionTimingMap = {};
 
     const flushBuffer = () => {
       if (currentBuffer.length === 0 && !currentSectionType) return;
-      
       let finalType = currentSectionType;
       if (!finalType) {
         finalType = `Unassigned ${unassignedCounter}`;
         unassignedCounter++;
       }
-      
       parsedBlocks.push({
         id: `sec-imp-${Date.now()}-${Math.random()}`,
         type: finalType,
@@ -577,24 +759,18 @@ export default function SongEditPage() {
         content: currentBuffer.join("\n"),
         repetitions: 1
       });
-      
       currentBuffer = [];
       currentSectionType = "";
     };
 
     cleanLines.forEach(line => {
-      // Regex detects tags like: [Verse 1] OR [Verse 1] (M: 8, B: 2, R: 1, H: 0, T: 4)
       const match = line.match(/^\[([^\]]+)\](?:\s*\(([^)]+)\))?$/);
-      
       if (match) {
         flushBuffer();
         currentSectionType = match[1].trim();
-        
-        // If the AI provided timing metadata in parentheses, parse it!
         if (match[2]) {
           const metricsStr = match[2];
           const extractedMetrics = { measures: 4, beats: 0, repeats: 0, head_m: 0, tail_m: 0 };
-          
           const mMatch = metricsStr.match(/M:\s*(\d+)/i);
           const bMatch = metricsStr.match(/B:\s*(\d+)/i);
           const rMatch = metricsStr.match(/R:\s*(\d+)/i);
@@ -610,8 +786,6 @@ export default function SongEditPage() {
           newExtractedTimings[currentSectionType] = extractedMetrics;
         }
       } else if (line === "") {
-        // We no longer aggressively flush on empty lines to allow for AI spacing,
-        // but if you requested strict spacing in the prompt, this acts as a safe fallback.
         if (currentBuffer.length > 0) flushBuffer(); 
       } else {
         currentBuffer.push(line);
@@ -619,23 +793,16 @@ export default function SongEditPage() {
     });
 
     flushBuffer();
-    
     if (parsedBlocks.length > 0) {
       setFormSections(parsedBlocks);
-      
-      // Inject the extracted timings directly into the app state!
       setSectionTimings(prev => {
         const mergedTimings = { ...prev };
         Object.keys(newExtractedTimings).forEach(key => {
-          mergedTimings[key] = {
-            ...mergedTimings[key],
-            ...newExtractedTimings[key]
-          };
+          mergedTimings[key] = { ...mergedTimings[key], ...newExtractedTimings[key] };
         });
         return mergedTimings;
       });
     }
-
     setIsImportModalOpen(false); 
     setPastedRawLyricsText("");
     setEditorActiveTab("content");
@@ -651,13 +818,10 @@ export default function SongEditPage() {
 
   const handleCommitSongChangesToDB = async () => {
     if (!editingSongId) return;
-
     if (!formTitle.trim()) {
       alert("⚠️ Track Title is required before saving.");
       return;
     }
-
-    // ✅ SURGICAL FIX: Lock the UI and trigger the save overlay
     setSaveStatus("saving");
 
     try {
@@ -669,9 +833,11 @@ export default function SongEditPage() {
           measures: metricsTuple.measures,
           beats: metricsTuple.beats,
           repeats: metricsTuple.repeats,
-          head_m: metricsTuple.head_m,  // 👈 Added here
-          tail_m: metricsTuple.tail_m,  // 👈 Added here
-          line_timings: specificRowOverrides 
+          head_m: metricsTuple.head_m,  
+          tail_m: metricsTuple.tail_m,  
+          line_timings: specificRowOverrides,
+          youtube_url: formYoutubeUrl.trim(),
+          youtube_sync_offset_ms: formYoutubeSyncOffset
         };
       });
 
@@ -697,7 +863,9 @@ export default function SongEditPage() {
           original_key: formKey,
           themes: formThemes.join(", "),
           section_timings: updatedSectionTimings,
-          chordpro_content: compiledChordPro
+          chordpro_content: compiledChordPro,
+          youtube_url: formYoutubeUrl.trim(),
+          youtube_sync_offset_ms: formYoutubeSyncOffset
         };
 
         if (currentTeamId) insertPayload.team_id = currentTeamId;
@@ -705,7 +873,6 @@ export default function SongEditPage() {
         const { data: newSong, error: insertError } = await supabase.from("songs").insert(insertPayload).select("id").single();
         if (insertError) throw insertError;
         finalSongId = newSong.id; 
-
       } else {
         const { error: songUpdateError } = await supabase.from("songs").update({ 
             title: formTitle.trim(),
@@ -714,7 +881,9 @@ export default function SongEditPage() {
             original_key: formKey,
             themes: formThemes.join(", "),
             section_timings: updatedSectionTimings,
-            chordpro_content: compiledChordPro 
+            chordpro_content: compiledChordPro,
+            youtube_url: formYoutubeUrl.trim(),
+            youtube_sync_offset_ms: formYoutubeSyncOffset
           }).eq("id", finalSongId);
         if (songUpdateError) throw songUpdateError;
 
@@ -735,156 +904,144 @@ export default function SongEditPage() {
       }
 
       setHasUnsavedChanges(false);
-      
-      // ✅ SURGICAL FIX: Trigger Success Overlay
       setSaveStatus("success");
       
-      // Keep the overlay up for 1.5s, then close it and stay on the page!
       setTimeout(() => {
-        if (isNewSong) {
-          // Soft-redirect to update the URL to the new ID, so further saves UPDATE instead of INSERT
-          router.replace(`/songs/${finalSongId}/edit`);
-        } else {
-          setSaveStatus("idle");
-        }
+        if (isNewSong) router.replace(`/songs/${finalSongId}/edit`);
+        else setSaveStatus("idle");
       }, 1500);
 
     } catch (err: any) {
-      const errorMessage = err?.message || err?.details || err?.hint || JSON.stringify(err);
-      console.error("FATAL DB ERROR DETAILS:", errorMessage, err);
-      // ✅ SURGICAL FIX: Trigger Error Overlay
-      setSaveErrorMessage(errorMessage);
+      setSaveErrorMessage(err?.message || JSON.stringify(err));
       setSaveStatus("error");
     }
   };
 
   function renderSymmetricalLivePreviewLine(sectionType: string, contentText: string) {
-  if (!contentText.trim()) return <p className="text-zinc-400 italic text-xs font-semibold py-1">Empty line segment...</p>;
-  
-  return contentText.split("\n").map((line, lineIdx) => {
-    let lineCommentText = "";
-    // Cleanly extract comments and split line into word tokens
-    const wordsArray = line.replace(/\{([^\}]+)\}/g, (m, p1) => { lineCommentText = p1.trim(); return ""; }).match(/(?:\[[^\]]+\]|\S)+/g) || [];
+    if (!contentText.trim()) return <p className="text-zinc-400 italic text-xs font-semibold py-1">Empty line segment...</p>;
     
-    return (
-      <div key={lineIdx} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 py-1 px-2 rounded-xl transition-all duration-150 relative">
-        <div className="flex flex-wrap items-end gap-x-2 gap-y-2 py-1 leading-none flex-1">
-          {wordsArray.map((chunk, currentWordIdx) => {
-            const chordRegex = /\[([^\]]+)\]/g; 
-            const extractedChordsList: string[] = []; 
-            let matchResult;
-            while ((matchResult = chordRegex.exec(chunk)) !== null) { extractedChordsList.push(matchResult[1]); }
-            
-            const cleanWordDisplay = chunk.replace(/\[[^\]]+\]/g, "");
-            const isTargetedCoordinate = chordTargetCoordinate?.sectionType === sectionType && 
-                                        chordTargetCoordinate?.lineIdx === lineIdx && 
-                                        chordTargetCoordinate?.wordIdx === currentWordIdx;
-            
-            const hasNotation = extractedChordsList.length > 0;
+    return contentText.split("\n").map((line, lineIdx) => {
+      let lineCommentText = "";
+      const wordsArray = line.replace(/\{([^\}]+)\}/g, (m, p1) => { lineCommentText = p1.trim(); return ""; }).match(/(?:\[[^\]]+\]|\S)+/g) || [];
+      
+      return (
+        <div key={lineIdx} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 py-1 px-2 rounded-xl transition-all duration-150 relative">
+          <div className="flex flex-wrap items-end gap-x-2 gap-y-2 py-1 leading-none flex-1">
+            {wordsArray.map((chunk, currentWordIdx) => {
+              const chordRegex = /\[([^\]]+)\]/g; 
+              const extractedChordsList: string[] = []; 
+              let matchResult;
+              while ((matchResult = chordRegex.exec(chunk)) !== null) { extractedChordsList.push(matchResult[1]); }
+              
+              const cleanWordDisplay = chunk.replace(/\[[^\]]+\]/g, "");
+              
+              // Highlight selected coordinates for both modes
+              const isTargetedCoordinate = (chordMode === "Keyboard" && chordTargetCoordinate?.sectionType === sectionType && chordTargetCoordinate?.lineIdx === lineIdx && chordTargetCoordinate?.wordIdx === currentWordIdx) ||
+                                          (chordMode === "Chords" && chordPickerConfig?.sectionType === sectionType && chordPickerConfig?.lineIdx === lineIdx && chordPickerConfig?.wordIdx === currentWordIdx);
+              
+              const hasNotation = extractedChordsList.length > 0;
 
-            return (
-              <div 
-                key={currentWordIdx} 
-                onClick={(e) => { 
-                  if (isAddChordsModeActive) { 
-                    e.stopPropagation(); 
-                    setChordTargetCoordinate({ sectionType, lineIdx, wordIdx: currentWordIdx }); 
-                    setCustomChordInputValue(hasNotation ? extractedChordsList[0] : ""); 
-                  } 
-                }} 
-                className={`
-                  flex flex-col items-start relative select-none rounded-lg px-2 py-0.5 transition-all duration-150 cursor-pointer
-                  ${isAddChordsModeActive 
-                    ? hasNotation 
-                      ? 'border-blue-500 bg-blue-50/40 ring-1 ring-blue-400/20 shadow-sm' 
-                      : 'border-zinc-200 bg-white hover:bg-zinc-100 hover:border-zinc-300'
-                    : 'border-transparent'}
-                  ${isTargetedCoordinate ? '!bg-blue-600 !text-white ring-2 ring-blue-500/30 !scale-105 z-10' : ''}
-                `}
-              >
-                {hasNotation && (
-                  <div className="min-h-[1rem] text-[10px] font-mono font-black flex flex-wrap gap-0.5 mb-0.5 leading-none">
-                    {extractedChordsList.map((ch, cIndex) => (
-                      <span key={cIndex} className={`px-0.5 rounded border font-bold ${isTargetedCoordinate ? 'text-white border-transparent' : 'text-blue-600 bg-blue-100/50 border-blue-200'}`}>
-                        {ch}
-                      </span>
-                    ))}
+              return (
+                <div 
+                  key={currentWordIdx} 
+                  onClick={(e) => { 
+                    if (chordMode === "Keyboard") { 
+                      e.stopPropagation(); 
+                      setChordTargetCoordinate({ sectionType, lineIdx, wordIdx: currentWordIdx }); 
+                      setCustomChordInputValue(hasNotation ? extractedChordsList[0] : ""); 
+                    } else if (chordMode === "Chords") {
+                      // ✅ Open design-spec Advanced Bottom Sheet notation picker instead of standard field injection
+                      e.stopPropagation();
+                      setPickerLayoutView("family");
+                      setStagedChordsText(extractedChordsList.join(" "));
+                      setManualExtensionNumber("");
+                      setChordPickerConfig({
+                        isOpen: true,
+                        sectionType,
+                        lineIdx,
+                        wordIdx: currentWordIdx,
+                        cleanWord: cleanWordDisplay || "$word"
+                      });
+                    }
+                  }} 
+                  className={`
+                    flex flex-col items-start relative select-none rounded-lg px-2 py-0.5 transition-all duration-150 cursor-pointer
+                    ${chordMode !== "Off" 
+                      ? hasNotation 
+                        ? 'border border-blue-500 bg-blue-50/40 ring-1 ring-blue-400/20 shadow-sm' 
+                        : 'border border-zinc-200 bg-white hover:bg-zinc-100 hover:border-zinc-300'
+                      : 'border-transparent'}
+                    ${isTargetedCoordinate ? '!bg-blue-600 !text-white ring-2 ring-blue-500/30 !scale-105 z-10' : ''}
+                  `}
+                >
+                  {hasNotation && (
+                    <div className="min-h-[1rem] text-[10px] font-mono font-black flex flex-wrap gap-0.5 mb-0.5 leading-none">
+                      {extractedChordsList.map((ch, cIndex) => (
+                        <span key={cIndex} className={`px-0.5 rounded border font-bold ${isTargetedCoordinate ? 'text-white border-transparent' : 'text-blue-600 bg-blue-100/50 border-blue-200'}`}>
+                          {ch}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <div className={`text-[13px] font-sans font-bold leading-tight ${isTargetedCoordinate ? 'text-white' : 'text-zinc-800'}`}>
+                    {cleanWordDisplay || " "}
                   </div>
-                )}
-                <div className={`text-[13px] font-sans font-bold leading-tight ${isTargetedCoordinate ? 'text-white' : 'text-zinc-800'}`}>
-                  {cleanWordDisplay || " "}
                 </div>
-              </div>
-            );
-          })}
-        </div>
-        {lineCommentText && (
-          <div style={{ fontFamily: "'Nothing You Could Do', cursive" }} className="text-[14px] text-zinc-500 italic shrink-0 sm:text-right pl-4">
-            {lineCommentText}
+              );
+            })}
           </div>
-        )}
-      </div>
-    );
-  });
-}
+          {lineCommentText && (
+            <div style={{ fontFamily: "'Nothing You Could Do', cursive" }} className="text-[14px] text-zinc-500 italic shrink-0 sm:text-right pl-4">
+              {lineCommentText}
+            </div>
+          )}
+        </div>
+      );
+    });
+  }
 
   const uniqueContentSectionsList = formSections.reduce((acc: SongSectionBlock[], curr) => { if (!acc.some(item => item.type === curr.type)) acc.push(curr); return acc; }, []);
   const filteredThemeCatalogSuggestions = CHRISTIAN_THEMES_PRESETS.filter(th => th.toLowerCase().includes(themeInputSearchValue.toLowerCase()) && !formThemes.includes(th));
-  // const filteredEnclosurePopupCatalog = ENCLOSURE_POPUP_CATALOG.filter(item => item.display.toLowerCase().includes(sectionSearchTerm.toLowerCase()));
-  const isChordInputBlank = customChordInputValue.trim() === ""; 
   const isCommentInputBlank = customCommentInputValue.trim() === "";
 
   if (loading) {
-  return <GlobalLoader message="LOADING SONGS DETAILS..." />;
-}
+    return <GlobalLoader message="LOADING SONGS DETAILS..." />;
+  }
 
   return (
-    /* SURGICAL DE-CONTAINERIZATION: Bounding limits like max-w-4xl and centering elements removed (edited-image.png) */
     <div ref={editorContentContainerRef} className="h-screen w-full overflow-hidden bg-[#f8f9fa] flex flex-col relative animate-in fade-in duration-200">
       <style dangerouslySetInnerHTML={{__html: `@import url('https://fonts.googleapis.com/css2?family=Nothing+You+Could+Do&display=swap');`}} />
 
-      {/* FULL-WIDTH STICKY DOCK HEADER BAR */}
-      {/* --- STICKY DOCK HEADER BAR --- */}
-      {/* ========================================= */}
       {/* --- UNIFIED SEMANTIC STICKY HEADER --- */}
-      {/* ========================================= */}
       <header className="sticky top-0 z-[100] w-full flex-shrink-0 bg-white border-b border-zinc-200 shadow-sm supports-[backdrop-filter]:bg-white/95 supports-[backdrop-filter]:backdrop-blur-sm">
-        
-        {/* 1. TOP BAR: Title & Primary Actions */}
         <div className="flex items-center justify-between px-4 md:px-8 py-3.5 w-full">
           <div className="flex items-center gap-3">
-            <button 
-              type="button" 
-              onClick={handleAttemptDismissal} 
-              className="w-8 h-8 rounded-full bg-zinc-100 hover:bg-zinc-200 text-zinc-600 font-bold flex items-center justify-center transition-colors"
-            >
+            <button type="button" onClick={handleAttemptDismissal} className="w-8 h-8 rounded-full bg-zinc-100 hover:bg-zinc-200 text-zinc-600 font-bold flex items-center justify-center transition-colors">
               <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
             </button>
             <h1 className="font-black text-base md:text-lg text-zinc-900 tracking-tight" style={{ fontFamily: "Georgia, serif" }}>
               Modify Worship Arrangement
             </h1>
-            <button
-              type="button"
-              onClick={() => router.push(`/songs/${editingSongId}`)}
-              className="hidden md:flex px-3 py-1.5 bg-white hover:bg-zinc-50 border border-zinc-200 text-zinc-700 font-bold text-xs uppercase tracking-wider rounded-lg shadow-sm transition-all active:scale-95 cursor-pointer items-center gap-1.5 ml-2"
-            >
-              View Lyrics
-            </button>
           </div>
           
+          {/* Desktop Control Panel */}
           <div className="hidden md:flex items-center gap-2 select-none">
             {editorActiveTab === "content" && (
               <>
                 <button type="button" onClick={() => setIsImportModalOpen(true)} className="px-3 py-1.5 text-[11px] font-black text-blue-600 bg-blue-50 border border-blue-200 hover:bg-blue-100 rounded-lg block shadow-sm">📥 Import Raw</button>
-                <button type="button" onClick={() => { const nextState = !isRealtimePreviewActive; setIsRealtimePreviewActive(nextState); if (!nextState) { setIsAddChordsModeActive(false); setIsAddNotesModeActive(false); setChordTargetCoordinate(null); setNotesTargetCoordinate(null); } }} className={`px-3 py-1.5 text-[11px] font-black rounded-lg border transition-all ${isRealtimePreviewActive ? 'bg-blue-600 border-blue-500 text-white shadow-md' : 'bg-white border-zinc-200 text-zinc-700'}`}> {isRealtimePreviewActive ? "👁️ Hide Preview" : "👁️ Show Preview"} </button>
-                <button type="button" disabled={!isRealtimePreviewActive} onClick={() => { setIsAddChordsModeActive(!isAddChordsModeActive); setIsAddNotesModeActive(false); setChordTargetCoordinate(null); setNotesTargetCoordinate(null); }} className={`px-3 py-1.5 text-[11px] font-black rounded-lg border transition-all disabled:opacity-40 ${isAddChordsModeActive ? 'bg-amber-500 border-amber-400 text-white' : 'bg-white border-zinc-200 text-zinc-700'}`}> {isAddChordsModeActive ? "🎸 Lock Mode" : "🎸 Add Notation"} </button>
-                <button type="button" disabled={!isRealtimePreviewActive} onClick={() => { setIsAddNotesModeActive(!isAddNotesModeActive); setIsAddChordsModeActive(false); setChordTargetCoordinate(null); setNotesTargetCoordinate(null); }} className={`px-3 py-1.5 text-[11px] font-black rounded-lg border transition-all disabled:opacity-40 ${isAddNotesModeActive ? 'bg-purple-600 border-purple-500 text-white shadow-md' : 'bg-white border-zinc-200 text-zinc-700'}`}> 📝 Add Notes </button>
+                <button type="button" onClick={() => { const nextState = !isRealtimePreviewActive; setIsRealtimePreviewActive(nextState); if (!nextState) { setChordMode("Off"); setIsAddNotesModeActive(false); } }} className={`px-3 py-1.5 text-[11px] font-black rounded-lg border transition-all ${isRealtimePreviewActive ? 'bg-blue-600 border-blue-500 text-white shadow-md' : 'bg-white border-zinc-200 text-zinc-700'}`}> {isRealtimePreviewActive ? "👁️ Hide Preview" : "👁️ Show Preview"} </button>
+                
+                {/* ✅ 3-State Toggle Button Hook */}
+                <button type="button" disabled={!isRealtimePreviewActive} onClick={cycleChordMode} className={`px-3 py-1.5 text-[11px] font-black rounded-lg border transition-all disabled:opacity-40 min-w-[110px] ${chordMode !== "Off" ? 'bg-amber-500 border-amber-400 text-white' : 'bg-white border-zinc-200 text-zinc-700'}`}> 
+                  🎸 Chords: {chordMode}
+                </button>
+                
+                <button type="button" disabled={!isRealtimePreviewActive} onClick={() => { setIsAddNotesModeActive(!isAddNotesModeActive); setChordMode("Off"); }} className={`px-3 py-1.5 text-[11px] font-black rounded-lg border transition-all disabled:opacity-40 ${isAddNotesModeActive ? 'bg-purple-600 border-purple-500 text-white shadow-md' : 'bg-white border-zinc-200 text-zinc-700'}`}> 📝 Add Notes </button>
               </>
             )}
           </div>
         </div>
 
-        {/* 2. SUB-NAVIGATION BAR: Tabs & Mobile Actions */}
         <nav className="flex flex-col select-none w-full border-t border-zinc-100">
           <div className="px-4 md:px-8 flex gap-4 text-xs font-bold bg-zinc-50/30">
             {(["details", "content", "structure"] as const).map(tab => (
@@ -892,52 +1049,35 @@ export default function SongEditPage() {
             ))}
           </div>
 
-          {/* MOBILE ACTIONS */}
+          {/* Mobile Quick Action Action Row */}
           {editorActiveTab === "content" && (
             <div className="w-full bg-zinc-50/80 p-2 flex items-center gap-1.5 overflow-x-auto overflow-y-hidden flex-nowrap scrollbar-none border-t border-zinc-100 md:hidden">
               <button type="button" onClick={() => setIsImportModalOpen(true)} className="px-2.5 py-1.5 bg-white border border-zinc-200 rounded-md text-[9px] font-black uppercase tracking-wider text-zinc-700 shrink-0 shadow-sm">📥 Import</button>
-              <button type="button" onClick={() => { const nextState = !isRealtimePreviewActive; setIsRealtimePreviewActive(nextState); if (!nextState) { setIsAddChordsModeActive(false); setIsAddNotesModeActive(false); setChordTargetCoordinate(null); setNotesTargetCoordinate(null); } }} className={`px-2.5 py-1.5 rounded-md text-[9px] font-black uppercase tracking-wider shrink-0 border shadow-sm transition-colors ${isRealtimePreviewActive ? 'bg-blue-600 border-blue-500 text-white' : 'bg-white border-zinc-200 text-zinc-700'}`}>👁️ {isRealtimePreviewActive ? "Hide Live" : "Preview"}</button>
-              <button type="button" disabled={!isRealtimePreviewActive} onClick={() => { setIsAddChordsModeActive(!isAddChordsModeActive); setIsAddNotesModeActive(false); setChordTargetCoordinate(null); setNotesTargetCoordinate(null); }} className={`px-2.5 py-1.5 rounded-md text-[9px] font-black uppercase tracking-wider shrink-0 border transition-all disabled:opacity-40 ${isAddChordsModeActive ? 'bg-amber-500 border-amber-400 text-white shadow-sm' : 'bg-white border-zinc-200 text-zinc-700'}`}>🎸 Chords</button>
-              <button type="button" disabled={!isRealtimePreviewActive} onClick={() => { setIsAddNotesModeActive(!isAddNotesModeActive); setIsAddChordsModeActive(false); setChordTargetCoordinate(null); setNotesTargetCoordinate(null); }} className={`px-2.5 py-1.5 rounded-md text-[9px] font-black uppercase tracking-wider shrink-0 border transition-all disabled:opacity-40 ${isAddNotesModeActive ? 'bg-purple-600 border-purple-500 text-white shadow-sm' : 'bg-white border-zinc-200 text-zinc-700'}`}>📝 Note Rows</button>
+              <button type="button" onClick={() => { const nextState = !isRealtimePreviewActive; setIsRealtimePreviewActive(nextState); if (!nextState) { setChordMode("Off"); setIsAddNotesModeActive(false); } }} className={`px-2.5 py-1.5 rounded-md text-[9px] font-black uppercase tracking-wider shrink-0 border shadow-sm transition-colors ${isRealtimePreviewActive ? 'bg-blue-600 border-blue-500 text-white' : 'bg-white border-zinc-200 text-zinc-700'}`}>👁️ {isRealtimePreviewActive ? "Hide Live" : "Preview"}</button>
+              
+              {/* ✅ Responsive 3-State Toggle Trigger */}
+              <button type="button" disabled={!isRealtimePreviewActive} onClick={cycleChordMode} className={`px-2.5 py-1.5 rounded-md text-[9px] font-black uppercase tracking-wider shrink-0 border transition-all disabled:opacity-40 ${chordMode !== "Off" ? 'bg-amber-500 border-amber-400 text-white shadow-sm' : 'bg-white border-zinc-200 text-zinc-700'}`}>
+                🎸 {chordMode === "Off" ? "Chords" : `Mode: ${chordMode}`}
+              </button>
+              
+              <button type="button" disabled={!isRealtimePreviewActive} onClick={() => { setIsAddNotesModeActive(!isAddNotesModeActive); setChordMode("Off"); }} className={`px-2.5 py-1.5 rounded-md text-[9px] font-black uppercase tracking-wider shrink-0 border transition-all disabled:opacity-40 ${isAddNotesModeActive ? 'bg-purple-600 border-purple-500 text-white shadow-sm' : 'bg-white border-zinc-200 text-zinc-700'}`}>📝 Note Rows</button>
             </div>
           )}
         </nav>
       </header>
 
       {/* FULL-BLEED WORKSPACE CANVAS */}
-      <div 
-        className="flex-1 overflow-y-auto p-4 md:p-8 pb-32 custom-scrollbar space-y-3 w-full"
-        onScroll={handleCanvasScroll}
-      >
+      <div className="flex-1 overflow-y-auto p-4 md:p-8 pb-32 custom-scrollbar space-y-3 w-full" onScroll={handleCanvasScroll}>
         {editorActiveTab === "details" && (
           <div className="w-full animate-in fade-in">
             <div className="bg-white p-4 md:p-6 rounded-xl md:rounded-2xl border border-zinc-200 space-y-4 shadow-sm">
-              {/* ✅ SURGICAL FIX: Title Input with Auto-Suggest Dropdown */}
               <div className="relative">
                 <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Track Title Signature *</label>
-                <input 
-                  type="text" 
-                  value={formTitle} 
-                  onFocus={() => setIsTitleDropdownFocused(true)}
-                  onBlur={() => setTimeout(() => setIsTitleDropdownFocused(false), 200)}
-                  onChange={e => { setHasUnsavedChanges(true); setFormTitle(e.target.value); }} 
-                  className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-2.5 text-xs font-bold text-zinc-800 bg-zinc-50/50 outline-none transition-all" 
-                  placeholder="e.g. Washed"
-                />
+                <input type="text" value={formTitle} onFocus={() => setIsTitleDropdownFocused(true)} onBlur={() => setTimeout(() => setIsTitleDropdownFocused(false), 200)} onChange={e => { setHasUnsavedChanges(true); setFormTitle(e.target.value); }} className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-2.5 text-xs font-bold text-zinc-800 bg-zinc-50/50 outline-none transition-all" placeholder="e.g. Washed" />
                 {isTitleDropdownFocused && filteredTitleSuggestions.length > 0 && (
                   <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-zinc-200 rounded-xl max-h-48 overflow-y-auto z-[3000] shadow-xl custom-scrollbar">
                     {filteredTitleSuggestions.map(song => (
-                      <button 
-                        key={song.id} 
-                        type="button" 
-                        className="w-full px-3 py-2 text-left block border-b border-zinc-100 last:border-0 hover:bg-zinc-50 transition-colors" 
-                        onClick={() => { 
-                          setHasUnsavedChanges(true); 
-                          setFormTitle(song.title); 
-                          // Auto-fill artist to instantly trigger duplicate check
-                          if (song.artist && song.artist !== "Unknown Artist") setFormArtist(song.artist);
-                        }}
-                      >
+                      <button key={song.id} type="button" className="w-full px-3 py-2 text-left block border-b border-zinc-100 last:border-0 hover:bg-zinc-50 transition-colors" onClick={() => { setHasUnsavedChanges(true); setFormTitle(song.title); if (song.artist && song.artist !== "Unknown Artist") setFormArtist(song.artist); }}>
                         <div className="text-xs font-bold text-zinc-700">{song.title}</div>
                         <div className="text-[9px] font-bold text-zinc-400">{song.artist}</div>
                       </button>
@@ -946,23 +1086,11 @@ export default function SongEditPage() {
                 )}
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {/* ✅ SURGICAL FIX: Upgraded BPM Input with Inline TAP Trigger */}
                 <div>
                   <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block mb-1">BPM Tempo Count</label>
                   <div className="relative flex items-center">
-                    <input 
-                      type="number" 
-                      value={formTempo} 
-                      className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-2.5 text-xs outline-none pr-16 bg-zinc-50/50" 
-                      onChange={e => { setHasUnsavedChanges(true); setFormTempo(e.target.value); }} 
-                    />
-                    <button 
-                      type="button" 
-                      onClick={() => { setTapTimestamps([]); setIsTapBpmModalOpen(true); }} 
-                      className="absolute right-1.5 px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 text-white rounded-lg text-[9px] font-black uppercase tracking-wider transition-colors shadow-sm"
-                    >
-                      TAP
-                    </button>
+                    <input type="number" value={formTempo} className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-2.5 text-xs outline-none pr-16 bg-zinc-50/50" onChange={e => { setHasUnsavedChanges(true); setFormTempo(e.target.value); }} />
+                    <button type="button" onClick={() => { setTapTimestamps([]); setIsTapBpmModalOpen(true); }} className="absolute right-1.5 px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 text-white rounded-lg text-[9px] font-black uppercase tracking-wider transition-colors shadow-sm">TAP</button>
                   </div>
                 </div>
                 <div>
@@ -974,32 +1102,13 @@ export default function SongEditPage() {
                 </div>
               </div>
               
-              {/* ✅ SURGICAL FIX: Artist Input with Auto-Suggest Dropdown */}
               <div className="relative">
                 <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Artist / Author Label Signature *</label>
-                <input 
-                  type="text" 
-                  value={formArtist} 
-                  onFocus={() => setIsArtistDropdownFocused(true)}
-                  onBlur={() => setTimeout(() => setIsArtistDropdownFocused(false), 200)}
-                  onChange={e => { setHasUnsavedChanges(true); setFormArtist(e.target.value); }} 
-                  className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-2.5 text-xs font-bold text-zinc-800 bg-zinc-50/50 outline-none transition-all" 
-                  placeholder="e.g. Hillsong Worship"
-                />
+                <input type="text" value={formArtist} onFocus={() => setIsArtistDropdownFocused(true)} onBlur={() => setTimeout(() => setIsArtistDropdownFocused(false), 200)} onChange={e => { setHasUnsavedChanges(true); setFormArtist(e.target.value); }} className="w-full border border-zinc-200 focus:border-blue-500 rounded-xl p-2.5 text-xs font-bold text-zinc-800 bg-zinc-50/50 outline-none transition-all" placeholder="e.g. Hillsong Worship" />
                 {isArtistDropdownFocused && filteredArtistSuggestions.length > 0 && (
                   <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-zinc-200 rounded-xl max-h-36 overflow-y-auto z-[3000] shadow-xl custom-scrollbar">
                     {filteredArtistSuggestions.map(artist => (
-                      <button 
-                        key={artist} 
-                        type="button" 
-                        className="w-full px-3 py-2 text-left text-xs font-bold block border-b border-zinc-100 last:border-0 hover:bg-zinc-50 transition-colors text-zinc-700" 
-                        onClick={() => { 
-                          setHasUnsavedChanges(true); 
-                          setFormArtist(artist); 
-                        }}
-                      >
-                        {artist}
-                      </button>
+                      <button key={artist} type="button" className="w-full px-3 py-2 text-left text-xs font-bold block border-b border-zinc-100 last:border-0 hover:bg-zinc-50 transition-colors text-zinc-700" onClick={() => { setHasUnsavedChanges(true); setFormArtist(artist); }}>{artist}</button>
                     ))}
                   </div>
                 )}
@@ -1014,18 +1123,66 @@ export default function SongEditPage() {
                   <div className="absolute top-full left-0 right-0 mt-0.5 bg-white border rounded-xl max-h-36 overflow-y-auto z-[3000] shadow-xl">{filteredThemeCatalogSuggestions.map(th => <button key={th} type="button" className="w-full px-3 py-2 text-left text-xs font-bold block border-b" onClick={() => { setHasUnsavedChanges(true); setFormThemes([...formThemes, th]); setThemeInputSearchValue(""); }}>{th}</button>)}</div>
                 )}
               </div>
+              {/* ✅ SURGICAL ADDITION: Phase 2 YouTube UI Engine */}
+              <div className="pt-4 mt-2 border-t border-zinc-100 space-y-4">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-full bg-red-100 text-red-600 flex items-center justify-center font-black text-xs shrink-0 shadow-inner">▶</div>
+                  <div>
+                    <h4 className="text-[13px] font-black text-zinc-900 tracking-tight">YouTube Live Sync Engine</h4>
+                    <p className="text-[10px] font-bold text-zinc-400 leading-tight">Lock the stage metronome to an absolute master track.</p>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <div className="relative">
+                    <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Source URL</label>
+                    <input 
+                      type="text" 
+                      value={formYoutubeUrl} 
+                      onChange={e => { setHasUnsavedChanges(true); setFormYoutubeUrl(e.target.value); }} 
+                      className={`w-full border focus:border-red-500 rounded-xl p-2.5 text-xs font-bold text-zinc-800 bg-zinc-50/50 outline-none transition-all ${formYoutubeUrl && !youtubeVideoId ? 'border-red-400 bg-red-50' : 'border-zinc-200'}`} 
+                      placeholder="https://youtu.be/..." 
+                    />
+                    {formYoutubeUrl && !youtubeVideoId && <span className="text-[9px] font-bold text-red-500 absolute top-1 right-2">Invalid Link</span>}
+                  </div>
+
+                  {youtubeVideoId && (
+                    <div className="bg-zinc-50 border border-zinc-200 p-3 rounded-xl space-y-3 shadow-inner">
+                      <div className="aspect-video w-full max-w-sm mx-auto bg-black rounded-lg overflow-hidden shadow-md">
+                        <div id="yt-player-container"></div>
+                      </div>
+                      
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <div className="flex-1">
+                          <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Downbeat Offset (ms)</label>
+                          <div className="flex items-center gap-2">
+                            <input 
+                              type="number" 
+                              value={formYoutubeSyncOffset} 
+                              onChange={e => { setHasUnsavedChanges(true); setFormYoutubeSyncOffset(parseInt(e.target.value) || 0); }} 
+                              className="w-full border border-zinc-200 rounded-lg p-2 text-xs font-black text-zinc-800 text-center outline-none focus:border-red-500" 
+                            />
+                            <button type="button" onClick={handleCaptureSyncPoint} className="px-3 py-2 bg-zinc-200 hover:bg-zinc-300 text-zinc-700 font-black text-[9px] uppercase tracking-wider rounded-lg shrink-0 transition-colors">Capture</button>
+                          </div>
+                        </div>
+                        <div className="flex items-end shrink-0 w-full sm:w-auto">
+                          <button type="button" onClick={handleTestYoutubeSync} className="w-full sm:w-auto px-5 py-2 bg-red-600 hover:bg-red-700 text-white font-black text-[10px] uppercase tracking-wider rounded-lg shadow-sm active:scale-95 transition-all">Test Timing</button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         )}
 
-        {/* PRIMARY WORKSPACE CANVAS: CONTENT TAB PANEL */}
+        {/* CONTENT TAB LAYER PANEL */}
         {editorActiveTab === "content" && (
           <div className="w-full space-y-3 pb-6 animate-in fade-in">
             <div className="space-y-3">
               {formSections.map((sec) => {
                 const timingTuple = getCentralizedMetricsTuple(sec.type);
-                
-                // Process and keep raw lines with chord brackets intact for word container processing
                 const processedLines = sec.content.split("\n").map((line) => {
                   return {
                     rawText: line,
@@ -1045,7 +1202,6 @@ export default function SongEditPage() {
                 const remainderBeats = totalLineSegmentsCount > 0 ? timingTuple.beats % totalLineSegmentsCount : 0;
 
                 const currentLinesMetrics = processedLines.map((_, lIdx) => {
-                  // ✅ SURGICAL FIX: Access via sec.type
                   const explicitOverride = (lineOverrides as any)?.[sec.type]?.[lIdx];
                   if (explicitOverride) return explicitOverride;
                   return {
@@ -1062,20 +1218,12 @@ export default function SongEditPage() {
                 const handleAdjustLineMetricValue = (lineIdx: number, field: "measures" | "beats", delta: number) => {
                   const currentVal = currentLinesMetrics[lineIdx][field];
                   const proposedVal = Math.max(0, currentVal + delta);
-
                   if (field === "beats" && proposedVal > 3) return;
-                  
-                  // ✅ SURGICAL FIX: Removed the `projectedAbsoluteBeats > masterTotalAbsoluteBeats` hard-block!
-                  // It was causing a deadlock when Head/Tail values pushed the section over the limit.
-                  // Now, the user can freely adjust the steppers to "dig out" of the deficit, 
-                  // safely guided by the yellow warning banner and locked save button.
 
                   setHasUnsavedChanges(true);
                   setLineOverrides(prev => {
                     const prevOverrides = prev || {};
-                    // Execute a true DEEP COPY to prevent React state poisoning
                     const sectionMap = { ...(prevOverrides[sec.type] || {}) };
-                    
                     processedLines.forEach((_, currentIdx) => {
                       if (sectionMap[currentIdx] === undefined) {
                         sectionMap[currentIdx] = {
@@ -1086,7 +1234,6 @@ export default function SongEditPage() {
                         sectionMap[currentIdx] = { ...sectionMap[currentIdx] };
                       }
                     });
-                    
                     sectionMap[lineIdx] = { ...sectionMap[lineIdx], [field]: proposedVal };
                     return { ...prevOverrides, [sec.type]: sectionMap };
                   });
@@ -1095,8 +1242,9 @@ export default function SongEditPage() {
                 return (
                   <div key={sec.id} className={`border rounded-xl p-3.5 space-y-2 relative transition-all shadow-sm ${isRealtimePreviewActive && isSectionMismatched ? "bg-amber-50/40 border-amber-300 ring-4 ring-amber-500/5" : "bg-white border-zinc-200"}`}>
                     <div className="flex items-center justify-between gap-2 flex-wrap">
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <div className="relative">
+                      <div className="flex flex-wrap items-center gap-1.5 w-full justify-between sm:justify-start">
+                        
+                        <div className="flex items-center gap-2">
                           <button 
                             type="button" 
                             className="px-2.5 py-1 bg-cyan-100 hover:bg-cyan-200 text-cyan-800 font-black text-[10px] rounded-full uppercase tracking-wider block shadow-sm flex items-center gap-1 transition-colors" 
@@ -1109,81 +1257,103 @@ export default function SongEditPage() {
                             <span>{sec.type}</span>
                             <span className="text-[8px] opacity-60">▼</span>
                           </button>
+                          
+                          {/* NEW: Adjustments Button triggers the bottom sheet on mobile when in Preview Mode */}
+                          {isRealtimePreviewActive && (
+                            <button
+                              type="button"
+                              onClick={() => { 
+                                setAdjustmentsModalTab("section"); 
+                                setSectionAdjustmentsConfig({ isOpen: true, sectionType: sec.type }); 
+                              }}
+                              className="px-2.5 py-1 border border-zinc-200 bg-zinc-50 hover:bg-zinc-100 text-zinc-700 font-black text-[10px] rounded-lg tracking-wider block shadow-sm flex items-center lg:hidden transition-all"
+                            >
+                              ⚙️ Adjustments
+                            </button>
+                          )}
                         </div>
 
-                        <div className="flex items-center gap-1 bg-zinc-50 border rounded-lg px-2 py-0.5 text-[10px] font-bold text-zinc-600 shadow-inner">
-                          <span className="text-[8px] font-black uppercase text-zinc-400">M:</span>
-                          <input type="number" min={0} value={timingTuple.measures} className="w-6 bg-transparent text-center font-black text-zinc-800 outline-none" onChange={(e) => { handleUpdateCentralizedMetrics(sec.type, "measures", Math.max(0, parseInt(e.target.value, 10) || 0)); setLineOverrides(prev => { if (!prev) return {}; const newPrev = { ...prev }; delete newPrev[sec.type]; return newPrev; }); }} />
+                        {/* ✅ Hidden layout adjustments wrapper for mobile display during Live Preview */}
+                        <div className={`flex-wrap items-center gap-1.5 ${isRealtimePreviewActive ? "hidden lg:flex" : "flex"}`}>
+                          <div className="flex items-center gap-1 bg-zinc-50 border rounded-lg px-2 py-0.5 text-[10px] font-bold text-zinc-600 shadow-inner">
+                            <span className="text-[8px] font-black uppercase text-zinc-400">M:</span>
+                            <input type="number" min={0} value={timingTuple.measures} className="w-6 bg-transparent text-center font-black text-zinc-800 outline-none" onChange={(e) => { handleUpdateCentralizedMetrics(sec.type, "measures", Math.max(0, parseInt(e.target.value, 10) || 0)); setLineOverrides(prev => { if (!prev) return {}; const newPrev = { ...prev }; delete newPrev[sec.type]; return newPrev; }); }} />
+                          </div>
+                          <div className="flex items-center gap-1 bg-zinc-50 border rounded-lg px-2 py-0.5 text-[10px] font-bold text-zinc-600 shadow-inner">
+                            <span className="text-[8px] font-black uppercase text-zinc-400">B:</span>
+                            <input type="number" min={0} max={3} value={timingTuple.beats} className="w-5 bg-transparent text-center font-black text-zinc-800 outline-none" onChange={(e) => { handleUpdateCentralizedMetrics(sec.type, "beats", Math.min(3, Math.max(0, parseInt(e.target.value, 10) || 0))); setLineOverrides(prev => { if (!prev) return {}; const newPrev = { ...prev }; delete newPrev[sec.type]; return newPrev; }); }} />
+                          </div>
+                          <div className="flex items-center gap-1 bg-zinc-50 border rounded-lg px-2 py-0.5 text-[10px] font-bold text-zinc-600 shadow-inner">
+                            <span className="text-[8px] font-black uppercase text-zinc-400">R:</span>
+                            <input type="number" min={0} value={sectionRepeats} className="w-5 bg-transparent text-center font-black text-zinc-800 outline-none" onChange={(e) => { handleUpdateCentralizedMetrics(sec.type, "repeats", Math.max(0, parseInt(e.target.value, 10) || 0)); setLineOverrides(prev => { if (!prev) return {}; const newPrev = { ...prev }; delete newPrev[sec.type]; return newPrev; }); }} />
+                          </div>
+                          <div className="flex items-center gap-1 bg-zinc-50 border rounded-lg px-2 py-0.5 text-[10px] font-bold text-zinc-600 shadow-inner">
+                            <span className="text-[8px] font-black uppercase text-zinc-400">H:</span>
+                            <input type="number" min={0} value={timingTuple.head_m} className="w-5 bg-transparent text-center font-black text-zinc-800 outline-none" onChange={(e) => { handleUpdateCentralizedMetrics(sec.type, "head_m", Math.max(0, parseInt(e.target.value, 10) || 0)); setLineOverrides(prev => { if (!prev) return {}; const newPrev = { ...prev }; delete newPrev[sec.type]; return newPrev; }); }} />
+                          </div>
+                          <div className="flex items-center gap-1 bg-zinc-50 border rounded-lg px-2 py-0.5 text-[10px] font-bold text-zinc-600 shadow-inner">
+                            <span className="text-[8px] font-black uppercase text-zinc-400">T:</span>
+                            <input type="number" min={0} value={timingTuple.tail_m} className="w-5 bg-transparent text-center font-black text-zinc-800 outline-none" onChange={(e) => { handleUpdateCentralizedMetrics(sec.type, "tail_m", Math.max(0, parseInt(e.target.value, 10) || 0)); setLineOverrides(prev => { if (!prev) return {}; const newPrev = { ...prev }; delete newPrev[sec.type]; return newPrev; }); }} />
+                          </div>
                         </div>
-                        <div className="flex items-center gap-1 bg-zinc-50 border rounded-lg px-2 py-0.5 text-[10px] font-bold text-zinc-600 shadow-inner">
-                          <span className="text-[8px] font-black uppercase text-zinc-400">B:</span>
-                          <input type="number" min={0} max={3} value={timingTuple.beats} className="w-5 bg-transparent text-center font-black text-zinc-800 outline-none" onChange={(e) => { handleUpdateCentralizedMetrics(sec.type, "beats", Math.min(3, Math.max(0, parseInt(e.target.value, 10) || 0))); setLineOverrides(prev => { if (!prev) return {}; const newPrev = { ...prev }; delete newPrev[sec.type]; return newPrev; }); }} />
-                        </div>
-                        <div className="flex items-center gap-1 bg-zinc-50 border rounded-lg px-2 py-0.5 text-[10px] font-bold text-zinc-600 shadow-inner">
-                          <span className="text-[8px] font-black uppercase text-zinc-400">R:</span>
-                          <input type="number" min={0} value={sectionRepeats} className="w-5 bg-transparent text-center font-black text-zinc-800 outline-none" onChange={(e) => { handleUpdateCentralizedMetrics(sec.type, "repeats", Math.max(0, parseInt(e.target.value, 10) || 0)); setLineOverrides(prev => { if (!prev) return {}; const newPrev = { ...prev }; delete newPrev[sec.type]; return newPrev; }); }} />
-                        </div>
-                        
-                        {/* ✅ SURGICAL ADDITION: Head (H) and Tail (T) Measure Inputs */}
-                        <div className="flex items-center gap-1 bg-zinc-50 border rounded-lg px-2 py-0.5 text-[10px] font-bold text-zinc-600 shadow-inner">
-                          <span className="text-[8px] font-black uppercase text-zinc-400" title="Head Padding (Added before first loop)">H:</span>
-                          <input type="number" min={0} value={timingTuple.head_m} className="w-5 bg-transparent text-center font-black text-zinc-800 outline-none" onChange={(e) => { handleUpdateCentralizedMetrics(sec.type, "head_m", Math.max(0, parseInt(e.target.value, 10) || 0)); setLineOverrides(prev => { if (!prev) return {}; const newPrev = { ...prev }; delete newPrev[sec.type]; return newPrev; }); }} />
-                        </div>
-                        <div className="flex items-center gap-1 bg-zinc-50 border rounded-lg px-2 py-0.5 text-[10px] font-bold text-zinc-600 shadow-inner">
-                          <span className="text-[8px] font-black uppercase text-zinc-400" title="Tail Padding (Added after last loop)">T:</span>
-                          <input type="number" min={0} value={timingTuple.tail_m} className="w-5 bg-transparent text-center font-black text-zinc-800 outline-none" onChange={(e) => { handleUpdateCentralizedMetrics(sec.type, "tail_m", Math.max(0, parseInt(e.target.value, 10) || 0)); setLineOverrides(prev => { if (!prev) return {}; const newPrev = { ...prev }; delete newPrev[sec.type]; return newPrev; }); }} />
-                        </div>
+
+                        {activeRole === "admin" && !isRealtimePreviewActive && (
+                          <button type="button" className="w-6 h-6 rounded-lg bg-zinc-50 text-zinc-400 text-xs border flex items-center justify-center ml-auto sm:ml-2" onClick={() => { setHasUnsavedChanges(true); setFormSections(prev => prev.filter(x => x.id !== sec.id)); }}>✕</button>
+                        )}
                       </div>
-
-                      {activeRole === "admin" && (
-                        <button type="button" className="w-6 h-6 rounded-lg bg-zinc-50 text-zinc-400 text-xs border flex items-center justify-center" onClick={() => { setHasUnsavedChanges(true); setFormSections(prev => prev.filter(x => x.id !== sec.id)); }}>✕</button>
-                      )}
                     </div>
 
                     {isRealtimePreviewActive ? (
                       <div className="border border-dashed border-zinc-200 rounded-xl p-4 bg-zinc-50/15 space-y-4">
                         {isSectionMismatched && (
-                          <div className="text-[10px] font-black text-amber-700 bg-amber-100/70 border border-amber-200 p-2 rounded-lg leading-snug animate-in fade-in duration-100">
-                            ⚠️ Alignment Warning: Line values sum up to <span className="font-mono">{Math.floor(totalManualAbsoluteBeats / 4)}m + {totalManualAbsoluteBeats % 4}b</span>. Please adjust line properties to equal the section master total of <span className="font-mono">{timingTuple.measures}m + {timingTuple.beats}b</span> to unlock saving permissions.
+                          <div className="text-[10px] font-black text-amber-700 bg-amber-100/70 border border-amber-200 p-2 rounded-lg leading-snug">
+                            ⚠️ Alignment Warning: Line values sum up to <span className="font-mono">{Math.floor(totalManualAbsoluteBeats / 4)}m + {totalManualAbsoluteBeats % 4}b</span>. Please adjust properties to equal master total <span className="font-mono">{timingTuple.measures}m + {timingTuple.beats}b</span>.
                           </div>
                         )}
 
                         <div className="space-y-3">
                           {processedLines.map((line, lineIdx) => {
                             const lineMetrics = currentLinesMetrics[lineIdx];
-                            
-                            // Splitting our newly mapped raw text into chunked arrays
                             const wordsArray = line.rawText.replace(/\{([^\}]+)\}/g, "").match(/(?:\[[^\]]+\]|\S)+/g) || [];
 
                             return (
-                              <div key={lineIdx} className="flex items-center justify-between gap-4 py-1 border-b border-zinc-100/40 last:border-0 group">
-                                
-                                {/* SURGICAL REPLACEMENT: Replaced the static layout row text with itemized clickable card blocks */}
+                              <div key={lineIdx} className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 py-1.5 border-b border-zinc-100/40 last:border-0 group">
                                 <div className="flex flex-wrap items-end gap-x-1.5 gap-y-2 py-0.5 leading-none flex-1">
                                   {wordsArray.map((chunk, currentWordIdx) => {
                                     const chordRegex = /\[([^\]]+)\]/g;
                                     const extractedChordsList: string[] = [];
                                     let matchResult;
                                     while ((matchResult = chordRegex.exec(chunk)) !== null) { extractedChordsList.push(matchResult[1]); }
-                                    
                                     const cleanWordDisplay = chunk.replace(/\[[^\]]+\]/g, "");
-                                    const isTargetedCoordinate = chordTargetCoordinate?.sectionType === sec.type && 
-                                                                chordTargetCoordinate?.lineIdx === lineIdx && 
-                                                                chordTargetCoordinate?.wordIdx === currentWordIdx;
+                                    
+                                    const isTargetedCoordinate = (chordMode === "Keyboard" && chordTargetCoordinate?.sectionType === sec.type && chordTargetCoordinate?.lineIdx === lineIdx && chordTargetCoordinate?.wordIdx === currentWordIdx) ||
+                                                                (chordMode === "Chords" && chordPickerConfig?.sectionType === sec.type && chordPickerConfig?.lineIdx === lineIdx && chordPickerConfig?.wordIdx === currentWordIdx);
+                                    
                                     const hasNotation = extractedChordsList.length > 0;
 
                                     return (
                                       <div 
                                         key={currentWordIdx} 
-                                        style={{ pointerEvents: 'auto' }} 
                                         onClick={(e) => { 
-                                          if (isAddChordsModeActive) { 
+                                          if (chordMode === "Keyboard") { 
                                             e.stopPropagation(); 
                                             setChordTargetCoordinate({ sectionType: sec.type, lineIdx, wordIdx: currentWordIdx }); 
                                             setCustomChordInputValue(hasNotation ? extractedChordsList[0] : ""); 
-                                          } 
+                                          } else if (chordMode === "Chords") {
+                                            e.stopPropagation();
+                                            setPickerLayoutView("family");
+                                            setStagedChordsText(extractedChordsList.join(" "));
+                                            setManualExtensionNumber("");
+                                            setChordPickerConfig({
+                                              isOpen: true,
+                                              sectionType: sec.type,
+                                              lineIdx,
+                                              wordIdx: currentWordIdx,
+                                              cleanWord: cleanWordDisplay || "$word"
+                                            });
+                                          }
                                         }} 
-                                        className={`flex flex-col items-start relative select-none rounded-lg px-2 py-0.5 transition-all duration-150 cursor-pointer ${isAddChordsModeActive ? hasNotation ? 'border border-blue-500 bg-blue-50/40 ring-1 ring-blue-400/20 shadow-sm' : 'border border-zinc-200 bg-white hover:bg-zinc-100 hover:border-zinc-300' : 'border border-transparent'} ${isTargetedCoordinate ? '!bg-blue-600 !text-white ring-2 ring-blue-500/30 !scale-105 z-10' : ''}`}
+                                        className={`flex flex-col items-start relative select-none rounded-lg px-2 py-0.5 transition-all duration-150 cursor-pointer ${chordMode !== "Off" ? hasNotation ? 'border border-blue-500 bg-blue-50/40 ring-1 ring-blue-400/20 shadow-sm' : 'border border-zinc-200 bg-white hover:bg-zinc-100 hover:border-zinc-300' : 'border border-transparent'} ${isTargetedCoordinate ? '!bg-blue-600 !text-white ring-2 ring-blue-500/30 !scale-105 z-10' : ''}`}
                                       >
                                         {hasNotation && (
                                           <div className="min-h-[1rem] text-[10px] font-mono font-black flex flex-wrap gap-0.5 mb-0.5 leading-none">
@@ -1202,58 +1372,7 @@ export default function SongEditPage() {
                                   })}
                                 </div>
 
-                                {/* ✅ SURGICAL REPLACEMENT: Touch-friendly Horizontal Steppers */}
-                                <div className="flex items-center gap-2 shrink-0 select-none">
-                                  
-                                  {/* Measures (M) Stepper */}
-                                  <div className="flex items-center bg-white border border-zinc-200 rounded-lg shadow-sm h-7 overflow-hidden transition-colors focus-within:border-blue-400 focus-within:ring-1 focus-within:ring-blue-400">
-                                    <div className="px-1.5 text-[9px] font-black text-zinc-400 bg-zinc-50/80 border-r border-zinc-200/60 flex items-center h-full cursor-help" title="Measures">
-                                      M
-                                    </div>
-                                    <button 
-                                      type="button" 
-                                      onClick={() => handleAdjustLineMetricValue(lineIdx, "measures", -1)} 
-                                      className="w-6 h-full flex items-center justify-center text-zinc-400 hover:text-blue-600 hover:bg-blue-50 active:bg-blue-100 transition-colors"
-                                    >
-                                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><path d="M5 12h14"/></svg>
-                                    </button>
-                                    <span className="w-5 text-center text-[11px] font-black text-zinc-800">
-                                      {lineMetrics.measures}
-                                    </span>
-                                    <button 
-                                      type="button" 
-                                      onClick={() => handleAdjustLineMetricValue(lineIdx, "measures", 1)} 
-                                      className="w-6 h-full flex items-center justify-center text-zinc-400 hover:text-blue-600 hover:bg-blue-50 active:bg-blue-100 transition-colors border-l border-transparent"
-                                    >
-                                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
-                                    </button>
-                                  </div>
-
-                                  {/* Beats (B) Stepper */}
-                                  <div className="flex items-center bg-white border border-zinc-200 rounded-lg shadow-sm h-7 overflow-hidden transition-colors focus-within:border-blue-400 focus-within:ring-1 focus-within:ring-blue-400">
-                                    <div className="px-1.5 text-[9px] font-black text-zinc-400 bg-zinc-50/80 border-r border-zinc-200/60 flex items-center h-full cursor-help" title="Beats">
-                                      B
-                                    </div>
-                                    <button 
-                                      type="button" 
-                                      onClick={() => handleAdjustLineMetricValue(lineIdx, "beats", -1)} 
-                                      className="w-6 h-full flex items-center justify-center text-zinc-400 hover:text-blue-600 hover:bg-blue-50 active:bg-blue-100 transition-colors"
-                                    >
-                                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><path d="M5 12h14"/></svg>
-                                    </button>
-                                    <span className="w-4 text-center text-[11px] font-black text-zinc-800">
-                                      {lineMetrics.beats}
-                                    </span>
-                                    <button 
-                                      type="button" 
-                                      onClick={() => handleAdjustLineMetricValue(lineIdx, "beats", 1)} 
-                                      className="w-6 h-full flex items-center justify-center text-zinc-400 hover:text-blue-600 hover:bg-blue-50 active:bg-blue-100 transition-colors border-l border-transparent"
-                                    >
-                                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
-                                    </button>
-                                  </div>
-
-                                </div>
+        
                               </div>
                             );
                           })}
@@ -1269,17 +1388,7 @@ export default function SongEditPage() {
               })}
             </div>
             {activeRole === "admin" && (
-              <button 
-                type="button" 
-                className="w-full border border-dashed py-3.5 text-center rounded-2xl text-blue-600 font-black text-xs uppercase tracking-wider block hover:bg-zinc-50 transition-colors shadow-sm bg-white" 
-                onClick={() => {
-                  setSectionModalSearch("");
-                  setSectionModalSelected(null);
-                  setSectionModalConfig({ isOpen: true, mode: "add" });
-                }}
-              >
-                ＋ Add New Section Enclosures
-              </button>
+              <button type="button" className="w-full border border-dashed py-3.5 text-center rounded-2xl text-blue-600 font-black text-xs uppercase tracking-wider block hover:bg-zinc-50 transition-colors shadow-sm bg-white" onClick={() => { setSectionModalSearch(""); setSectionModalSelected(null); setSectionModalConfig({ isOpen: true, mode: "add" }); }}>＋ Add New Section Enclosures</button>
             )}
           </div>
         )}
@@ -1311,7 +1420,6 @@ export default function SongEditPage() {
                 })}
               </div>
             </div>
-
             <div className="space-y-2">
               <h4 className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-1">Add Block Element</h4>
               <div className="grid grid-cols-1 gap-1.5 bg-zinc-50/40 p-3 rounded-xl border border-zinc-200/60 shadow-inner h-fit">
@@ -1327,51 +1435,23 @@ export default function SongEditPage() {
         )}
       </div>
 
-      {/* ======================================================= */}
-      {/* ✅ SURGICAL FIX: SMART-DOCKING FLOATING BOTTOM DECK       */}
-      {/* ======================================================= */}
+      {/* SMART-DOCKING FLOATING BOTTOM DECK */}
       <div 
         className={`fixed left-0 right-0 z-[100] px-4 md:px-8 transition-all duration-300 ease-out flex justify-center pointer-events-none ${
-          hasUnsavedChanges || (editorActiveTab === "content" && (isAddChordsModeActive || isAddNotesModeActive))
-            ? (isScrollingDown ? "bottom-6 opacity-100" : "bottom-[85px] opacity-100") // 85px clears the global bottom nav
+          hasUnsavedChanges || (editorActiveTab === "content" && chordMode === "Keyboard")
+            ? (isScrollingDown ? "bottom-6 opacity-100" : "bottom-[85px] opacity-100") 
             : "-bottom-24 opacity-0"
         }`}
       >
         <div className="bg-white/95 backdrop-blur-md border border-zinc-200/80 shadow-[0_12px_40px_rgb(0,0,0,0.12)] p-2 md:p-2.5 rounded-2xl flex items-center justify-between w-full max-w-4xl pointer-events-auto">
-          
           <div className="flex items-center gap-2 flex-1 min-w-0 pr-2">
-            {editorActiveTab === "content" && isAddChordsModeActive && (
+            {editorActiveTab === "content" && chordMode === "Keyboard" && (
               <div className="flex items-center gap-1 bg-amber-50/40 border border-amber-200/60 p-1 rounded-xl animate-in slide-in-from-bottom-1 max-w-full overflow-x-auto">
-                <span className="text-[8px] font-black uppercase text-amber-600 tracking-tight shrink-0 px-1">🎸 Notation</span>
+                <span className="text-[8px] font-black uppercase text-amber-600 tracking-tight shrink-0 px-1">🎹 Nashville Quick Key</span>
                 <select value={selectedChordRoot} className="bg-white border rounded-md px-1.5 py-0.5 text-[10px] font-bold outline-none" onChange={e => { const r = e.target.value; setSelectedChordRoot(r); const m = activeScaleDiatonicDeck.find(o => o.root === r); setCustomChordInputValue(`${r}${m ? m.suffix : ""}`); }}>{activeScaleDiatonicDeck.map((opt, i) => <option key={i} value={opt.root}>{opt.root}{opt.suffix}</option>)}</select>
                 <input type="text" value={customChordInputValue} className="border bg-white rounded-md px-1.5 py-0.5 text-center w-14 text-[10px] font-black outline-none" onChange={e => setCustomChordInputValue(e.target.value)} />
-                <button type="button" className={`px-2.5 py-1 rounded-md font-black text-[9px] uppercase tracking-wide text-white shrink-0 ${isChordInputBlank ? 'bg-red-600' : 'bg-blue-600'}`} onClick={() => executeChordInjectionAtIndex(customChordInputValue)}>{isChordInputBlank ? "Clear" : "Add"}</button>
+                <button type="button" className="px-2.5 py-1 rounded-md font-black text-[9px] uppercase tracking-wide text-white bg-blue-600 shrink-0" onClick={() => executeChordInjectionAtIndex(customChordInputValue)}>Add</button>
               </div>
-            )}
-
-            {editorActiveTab === "content" && isAddNotesModeActive && (
-              <div className="flex items-center gap-1.5 bg-purple-50/40 border border-purple-200/60 p-1 rounded-xl flex-1 max-w-md animate-in slide-in-from-bottom-1">
-                <span className="text-[8px] font-black uppercase text-purple-600 tracking-tight shrink-0 px-1">📝 Note</span>
-                <input type="text" value={customCommentInputValue} placeholder="Type row comment..." className="border bg-white rounded-md px-2 py-0.5 text-[10px] font-bold flex-1 outline-none" onChange={e => setCustomCommentInputValue(e.target.value)} />
-                <button type="button" className={`px-2.5 py-1 rounded-md font-black text-[9px] uppercase tracking-wide text-white shrink-0 ${isCommentInputBlank ? 'bg-red-600' : 'bg-purple-600'}`} onClick={() => executeLineCommentInjection(customCommentInputValue)}>{isCommentInputBlank ? "Clear" : "Save"}</button>
-              </div>
-            )}
-
-            {!(editorActiveTab === "content" && (isAddChordsModeActive || isAddNotesModeActive)) && editingSongId && activeRole === "admin" && (
-              <button 
-                type="button" 
-                className="px-4 py-2.5 rounded-xl bg-red-50/80 text-red-600 font-black text-[10px] uppercase border border-red-200 hover:bg-red-100 transition-all cursor-pointer flex items-center gap-1.5"
-                onClick={async () => {
-                  if (confirm("Are you sure you want to delete this arrangement permanently?")) {
-                    setLoading(true);
-                    const { error } = await supabase.from("songs").delete().eq("id", editingSongId);
-                    if (!error) router.push("/songs");
-                    else setLoading(false);
-                  }
-                }} 
-              >
-                <span className="text-sm">🗑️</span> Delete Song
-              </button>
             )}
           </div>
 
@@ -1380,18 +1460,14 @@ export default function SongEditPage() {
               const checkTuple = getCentralizedMetricsTuple(checkSec.type);
               const checkLines = checkSec.content.split("\n").map(l => l.replace(/\[[^\]]+\]/g, "").trim()).filter(l => l.length > 0);
               if (checkLines.length === 0) return false;
-
-              const checkRepeats = checkTuple.repeats || 0;
-              const totalCheckPasses = checkRepeats + 1; 
+              const totalCheckPasses = (checkTuple.repeats || 0) + 1; 
               const totalLineSegments = checkLines.length * totalCheckPasses;
               const targetAbsoluteBeats = (checkTuple.measures * 4) + checkTuple.beats;
-
               const checkSpreadMeasures = Math.floor(checkTuple.measures / totalLineSegments);
               const checkRemainderMeasures = checkTuple.measures % totalLineSegments;
               const checkSpreadBeats = Math.floor(checkTuple.beats / totalLineSegments);
               const checkRemainderBeats = checkTuple.beats % totalLineSegments;
 
-              // ✅ SURGICAL FIX: Add Head and Tail to the bottom validation check
               const calculatedBeatsSum = (checkLines.reduce((sum, _, lineIndex) => {
                 const lineOverride = (lineOverrides as any)?.[checkSec.type]?.[lineIndex];
                 const measures = lineOverride?.measures ?? (checkSpreadMeasures + (lineIndex < checkRemainderMeasures ? 1 : 0));
@@ -1401,36 +1477,25 @@ export default function SongEditPage() {
 
               return calculatedBeatsSum !== targetAbsoluteBeats;
             });
-
             const isSaveDisabled = isRealtimePreviewActive && isAnySectionMismatchedAcrossModal;
 
             return (
-              <div className="shrink-0">
+              <div className="shrink-0 ml-auto">
                 {(activeRole === "admin" || activeRole === "member") && (
-                  <button 
-                    type="button" 
-                    disabled={isSaveDisabled}
-                    className={`px-5 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-wider transition-all ${
-                      isSaveDisabled 
-                        ? "bg-zinc-100 text-zinc-400 border border-zinc-200 shadow-none cursor-not-allowed opacity-80" 
-                        : "bg-blue-600 hover:bg-blue-700 text-white shadow-md active:scale-[0.97] cursor-pointer"
-                    }`}
-                    onClick={handleCommitSongChangesToDB} 
-                  >
+                  <button type="button" disabled={isSaveDisabled} className={`px-5 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-wider transition-all ${isSaveDisabled ? "bg-zinc-100 text-zinc-400 border border-zinc-200 cursor-not-allowed opacity-80" : "bg-blue-600 hover:bg-blue-700 text-white shadow-md cursor-pointer"}`} onClick={handleCommitSongChangesToDB}>
                     {isSaveDisabled ? "🔒 Calculations Mismatched" : "Save Arrangement"}
                   </button>
                 )}
               </div>
             );
           })()}
-          
         </div>
       </div>
 
       {/* DISCARD OVERLAY MODAL */}
       {isConfirmExitModalOpen && (
-        <div className="fixed inset-0 bg-zinc-900/40 backdrop-blur-sm z-[2000] flex items-center justify-center p-4 select-none animate-in fade-in duration-150">
-          <div className="bg-white border border-zinc-200 rounded-2xl shadow-2xl p-6 max-w-sm w-full space-y-4 animate-in zoom-in-95 duration-150">
+        <div className="fixed inset-0 bg-zinc-900/40 backdrop-blur-sm z-[20000] flex items-center justify-center p-4 select-none animate-in fade-in duration-150">
+          <div className="bg-white border border-zinc-200 rounded-2xl shadow-2xl p-6 max-w-sm w-full space-y-4">
             <div className="space-y-1">
               <h4 className="font-extrabold text-base text-zinc-900 tracking-tight">Unsaved Modifications</h4>
               <p className="text-xs text-zinc-500 font-medium leading-relaxed">You have active modifications inside your arrangement canvas layers. Discard changes and close workspace?</p>
@@ -1443,10 +1508,10 @@ export default function SongEditPage() {
         </div>
       )}
 
-      {/* ✅ SURGICAL ADDITION: Duplicate Song Warning Modal */}
+      {/* DUPLICATE WARNING MODAL */}
       {duplicateWarning && (
         <div className="fixed inset-0 bg-zinc-900/40 backdrop-blur-sm z-[200000] flex items-center justify-center p-4 select-none animate-in fade-in duration-150">
-          <div className="bg-white border border-zinc-200 rounded-2xl shadow-2xl p-6 max-w-sm w-full space-y-4 animate-in zoom-in-95 duration-150">
+          <div className="bg-white border border-zinc-200 rounded-2xl shadow-2xl p-6 max-w-sm w-full space-y-4">
             <div className="w-12 h-12 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center text-2xl mb-2 shadow-sm border border-amber-200">
               <span className="font-black">!</span>
             </div>
@@ -1457,103 +1522,289 @@ export default function SongEditPage() {
               </p>
             </div>
             <div className="grid grid-cols-1 gap-2 pt-2">
-              {/* Teleports them straight to the existing song! */}
-              <button 
-                type="button" 
-                onClick={() => router.push(`/songs/${duplicateWarning.id}/edit`)} 
-                className="py-3 bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-black uppercase tracking-wider rounded-xl shadow-md transition-all active:scale-95 cursor-pointer"
-              >
-                Open Existing Song
-              </button>
-              
-              {/* Dismisses the warning so they can create a specific variation if they want to */}
-              <button 
-                type="button" 
-                onClick={() => {
-                  setDismissedDuplicateIds(prev => [...prev, duplicateWarning.id]);
-                  setDuplicateWarning(null);
-                }} 
-                className="py-3 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 text-[11px] font-black uppercase tracking-wider rounded-xl transition-all cursor-pointer"
-              >
-                Ignore & Create Anyway
-              </button>
+              <button type="button" onClick={() => router.push(`/songs/${duplicateWarning.id}/edit`)} className="py-3 bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-black uppercase tracking-wider rounded-xl shadow-md transition-all cursor-pointer">Open Existing Song</button>
+              <button type="button" onClick={() => { setDismissedDuplicateIds(prev => [...prev, duplicateWarning.id]); setDuplicateWarning(null); }} className="py-3 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 text-[11px] font-black uppercase tracking-wider rounded-xl transition-all cursor-pointer">Ignore & Create Anyway</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* ======================================================= */}
-      {/* ✅ SURGICAL ADDITION: NATIVE SECTION ASSIGNMENT MODAL     */}
-      {/* ======================================================= */}
+      {/* NATIVE SECTION ASSIGNMENT MODAL */}
       {sectionModalConfig.isOpen && (
-        <div className="fixed inset-0 z-[12000] flex items-end md:items-center justify-center md:p-4 bg-zinc-950/50 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="w-full bg-[#f2f2f6] md:bg-white rounded-t-3xl md:rounded-3xl h-[85vh] md:h-[600px] max-w-lg flex flex-col shadow-2xl animate-in slide-in-from-bottom-full md:slide-in-from-bottom-0 md:zoom-in-95 duration-200 overflow-hidden">
-            
-            {/* Header */}
+        <div className="fixed inset-0 bg-zinc-950/50 backdrop-blur-sm z-[12000] flex items-end md:items-center justify-center md:p-4 animate-in fade-in duration-200">
+          <div className="w-full bg-[#f2f2f6] md:bg-white rounded-t-3xl md:rounded-3xl h-[85vh] md:h-[600px] max-w-lg flex flex-col shadow-2xl animate-in slide-in-from-bottom-full duration-200 overflow-hidden">
             <div className="relative flex items-center justify-center p-4 md:p-5 border-b border-zinc-200/60 bg-white shrink-0">
-              <button 
-                type="button" 
-                onClick={() => setSectionModalConfig({ isOpen: false, mode: "add" })} 
-                className="absolute left-4 md:left-auto md:right-4 w-8 h-8 flex items-center justify-center rounded-full bg-zinc-100 text-zinc-500 hover:bg-zinc-200 transition-colors"
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-              </button>
-              <h3 className="text-base font-black text-zinc-900 tracking-tight">
-                {sectionModalConfig.mode === "add" ? "Add New Sections" : "Reassign Section"}
-              </h3>
+              <button type="button" onClick={() => setSectionModalConfig({ isOpen: false, mode: "add" })} className="absolute right-4 w-8 h-8 flex items-center justify-center rounded-full bg-zinc-100 text-zinc-500 hover:bg-zinc-200 transition-colors">✕</button>
+              <h3 className="text-base font-black text-zinc-900 tracking-tight">{sectionModalConfig.mode === "add" ? "Add New Sections" : "Reassign Section"}</h3>
             </div>
-
-            {/* Sticky Search Bar */}
             <div className="p-4 bg-[#f2f2f6] md:bg-white shrink-0">
-              <div className="relative flex items-center w-full">
-                <svg className="absolute left-3 w-4 h-4 text-zinc-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
-                <input 
-                  type="text" 
-                  placeholder="Search for a new section" 
-                  value={sectionModalSearch}
-                  onChange={e => setSectionModalSearch(e.target.value)}
-                  className="w-full bg-zinc-200/50 md:bg-zinc-100/80 rounded-xl py-2.5 pl-9 pr-4 text-[13px] font-bold text-zinc-800 placeholder:text-zinc-500 outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
-                />
-              </div>
+              <input type="text" placeholder="Search for a new section" value={sectionModalSearch} onChange={e => setSectionModalSearch(e.target.value)} className="w-full bg-zinc-200/50 md:bg-zinc-100/80 rounded-xl py-2.5 px-4 text-[13px] font-bold text-zinc-800 placeholder:text-zinc-500 outline-none" />
             </div>
-
-            {/* Scrollable Radio List */}
             <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-2.5 custom-scrollbar bg-[#f2f2f6] md:bg-white">
-              {/* ✅ SURGICAL FIX: Map the dynamically numbered options! */}
               {dynamicCatalogOptions.filter(tmpl => tmpl.computedDisplay.toLowerCase().includes(sectionModalSearch.toLowerCase())).map(tmpl => {
                 const isSelected = sectionModalSelected === tmpl.computedId;
                 return (
-                  <button 
-                    key={tmpl.computedId} 
-                    type="button" 
-                    onClick={() => setSectionModalSelected(tmpl.computedId)}
-                    className={`w-full flex items-center justify-between p-3 rounded-2xl transition-all ${isSelected ? "bg-white ring-2 ring-blue-500 shadow-sm" : "bg-white hover:bg-zinc-50/80 border border-transparent shadow-sm md:border-zinc-200/60"}`}
-                  >
+                  <button key={tmpl.computedId} type="button" onClick={() => setSectionModalSelected(tmpl.computedId)} className={`w-full flex items-center justify-between p-3 rounded-2xl transition-all ${isSelected ? "bg-white ring-2 ring-blue-500 shadow-sm" : "bg-white border shadow-sm"}`}>
                     <div className="flex items-center gap-3.5">
-                      <div className={`w-8 h-8 rounded-full border-2 flex items-center justify-center text-[10px] font-black ${tmpl.color}`}>
-                        {tmpl.abbr}
-                      </div>
+                      <div className={`w-8 h-8 rounded-full border-2 flex items-center justify-center text-[10px] font-black ${tmpl.color}`}>{tmpl.abbr}</div>
                       <span className="text-[14px] font-bold text-zinc-900 tracking-tight">{tmpl.computedDisplay}</span>
                     </div>
-                    
-                    {/* Native iOS style Radio indicator */}
-                    <div className={`w-5 h-5 rounded-full border-[2.5px] flex items-center justify-center transition-colors ${isSelected ? "border-blue-500" : "border-zinc-300"}`}>
-                      {isSelected && <div className="w-2.5 h-2.5 rounded-full bg-blue-500" />}
-                    </div>
+                    <div className={`w-5 h-5 rounded-full border-[2.5px] flex items-center justify-center ${isSelected ? "border-blue-500" : "border-zinc-300"}`}>{isSelected && <div className="w-2.5 h-2.5 rounded-full bg-blue-500" />}</div>
                   </button>
                 );
               })}
             </div>
+            <div className="p-4 bg-[#f2f2f6] md:bg-white border-t shrink-0">
+              <button type="button" disabled={!sectionModalSelected} onClick={handleSectionModalSubmit} className={`w-full py-3.5 rounded-xl text-[14px] font-black tracking-wide ${sectionModalSelected ? "bg-zinc-900 text-white" : "bg-zinc-300 text-zinc-500 cursor-not-allowed"}`}>Select</button>
+            </div>
+          </div>
+        </div>
+      )}
 
-            {/* Sticky Action Footer */}
-            <div className="p-4 bg-[#f2f2f6] md:bg-white border-t border-zinc-200/50 shrink-0 pb-safe">
-              <button 
-                type="button" 
-                disabled={!sectionModalSelected}
-                onClick={handleSectionModalSubmit}
-                className={`w-full py-3.5 rounded-xl text-[14px] font-black tracking-wide transition-all ${sectionModalSelected ? "bg-zinc-900 text-white shadow-md active:scale-[0.98]" : "bg-zinc-300 text-zinc-500 cursor-not-allowed"}`}
-              >
-                {sectionModalConfig.mode === "add" ? "Add" : "Select"}
+      {/* ✅ SECTION ADJUSTMENTS BOTTOM SHEET */}
+      {sectionAdjustmentsConfig.isOpen && sectionAdjustmentsConfig.sectionType && (
+        <div className="fixed inset-0 bg-zinc-950/50 backdrop-blur-sm z-[13000] flex items-end justify-center animate-in fade-in duration-200">
+          {(() => {
+            const sType = sectionAdjustmentsConfig.sectionType!;
+            const timingTuple = getCentralizedMetricsTuple(sType);
+            
+            // Re-calculate the lines specifically for the modal so we can edit them dynamically
+            const sec = formSections.find(s => s.type === sType);
+            const processedLines = sec ? sec.content.split("\n").map(l => ({ rawText: l, cleanText: l.replace(/\[[^\]]+\]/g, "").replace(/\{[^\}]+\}/g, "").trim() })).filter(l => l.cleanText.length > 0) : [];
+            const totalLines = processedLines.length;
+            const totalLineSegmentsCount = totalLines * ((timingTuple.repeats || 0) + 1);
+            
+            const autoSpreadMeasures = totalLineSegmentsCount > 0 ? Math.floor(timingTuple.measures / totalLineSegmentsCount) : 0;
+            const remainderMeasures = totalLineSegmentsCount > 0 ? timingTuple.measures % totalLineSegmentsCount : 0;
+            const autoSpreadBeats = totalLineSegmentsCount > 0 ? Math.floor(timingTuple.beats / totalLineSegmentsCount) : 0;
+            const remainderBeats = totalLineSegmentsCount > 0 ? timingTuple.beats % totalLineSegmentsCount : 0;
+
+            const currentLinesMetrics = processedLines.map((_, lIdx) => {
+              const explicitOverride = (lineOverrides as any)?.[sType]?.[lIdx];
+              if (explicitOverride) return explicitOverride;
+              return {
+                measures: autoSpreadMeasures + (lIdx < remainderMeasures ? 1 : 0),
+                beats: autoSpreadBeats + (lIdx < remainderBeats ? 1 : 0)
+              };
+            });
+
+            // Local updater for line modifications
+            const handleAdjustLineMetricValueLocal = (lineIdx: number, field: "measures" | "beats", delta: number) => {
+              const currentVal = currentLinesMetrics[lineIdx][field];
+              const proposedVal = Math.max(0, currentVal + delta);
+              if (field === "beats" && proposedVal > 3) return;
+
+              setHasUnsavedChanges(true);
+              setLineOverrides(prev => {
+                const prevOverrides = prev || {};
+                const sectionMap = { ...(prevOverrides[sType] || {}) };
+                processedLines.forEach((_, currentIdx) => {
+                  if (sectionMap[currentIdx] === undefined) {
+                    sectionMap[currentIdx] = {
+                      measures: autoSpreadMeasures + (currentIdx < remainderMeasures ? 1 : 0),
+                      beats: autoSpreadBeats + (currentIdx < remainderBeats ? 1 : 0)
+                    };
+                  } else {
+                    sectionMap[currentIdx] = { ...sectionMap[currentIdx] };
+                  }
+                });
+                sectionMap[lineIdx] = { ...sectionMap[lineIdx], [field]: proposedVal };
+                return { ...prevOverrides, [sType]: sectionMap };
+              });
+            };
+
+            return (
+              <div className="w-full bg-[#f2f2f6] rounded-t-3xl max-w-lg flex flex-col shadow-2xl animate-in slide-in-from-bottom-full duration-200 overflow-hidden">
+                
+                {/* Header & Tabs */}
+                <div className="relative flex flex-col items-center justify-center pt-4 border-b border-zinc-200/60 bg-white shrink-0">
+                  <div className="flex w-full px-4 items-center justify-center mb-4 relative">
+                    <button type="button" onClick={() => setSectionAdjustmentsConfig({ isOpen: false, sectionType: null })} className="absolute left-4 w-7 h-7 flex items-center justify-center rounded-full bg-zinc-100 text-zinc-500 hover:bg-zinc-200 font-bold transition-colors">✕</button>
+                    <h3 className="text-[14px] font-black text-zinc-900 tracking-tight uppercase">{sType} Adjustments</h3>
+                  </div>
+                  
+                  <div className="flex w-full px-4 gap-6 text-[11px] uppercase tracking-wider font-black select-none">
+                    <button type="button" onClick={() => setAdjustmentsModalTab("section")} className={`pb-3 transition-all border-b-[3px] ${adjustmentsModalTab === "section" ? 'border-blue-600 text-blue-600' : 'border-transparent text-zinc-400 hover:text-zinc-600'}`}>Section Master</button>
+                    <button type="button" onClick={() => setAdjustmentsModalTab("lines")} className={`pb-3 transition-all border-b-[3px] ${adjustmentsModalTab === "lines" ? 'border-blue-600 text-blue-600' : 'border-transparent text-zinc-400 hover:text-zinc-600'}`}>Line Measures</button>
+                  </div>
+                </div>
+                
+                {/* Scrollable Form Content */}
+                <div className="p-4 md:p-5 space-y-3 flex-1 overflow-y-auto max-h-[55vh]">
+                  {adjustmentsModalTab === "section" ? (
+                    <>
+                      {[
+                        { label: "Total Measures (M)", field: "measures" as const },
+                        { label: "Total Beats (B)", field: "beats" as const, max: 3 },
+                        { label: "Repeat Block (R)", field: "repeats" as const },
+                        { label: "Head Padding (H)", field: "head_m" as const },
+                        { label: "Tail Padding (T)", field: "tail_m" as const },
+                      ].map(item => (
+                        <div key={item.field} className="flex items-center justify-between p-3.5 bg-white border border-zinc-200/60 rounded-2xl shadow-sm">
+                          <span className="text-xs font-black text-zinc-700">{item.label}</span>
+                          <div className="flex items-center bg-zinc-100 rounded-xl overflow-hidden border border-zinc-200 h-9 transition-colors focus-within:border-blue-400 focus-within:ring-1 focus-within:ring-blue-400">
+                            <button type="button" onClick={() => handleUpdateCentralizedMetrics(sType, item.field, Math.max(0, (timingTuple[item.field] || 0) - 1))} className="w-10 h-full flex items-center justify-center text-zinc-500 font-bold hover:bg-zinc-200 hover:text-blue-600 transition-colors">－</button>
+                            <span className="w-10 text-center font-mono font-black text-zinc-800 text-xs">{timingTuple[item.field] || 0}</span>
+                            <button type="button" onClick={() => handleUpdateCentralizedMetrics(sType, item.field, Math.min(item.max ?? 999, (timingTuple[item.field] || 0) + 1))} className="w-10 h-full flex items-center justify-center text-zinc-500 font-bold hover:bg-zinc-200 hover:text-blue-600 transition-colors">＋</button>
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  ) : (
+                    <>
+                      {processedLines.length > 0 ? processedLines.map((line, lineIdx) => {
+                         const lineMetrics = currentLinesMetrics[lineIdx];
+                         return (
+                            <div key={lineIdx} className="flex flex-col sm:flex-row sm:items-center justify-between p-3.5 bg-white border border-zinc-200/60 rounded-2xl shadow-sm gap-3">
+                              <span className="text-[11px] font-bold text-zinc-800 truncate flex-1 leading-snug">
+                                Line {lineIdx + 1}: <span className="font-medium text-zinc-500 ml-1">{line.cleanText}</span>
+                              </span>
+                              
+                              <div className="flex items-center gap-2 shrink-0">
+                                  {/* M Stepper */}
+                                  <div className="flex items-center bg-zinc-100 rounded-xl overflow-hidden border border-zinc-200 h-8 transition-colors">
+                                    <div className="px-1.5 text-[9px] font-black text-zinc-400 bg-zinc-200/50 border-r border-zinc-200/60 flex items-center h-full">M</div>
+                                    <button type="button" onClick={() => handleAdjustLineMetricValueLocal(lineIdx, "measures", -1)} className="w-7 h-full flex items-center justify-center text-zinc-500 font-bold hover:bg-zinc-200">－</button>
+                                    <span className="w-5 text-center font-mono font-black text-zinc-800 text-[11px]">{lineMetrics.measures}</span>
+                                    <button type="button" onClick={() => handleAdjustLineMetricValueLocal(lineIdx, "measures", 1)} className="w-7 h-full flex items-center justify-center text-zinc-500 font-bold hover:bg-zinc-200">＋</button>
+                                  </div>
+                                  {/* B Stepper */}
+                                  <div className="flex items-center bg-zinc-100 rounded-xl overflow-hidden border border-zinc-200 h-8 transition-colors">
+                                    <div className="px-1.5 text-[9px] font-black text-zinc-400 bg-zinc-200/50 border-r border-zinc-200/60 flex items-center h-full">B</div>
+                                    <button type="button" onClick={() => handleAdjustLineMetricValueLocal(lineIdx, "beats", -1)} className="w-7 h-full flex items-center justify-center text-zinc-500 font-bold hover:bg-zinc-200">－</button>
+                                    <span className="w-4 text-center font-mono font-black text-zinc-800 text-[11px]">{lineMetrics.beats}</span>
+                                    <button type="button" onClick={() => handleAdjustLineMetricValueLocal(lineIdx, "beats", 1)} className="w-7 h-full flex items-center justify-center text-zinc-500 font-bold hover:bg-zinc-200">＋</button>
+                                  </div>
+                              </div>
+                            </div>
+                         );
+                      }) : (
+                        <div className="text-center py-8 text-zinc-400 text-[11px] uppercase tracking-wider font-black">No lines available in this section</div>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                <div className="p-4 border-t border-zinc-200/60 bg-white shrink-0 pb-safe">
+                  <button type="button" onClick={() => { setSectionAdjustmentsConfig({ isOpen: false, sectionType: null }); }} className="w-full py-3.5 bg-blue-600 text-white rounded-xl font-black text-[14px] shadow-md tracking-wide active:scale-[0.98] transition-all">
+                    Apply Adjustments
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* ✅ SURGICAL ADDITION: ADVANCED NOTATION PICKER BOTTOM SHEET (FIGMA SPEC) */}
+      {chordPickerConfig.isOpen && chordPickerConfig.sectionType && (
+        <div className="fixed inset-0 bg-zinc-950/50 backdrop-blur-sm z-[14000] flex items-end justify-center animate-in fade-in duration-200">
+          <div className="w-full bg-[#f2f2f6] rounded-t-3xl max-w-lg flex flex-col shadow-2xl animate-in slide-in-from-bottom-full duration-200 overflow-hidden">
+            
+            {/* Header section with closing cross anchor */}
+            <div className="relative flex items-center justify-center p-4 border-b bg-white shrink-0">
+              <button type="button" onClick={() => setChordPickerConfig({ isOpen: false, sectionType: null, lineIdx: -1, wordIdx: -1, cleanWord: "" })} className="absolute left-4 w-7 h-7 flex items-center justify-center rounded-full bg-zinc-100 text-zinc-500">✕</button>
+              <h3 className="text-[14px] font-black text-zinc-800 tracking-tight">Assign Notation</h3>
+            </div>
+
+            {/* Selection Text Input Preview Area */}
+            <div className="p-4 bg-white border-b shrink-0">
+              <div className="border border-zinc-200 rounded-xl p-3 bg-zinc-50/50 min-h-[56px] flex flex-col justify-center">
+                {stagedChordsText ? (
+                  <div className="flex flex-wrap gap-1 mb-1 font-mono font-black text-[10px] text-blue-600">
+                    {stagedChordsText.split(/\s+/).map((c, i) => c && <span key={i} className="bg-blue-100/60 border border-blue-200 px-1 rounded">{c}</span>)}
+                  </div>
+                ) : (
+                  <div className="text-[10px] font-mono font-bold text-zinc-300 italic mb-1">[Staging...]</div>
+                )}
+                <div className="text-xs font-bold text-zinc-800">{chordPickerConfig.cleanWord}</div>
+              </div>
+
+              {/* View Layout Switch Toolbar Header */}
+              <div className="flex items-center justify-between mt-3 text-xs font-black text-zinc-500 select-none">
+                <span>{pickerLayoutView === "family" ? `Key of ${formKey} Family` : "Manual Key Mode"}</span>
+                <button type="button" onClick={() => setPickerLayoutView(pickerLayoutView === "family" ? "manual" : "family")} className="text-blue-600 flex items-center gap-1.5 hover:opacity-80 transition-opacity">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="m17 2 4 4-4 4M3 22l4-4-4-4M21 6H9M3 18h12"/></svg>
+                  <span>{pickerLayoutView === "family" ? "Manual Input" : "Key Family"}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Core Grid Matrix Selection Panel */}
+            <div className="p-4 space-y-3 flex-1 overflow-y-auto max-h-[45vh] bg-[#f2f2f6]">
+              {pickerLayoutView === "family" ? (
+                /* Dynamic Key Family Layout Option Deck */
+                <div className="grid grid-cols-4 gap-2">
+                  {activeScaleDiatonicDeck.map((opt, i) => {
+                    const fullLabel = `${opt.root}${opt.suffix}`;
+                    return (
+                      <button key={i} type="button" onClick={() => handlePickerChordTap(fullLabel)} className="h-12 bg-white hover:bg-zinc-50 active:bg-zinc-100 rounded-xl font-bold text-xs shadow-sm flex items-center justify-center border text-zinc-800 transition-all">
+                        {fullLabel}
+                      </button>
+                    );
+                  })}
+                  {/* Specialized Slash Token Separator Hook */}
+                  <button type="button" onClick={() => setStagedChordsText(p => p.trim() + "/")} className="h-12 bg-white text-blue-600 rounded-xl font-black text-sm shadow-sm flex items-center justify-center border border-zinc-200">
+                    /
+                  </button>
+                </div>
+              ) : (
+                /* Complete Manual Entry Construction Deck */
+                <div className="space-y-3">
+                  {/* Roots selection line layout tier */}
+                  <div className="grid grid-cols-4 gap-2">
+                    {["C", "D", "E", "F", "G", "A", "B"].map(letter => (
+                      <button key={letter} type="button" onClick={() => handlePickerChordTap(letter)} className="h-11 bg-white rounded-xl font-bold text-xs shadow-sm flex items-center justify-center border text-zinc-800">
+                        {letter}
+                      </button>
+                    ))}
+                    <button type="button" onClick={() => setStagedChordsText(p => p.trim() + "/")} className="h-11 bg-white text-blue-600 rounded-xl font-black text-sm shadow-sm flex items-center justify-center border">
+                      /
+                    </button>
+                  </div>
+
+                  {/* Accidental modifiers layout deck */}
+                  <div className="grid grid-cols-4 gap-2">
+                    {["m", "dim", "#", "b"].map(modifier => (
+                      <button key={modifier} type="button" onClick={() => setStagedChordsText(p => p + modifier)} className="h-11 bg-white rounded-xl font-black text-xs shadow-sm flex items-center justify-center border text-zinc-700 bg-zinc-50/50">
+                        {modifier}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Extensions structure additions footer row mapping */}
+                  <div className="grid grid-cols-3 gap-2">
+                    <button type="button" onClick={() => setStagedChordsText(p => p + "add")} className="h-11 bg-white rounded-xl font-bold text-xs shadow-sm flex items-center justify-center border text-zinc-600">add</button>
+                    <button type="button" onClick={() => setStagedChordsText(p => p + "sus")} className="h-11 bg-white rounded-xl font-bold text-xs shadow-sm flex items-center justify-center border text-zinc-600">sus</button>
+                    
+                    {/* Number Dropdown Interface Module selector */}
+                    <div className="bg-white rounded-xl border shadow-sm flex items-center px-3 h-11 relative">
+                      <select 
+                        value={manualExtensionNumber} 
+                        onChange={e => {
+                          const val = e.target.value;
+                          setManualExtensionNumber(val);
+                          if (val) setStagedChordsText(p => p + val);
+                        }} 
+                        className="w-full bg-transparent text-xs font-bold text-zinc-700 outline-none appearance-none"
+                      >
+                        <option value="">Number</option>
+                        {["2","4","5","6","7","9","11","13"].map(n => <option key={n} value={n}>{n}</option>)}
+                      </select>
+                      <span className="text-[9px] text-zinc-400 absolute right-3 pointer-events-none">▼</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Bottom Form Submissions Commit Section Layer */}
+            <div className="p-4 border-t bg-white flex gap-2 shrink-0 pb-safe">
+              <button type="button" onClick={executeChordPickerRemoval} className="flex-1 py-3.5 bg-red-100 hover:bg-red-200 text-red-600 font-black text-xs uppercase tracking-wider rounded-xl transition-all">
+                Remove
+              </button>
+              <button type="button" onClick={executeChordPickerConfirm} className="flex-1 py-3.5 bg-blue-600 hover:bg-blue-700 text-white font-black text-xs uppercase tracking-wider rounded-xl shadow-md transition-all">
+                Confirm
               </button>
             </div>
 
@@ -1564,7 +1815,7 @@ export default function SongEditPage() {
       {/* PLAIN TEXT IMPORT PANEL */}
       {isImportModalOpen && (
         <div className="fixed inset-0 bg-zinc-950/60 backdrop-blur-md z-[11000] flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl p-5 w-full max-w-xl border shadow-2xl space-y-4 animate-in zoom-in-95">
+          <div className="bg-white rounded-xl p-5 w-full max-w-xl border shadow-2xl space-y-4">
             <h4 className="text-base font-black">Import Plain Text Lyrics</h4>
             <textarea rows={7} value={pastedRawLyricsText} placeholder="Paste plain track text format layout sections (e.g. [Verse 1] lines)..." className="w-full text-xs p-3 border bg-zinc-50/50 rounded-xl outline-none font-mono resize-none" onChange={e => setPastedRawLyricsText(e.target.value)} />
             <div className="grid grid-cols-2 gap-2"><button type="button" className="py-2.5 bg-zinc-100 text-zinc-700 text-xs font-black rounded-lg" onClick={() => setIsImportModalOpen(false)}>Cancel</button><button type="button" className="py-2.5 bg-blue-600 text-white text-xs font-black rounded-lg shadow-sm" onClick={executeRawLyricsImportAction}>Parse & Import</button></div>
@@ -1574,8 +1825,8 @@ export default function SongEditPage() {
 
       {/* TARGETED TRANSPOSITION SELECTOR PANEL */}
       {isKeyPopupOpen && (
-        <div className="fixed inset-0 bg-zinc-950/50 backdrop-blur-sm z-[200000] flex items-center justify-center p-4 animate-in fade-in duration-100 select-none">
-          <form onSubmit={handleSaveModalKeySelection} className="bg-[#f8f9fa] border border-zinc-200 rounded-xl shadow-2xl max-w-md w-full p-5 space-y-4 animate-in zoom-in-95 duration-100 text-left">
+        <div className="fixed inset-0 bg-zinc-950/50 backdrop-blur-sm z-[200000] flex items-center justify-center p-4 select-none">
+          <form onSubmit={handleSaveModalKeySelection} className="bg-[#f8f9fa] border border-zinc-200 rounded-xl shadow-2xl max-w-md w-full p-5 space-y-4 text-left">
             <div className="space-y-0.5">
               <h3 className="text-base font-black text-zinc-900 tracking-tight">Change Key</h3>
               <p className="text-[11px] font-black text-blue-500">Original {formKey}</p>
@@ -1596,132 +1847,58 @@ export default function SongEditPage() {
           </form>
         </div>
       )}
-      {/* ======================================================= */}
-      {/* ✅ SURGICAL ADDITION: TAP TEMPO CALCULATOR MODAL          */}
-      {/* ======================================================= */}
+
+      {/* TAP TEMPO CALCULATOR MODAL */}
       {isTapBpmModalOpen && (
-        <div className="fixed inset-0 bg-zinc-950/60 backdrop-blur-sm z-[200000] flex items-center justify-center p-4 animate-in fade-in duration-100 select-none">
-          <div className="bg-[#f8f9fa] border border-zinc-200 rounded-2xl shadow-2xl max-w-sm w-full p-6 space-y-6 animate-in zoom-in-95 duration-100 text-center">
-            
+        <div className="fixed inset-0 bg-zinc-950/60 backdrop-blur-sm z-[200000] flex items-center justify-center p-4 select-none">
+          <div className="bg-[#f8f9fa] border border-zinc-200 rounded-2xl shadow-2xl max-w-sm w-full p-6 space-y-6 text-center">
             <div className="space-y-1">
               <h3 className="text-xl font-black text-zinc-900 tracking-tight">Tap Tempo</h3>
               <p className="text-[11px] font-bold text-zinc-500">Tap the button to the beat to calculate the exact BPM.</p>
             </div>
-            
-            {/* Visualizer Display */}
-            {/* ✅ SURGICAL FIX: Click-to-reset, grouped Flexbox wrapping, and idle support */}
-            <div 
-              onClick={() => setTapTimestamps([])}
-              title="Click to reset taps"
-              className="bg-white border rounded-xl p-4 shadow-inner h-28 w-full flex items-center justify-center overflow-hidden cursor-pointer hover:bg-zinc-50 transition-colors relative group"
-            >
-              {/* Subtle hover icon to indicate it's clickable to reset */}
-              <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-5 transition-opacity pointer-events-none">
-                 <span className="text-6xl font-black">↺</span>
-              </div>
-
+            <div onClick={() => setTapTimestamps([])} className="bg-white border rounded-xl p-4 shadow-inner h-28 w-full flex items-center justify-center overflow-hidden cursor-pointer hover:bg-zinc-50 transition-colors relative group">
               {tapTimestamps.length === 0 ? (
-                <span className="text-zinc-400 text-sm font-bold italic relative z-10">Start tapping...</span>
+                <span className="text-zinc-400 text-sm font-bold italic">Start tapping...</span>
               ) : (
-                <div className="flex flex-wrap items-center justify-center gap-y-2 gap-x-4 md:gap-x-5 animate-in fade-in duration-75 w-full relative z-10">
-                  {/* Group timestamps into chunks of 4 so they never break across lines */}
+                <div className="flex flex-wrap items-center justify-center gap-y-2 gap-x-4 w-full">
                   {Array.from({ length: Math.ceil(Math.min(tapTimestamps.length, 48) / 4) }).map((_, groupIdx) => {
                     const totalTaps = Math.min(tapTimestamps.length, 48);
                     const starsInGroup = Math.min(4, totalTaps - groupIdx * 4);
-                    
                     let tapSizeClass = "text-4xl";
                     if (totalTaps > 36) tapSizeClass = "text-xl";
                     else if (totalTaps > 24) tapSizeClass = "text-2xl";
                     else if (totalTaps > 12) tapSizeClass = "text-3xl";
-
                     return (
                       <div key={groupIdx} className="flex gap-1.5 flex-nowrap shrink-0">
-                        {Array.from({ length: starsInGroup }).map((_, starIdx) => (
-                          <span key={starIdx} className={`text-blue-600 font-black leading-none transition-all duration-200 ${tapSizeClass}`}>
-                            *
-                          </span>
-                        ))}
+                        {Array.from({ length: starsInGroup }).map((_, starIdx) => <span key={starIdx} className={`text-blue-600 font-black leading-none ${tapSizeClass}`}>*</span>)}
                       </div>
                     );
                   })}
                 </div>
               )}
             </div>
-
-            {/* Live Readout */}
-            <div className="text-5xl font-black text-zinc-900 tracking-tighter">
-              {formTempo || "--"} <span className="text-sm font-bold text-zinc-400 tracking-normal">BPM</span>
-            </div>
-
-            {/* The Giant Tap Target */}
-            <button 
-              type="button" 
-              onClick={(e) => {
-                e.preventDefault();
-                const now = Date.now();
-                setTapTimestamps(prev => {
-                  // If it's been more than 2.5 seconds since the last tap, clear the array and start over
-                  if (prev.length > 0 && now - prev[prev.length - 1] > 2500) {
-                    return [now];
-                  }
-                  
-                  const newTaps = [...prev, now];
-                  
-                  // Need at least 2 taps to calculate an interval
-                  if (newTaps.length >= 2) {
-                    const intervals = [];
-                    for (let i = 1; i < newTaps.length; i++) {
-                      intervals.push(newTaps[i] - newTaps[i - 1]);
-                    }
-                    // Calculate the rolling average of intervals
-                    const averageInterval = intervals.reduce((sum, val) => sum + val, 0) / intervals.length;
-                    const calculatedBpm = Math.round(60000 / averageInterval);
-                    
-                    setFormTempo(calculatedBpm.toString());
-                    setHasUnsavedChanges(true);
-                  }
-                  return newTaps;
-                });
-              }} 
-              className="w-full h-32 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-black text-3xl uppercase tracking-widest rounded-3xl shadow-[0_8px_30px_rgb(37,99,235,0.3)] active:scale-[0.96] active:shadow-md transition-all select-none flex items-center justify-center"
-            >
-              TAP
-            </button>
-
-            {/* Exit Control */}
-            <button 
-              type="button" 
-              onClick={() => setIsTapBpmModalOpen(false)} 
-              className="w-full py-3.5 bg-zinc-200 hover:bg-zinc-300 text-zinc-700 font-black text-[11px] uppercase tracking-widest rounded-xl transition-colors shadow-sm"
-            >
-              Confirm & Close
-            </button>
-            
+            <div className="text-5xl font-black text-zinc-900 tracking-tighter">{formTempo || "--"} <span className="text-sm font-bold text-zinc-400 tracking-normal">BPM</span></div>
+            <button type="button" onClick={(e) => { e.preventDefault(); const now = Date.now(); setTapTimestamps(prev => { if (prev.length > 0 && now - prev[prev.length - 1] > 2500) return [now]; const newTaps = [...prev, now]; if (newTaps.length >= 2) { const intervals = []; for (let i = 1; i < newTaps.length; i++) intervals.push(newTaps[i] - newTaps[i - 1]); const averageInterval = intervals.reduce((sum, val) => sum + val, 0) / intervals.length; setFormTempo(Math.round(60000 / averageInterval).toString()); setHasUnsavedChanges(true); } return newTaps; }); }} className="w-full h-32 bg-blue-600 text-white font-black text-3xl rounded-3xl shadow-lg flex items-center justify-center">TAP</button>
+            <button type="button" onClick={() => setIsTapBpmModalOpen(false)} className="w-full py-3.5 bg-zinc-200 text-zinc-700 font-black text-[11px] uppercase rounded-xl">Confirm & Close</button>
           </div>
         </div>
       )}
-      {/* ======================================================= */}
-      {/* ✅ SURGICAL ADDITION: SAVE ENGINE OVERLAY                 */}
-      {/* ======================================================= */}
+
+      {/* SAVE ENGINE OVERLAY */}
       {saveStatus !== "idle" && (
         <div className="fixed inset-0 bg-zinc-950/70 backdrop-blur-sm z-[300000] flex items-center justify-center p-4 select-none">
-          
-          {/* Keyframes for the blobs */}
           <style dangerouslySetInnerHTML={{__html: `
             @keyframes dart-x { 0%, 100% { transform: translateX(0) scale(1); } 2%, 6% { transform: translateX(30px) scale(0.9, 1.1) rotate(5deg); } 8%, 50% { transform: translateX(30px) scale(1) rotate(5deg); } 52%, 56% { transform: translateX(-15px) scale(1.1, 0.9) rotate(-2deg); } 58%, 95% { transform: translateX(-15px) scale(1) rotate(-2deg); } }
             @keyframes morph-squish { 0%, 100% { transform: scale(1) rotate(0deg); } 25% { transform: scale(1.2, 0.8) rotate(10deg); } 50% { transform: scale(0.9, 1.15) rotate(-5deg); } 75% { transform: scale(1.05, 0.95) rotate(15deg); } }
             @keyframes float-spin { 0%, 100% { transform: translateY(0) rotate(0deg); } 50% { transform: translateY(-20px) rotate(180deg); } }
             @keyframes pulse-ghost { 0%, 100% { transform: scale(1); opacity: 0.7; } 30% { transform: scale(1.6); opacity: 0.1; } 40% { transform: scale(0.8); opacity: 0.9; } }
             @keyframes blink { 0%, 96%, 100% { transform: scaleY(1); opacity: 1; } 98% { transform: scaleY(0.1); opacity: 0; } }
-            
             .animate-dart-x { animation: dart-x 7s cubic-bezier(0.34, 1.56, 0.64, 1) infinite; }
             .animate-morph-squish { animation: morph-squish 5s ease-in-out infinite; }
             .animate-float-spin { animation: float-spin 19s ease-in-out infinite; }
             .animate-pulse-ghost { animation: pulse-ghost 7s ease-in-out infinite; }
             .animate-blink { animation: blink 4s infinite; transform-origin: center; }
           `}} />
-
-          {/* Dynamic Background Blobs based on State */}
           <div className="absolute inset-0 overflow-hidden pointer-events-none">
             {saveStatus === "saving" && (
               <>
@@ -1742,50 +1919,34 @@ export default function SongEditPage() {
               </>
             )}
           </div>
-
-          {/* The Modal Card */}
           <div className="bg-white rounded-[2rem] shadow-2xl p-8 max-w-sm w-full relative z-10 text-center animate-in zoom-in-95 duration-200">
-            
             {saveStatus === "saving" && (
               <>
-                <div className="w-16 h-16 border-4 border-blue-100 border-t-blue-600 rounded-full animate-spin mx-auto mb-6 shadow-sm" />
+                <div className="w-16 h-16 border-4 border-blue-100 border-t-blue-600 rounded-full animate-spin mx-auto mb-6" />
                 <h3 className="text-xl font-black tracking-tight text-zinc-900">Saving Matrix...</h3>
                 <p className="text-[13px] font-bold text-zinc-500 mt-2">Writing arrangement to secure database.</p>
               </>
             )}
-
             {saveStatus === "success" && (
-              <div className="animate-in slide-in-from-bottom-2 duration-300">
-                <div className="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center text-3xl mx-auto mb-6 shadow-sm border border-green-200">
-                  <span className="font-black">✓</span>
-                </div>
+              <div>
+                <div className="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center text-3xl mx-auto mb-6">✓</div>
                 <h3 className="text-xl font-black tracking-tight text-zinc-900">Saved Successfully</h3>
                 <p className="text-[13px] font-bold text-zinc-500 mt-2">Your changes have been safely logged.</p>
               </div>
             )}
-
             {saveStatus === "error" && (
-              <div className="animate-in slide-in-from-bottom-2 duration-300">
-                <div className="w-16 h-16 bg-red-100 text-red-600 rounded-full flex items-center justify-center text-3xl mx-auto mb-6 shadow-sm border border-red-200">
-                  <span className="font-black">✕</span>
-                </div>
+              <div>
+                <div className="w-16 h-16 bg-red-100 text-red-600 rounded-full flex items-center justify-center text-3xl mx-auto mb-6">✕</div>
                 <h3 className="text-xl font-black tracking-tight text-zinc-900">Save Failed</h3>
                 <div className="bg-red-50 border border-red-100 rounded-xl p-3 mt-4 mb-6">
                   <p className="text-[11px] font-bold text-red-600 font-mono break-words">{saveErrorMessage}</p>
                 </div>
-                <button 
-                  onClick={() => setSaveStatus("idle")} 
-                  className="w-full py-3.5 bg-zinc-900 hover:bg-zinc-800 text-white rounded-xl font-black text-xs uppercase tracking-wider transition-colors active:scale-95 shadow-md"
-                >
-                  Close & Try Again
-                </button>
+                <button onClick={() => setSaveStatus("idle")} className="w-full py-3.5 bg-zinc-900 text-white rounded-xl font-black text-xs uppercase shadow-md">Close & Try Again</button>
               </div>
             )}
-
           </div>
         </div>
       )}
     </div>
-    
   );
 }
