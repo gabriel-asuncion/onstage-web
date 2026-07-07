@@ -15,6 +15,8 @@ interface SongRecord {
   artist: string;
   original_key: string;
   tempo: number;
+  youtube_url?: string;             // ✅ SURGICAL ADDITION
+  youtube_sync_offset_ms?: number;  // ✅ SURGICAL ADDITION
   section_timings?: {
     [sectionName: string]: { 
       measures: number; 
@@ -58,6 +60,16 @@ const BASE_LETTER_ROOTS = ["C", "D", "E", "F", "G", "A", "B"];
 const normalizeKeyNote = (note: string): string => {
   const flatMap: { [key: string]: string } = { "Db": "C#", "Eb": "D#", "Gb": "F#", "Ab": "G#", "Bb": "A#" };
   return flatMap[note] || note;
+};
+
+const getSectionBadgeStyle = (name: string): string => {
+  const lower = name.toLowerCase();
+  if (lower.includes('verse')) return "border-cyan-200 text-cyan-500 bg-cyan-50/30";
+  if (lower.includes('chorus')) return "border-orange-200 text-orange-500 bg-orange-50/30";
+  if (lower.includes('bridge')) return "border-purple-200 text-purple-500 bg-purple-50/30";
+  if (lower.includes('outro') || lower.includes('tag')) return "border-emerald-200 text-emerald-500 bg-emerald-50/30";
+  if (lower.includes('pre')) return "border-blue-200 text-blue-500 bg-blue-50/30";
+  return "border-zinc-200 text-zinc-500 bg-zinc-50/30"; // Interludes, Instrumentals, etc.
 };
 
 const transposeBracketContent = (contentStr: string, semitones: number): string => {
@@ -157,6 +169,8 @@ const fetchAndDecodeAudio = async (url: string, key: string) => {
   }
 };
 
+
+
 const playZeroLatencyAudio = (key: string, volume: number = 1.0, time: number = 0) => {
   if (!globalAudioContext || !audioBufferCache[key]) return;
   const source = globalAudioContext.createBufferSource();
@@ -187,12 +201,18 @@ export default function MasterSongProfilePage() {
 
   const [loading, setLoading] = useState(true);
   const [song, setSong] = useState<SongRecord | null>(null);
+  const [originalSections, setOriginalSections] = useState<ArrangementSection[]>([]);
+  const [localSections, setLocalSections] = useState<ArrangementSection[]>([]);
   const [sections, setSections] = useState<ArrangementSection[]>([]);
   const [activeDisplayKey, setActiveDisplayKey] = useState<string>("G");
+
+  const [activeSettingsPane, setActiveSettingsPane] = useState<"main" | "structure">("main");
+  const [isAddingSection, setIsAddingSection] = useState(false);
   
   // Custom Workspace Preferences Control States
   const [isPrefsModalOpen, setIsPrefsModalOpen] = useState(false);
   const [showChords, setShowChords] = useState(true);
+  const [chordFormat, setChordFormat] = useState<"key" | "numbers">("key"); // ✅ NEW: Chord Format
   const [lyricsFontSize, setLyricsFontSize] = useState<"default" | "medium" | "large" | "huge">("default");
   const [lineSpacing, setLineSpacing] = useState<"default" | "medium" | "large">("default");
 
@@ -228,6 +248,15 @@ export default function MasterSongProfilePage() {
     else if (simulatedRole === "member") setIsAdmin(false);
   }, [simulatedRole]);
 
+  useEffect(() => {
+    if (!isPrefsModalOpen) {
+      setTimeout(() => {
+        setActiveSettingsPane("main");
+        setIsAddingSection(false);
+      }, 200); // Wait for fade-out animation
+    }
+  }, [isPrefsModalOpen]);
+
   async function loadMasterSongProfile() {
     try {
       setLoading(true);
@@ -242,6 +271,8 @@ export default function MasterSongProfilePage() {
             .select("role")
             .eq("id", authData.user.id)
             .maybeSingle();
+          
+          
           if (profile?.role === "admin") setIsAdmin(true);
         }
       }
@@ -266,6 +297,10 @@ export default function MasterSongProfilePage() {
         .eq("song_id", songId)
         .order("sequence_order", { ascending: true });
 
+      // ✅ SURGICAL FIX: Populate both states
+      setOriginalSections(sectionsData || []);
+      setLocalSections(sectionsData || []);
+
       setSections(sectionsData || []);
     } catch (err) {
       console.error("Profile pipeline loading failure:", err);
@@ -278,9 +313,14 @@ export default function MasterSongProfilePage() {
     if (songId) loadMasterSongProfile();
   }, [songId]);
 
-  // Preload Audio Cues for this specific song
+  // Preload Audio Cues & Metronome for this specific song
   useEffect(() => {
     if (typeof window === "undefined" || sections.length === 0) return;
+    
+    // ✅ SURGICAL ADDITION: Preload the click track into hardware cache
+    fetchAndDecodeAudio('/sound_files/metronome_1.wav', 'metronome_1');
+    fetchAndDecodeAudio('/sound_files/metronome_2.wav', 'metronome_2');
+
     const uniqueRequiredFiles = new Set<string>();
     sections.forEach(section => {
       const fileName = normalizeSectionNameToAudioFile(section.section_name);
@@ -350,7 +390,7 @@ export default function MasterSongProfilePage() {
   }, [song, activeDisplayKey]);
 
   const memoizedSongAstTree = useMemo(() => {
-    return sections.map((section): CompiledSectionToken => {
+    return localSections.map((section): CompiledSectionToken => {
       const rawText = section.content || "";
       if (!rawText.trim()) {
         return { 
@@ -385,27 +425,74 @@ export default function MasterSongProfilePage() {
         lines: linesArray
       };
     });
-  }, [sections]);
+  }, [localSections]);
 
   // =======================================================
   // DECOUPLED LOCAL HARDWARE PRACTICE ENGINE
   // =======================================================
   
+  // =======================================================
+  // ✅ SURGICAL REPLACEMENT: THE ZERO-LATENCY HARDWARE SCHEDULER
+  // =======================================================
+  
+  function executeStartSequence(useCountdown: boolean, forcedStartTimestamp?: number, isYtSource: boolean = false) {
+    isYtBackingTrackStartRef.current = isYtSource;
+    currentSectionIndexRef.current = currentSectionIndex;
+    lastAudioBeatRef.current = beatMapRef.current.sectionStartBeats[currentSectionIndex] || 0;
+    
+    isPlayingRef.current = true;
+    setIsPlayingFlow(true);
+    hasPlayedCueRef.current = false;
+    
+    const delayMs = useCountdown ? 3150 : 150; 
+    sectionStartTimeRef.current = forcedStartTimestamp ?? (getGlobalTime() + delayMs);
+  }
+
+  function executeStopSequence() {
+    isPlayingRef.current = false;
+    setIsPlayingFlow(false);
+    hasPlayedCueRef.current = false;
+    setQueuedSectionIndex(null);
+    pendingQuantizedJumpRef.current = null;
+    
+    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+    if (backdropProgressRef.current) backdropProgressRef.current.style.transform = `scaleX(0)`;
+    if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = `scaleX(0)`;
+
+    if (lastHighlightedSectionRef.current !== null && activeLineIndexRef.current !== null) {
+      const prevEl = document.getElementById(`line-${lastHighlightedSectionRef.current}-${activeLineIndexRef.current}`);
+      if (prevEl) prevEl.classList.remove('bg-blue-50/50', 'border-blue-500', 'pl-3');
+    }
+    activeLineIndexRef.current = null;
+    lastHighlightedSectionRef.current = null;
+    
+    scheduledClicksRef.current.forEach(click => {
+      try { click.source.stop(); click.source.disconnect(); } catch(e) {}
+    });
+    scheduledClicksRef.current = [];
+    
+    if (isYtPlayerReadyRef.current && ytPlayerRef.current && typeof ytPlayerRef.current.pauseVideo === 'function') {
+      try { ytPlayerRef.current.pauseVideo(); } catch(e) {}
+    }
+  }
+
   const handleTogglePlayState = () => {
+    initAudioContext();
     if (isPlayingFlow) {
-      isPlayingRef.current = false;
-      setIsPlayingFlow(false);
-      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-      if (backdropProgressRef.current) backdropProgressRef.current.style.transform = `scaleX(0)`;
-      if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = `scaleX(0)`;
+      executeStopSequence();
     } else {
       if (!song || memoizedSongAstTree.length === 0) return;
-      initAudioContext(); // Unlock browser audio engine
-      isPlayingRef.current = true;
-      setIsPlayingFlow(true);
-      
-      currentSectionIndexRef.current = currentSectionIndex;
-      sectionStartTimeRef.current = performance.now();
+      if (isYoutubeSyncEnabled && song.youtube_url) {
+        if (isYtPlayerReadyRef.current && ytPlayerRef.current && typeof ytPlayerRef.current.playVideo === 'function') {
+          setIsYtBuffering(true);
+          ytSyncPendingRef.current = true;
+          try { ytPlayerRef.current.seekTo(0); ytPlayerRef.current.playVideo(); } catch(e) {}
+        } else {
+          executeStartSequence(true);
+        }
+      } else {
+        executeStartSequence(true);
+      }
     }
   };
 
@@ -414,95 +501,192 @@ export default function MasterSongProfilePage() {
 
     const clockExecutionTick = () => {
       if (!isPlayingRef.current) return;
-
-      const idx = currentSectionIndexRef.current;
-      const activeSection = memoizedSongAstTree[idx];
       
-      if (!activeSection) {
-        isPlayingRef.current = false;
-        setIsPlayingFlow(false);
-        if (backdropProgressRef.current) backdropProgressRef.current.style.transform = `scaleX(0)`;
-        if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = `scaleX(0)`;
+      const elapsedMs = getGlobalTime() - sectionStartTimeRef.current;
+      
+      // 1. Visual Countdown Engine
+      if (elapsedMs < -500 && !isYtBackingTrackStartRef.current) {
+        const secondsLeft = Math.ceil(Math.abs(elapsedMs) / 1000);
+        if (secondsLeft <= 3 && secondsLeft > 0) {
+          if (countdownValueRef.current !== secondsLeft) {
+            countdownValueRef.current = secondsLeft;
+            setCountdownValue(secondsLeft);
+          }
+        }
+        animationFrameRef.current = requestAnimationFrame(clockExecutionTick);
+        return; 
+      } else if (elapsedMs < 0) {
+        if (countdownValueRef.current !== null) {
+          countdownValueRef.current = null;
+          setCountdownValue(null);
+        }
+        animationFrameRef.current = requestAnimationFrame(clockExecutionTick);
         return;
       }
 
-      const timings = song.section_timings?.[activeSection.section_name] || { measures: 4, beats: 0, repeats: 0, head_m: 0, tail_m: 0 };
-      const sectionMultiplier = (timings.repeats || 0) + 1;
-      const headBeats = (timings.head_m || 0) * 4;
-      const tailBeats = (timings.tail_m || 0) * 4;
-      const baseBeats = (timings.measures * 4) + (timings.beats || 0);
+      if (countdownValueRef.current !== null) {
+        countdownValueRef.current = null;
+        setCountdownValue(null);
+      }
 
-      let totalBeats = (baseBeats * sectionMultiplier) + headBeats + tailBeats;
-      if (totalBeats <= 0) totalBeats = 32;
+      const beatSpeedSecs = 60 / (song.tempo || 75);
+      const beatSpeedMs = beatSpeedSecs * 1000;
+      
+      // 2. Hardware Metronome Lookahead
+      if (globalAudioContext) {
+        const currentAudioTime = globalAudioContext.currentTime;
+        const lookaheadSecs = 0.2; 
+        
+        let theoreticalSongStartOffset = beatMapRef.current.sectionStartBeats[currentSectionIndexRef.current] * beatSpeedSecs;
+        let hardwareGridAnchor = (sectionStartTimeRef.current - getGlobalTime()) / 1000 + currentAudioTime;
+        let nextBeatTime = hardwareGridAnchor + (lastAudioBeatRef.current * beatSpeedSecs);
 
-      const tempo = song.tempo || 75;
-      const msPerBeat = 60000 / tempo;
-      const sectionDurationMs = msPerBeat * totalBeats;
+        while (nextBeatTime < currentAudioTime + lookaheadSecs) {
+          if (pendingQuantizedJumpRef.current) {
+            const timeUntilBeatSecs = nextBeatTime - currentAudioTime;
+            const exactGlobalBeatTime = getGlobalTime() + (timeUntilBeatSecs * 1000);
+            if (exactGlobalBeatTime >= pendingQuantizedJumpRef.current.jumpTime - 10) break;
+          }
 
-      const elapsedMs = performance.now() - sectionStartTimeRef.current;
-      const progressRatio = Math.min(1, elapsedMs / sectionDurationMs);
-
-      // Hardware accelerated DOM update for BOTH bars
-      if (backdropProgressRef.current) backdropProgressRef.current.style.transform = `scaleX(${progressRatio})`;
-      if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = `scaleX(${progressRatio})`;
-
-      // Guide Cue Trigger
-      const remainingBeats = (sectionDurationMs - elapsedMs) / msPerBeat;
-      if (remainingBeats <= 4.05 && remainingBeats > 0 && !hasPlayedCueRef.current) {
-        hasPlayedCueRef.current = true;
-        const nextIndex = idx + 1;
-        if (nextIndex < memoizedSongAstTree.length) {
-          playGuideCue(memoizedSongAstTree[nextIndex].section_name);
+          if (lastAudioBeatRef.current < beatMapRef.current.nodes.length) {
+            const beatNode = beatMapRef.current.nodes[lastAudioBeatRef.current];
+            const pulse = beatNode.isDownbeat ? 1 : 2;
+            
+            // ✅ SURGICAL FIX: Clean Metronome scheduling
+            if (isMetronomeEnabledRef.current) {
+              initAudioContext();
+              triggerMetronomeSound(pulse, nextBeatTime);
+              
+              if (isDoubleMetronomeRef.current) {
+                // Schedule the 8th note exactly halfway to the next beat
+                triggerMetronomeSound(2, nextBeatTime + (beatSpeedSecs / 2)); 
+              }
+            }
+          }
+          lastAudioBeatRef.current++;
+          lastAudioBeatRef.current++;
+          nextBeatTime = hardwareGridAnchor + (lastAudioBeatRef.current * beatSpeedSecs);
         }
       }
 
-      // When the bar hits exactly 100%, Auto-Advance to the next section!
-      if (elapsedMs >= sectionDurationMs) {
-        sectionStartTimeRef.current += sectionDurationMs; 
-        hasPlayedCueRef.current = false; // Reset cue lock for the new section
+      // 3. UI Progress Bar & Quantized Jumps
+      const activeIdx = currentSectionIndexRef.current;
+      const sectionStartAbsoluteBeat = beatMapRef.current.sectionStartBeats[activeIdx] || 0;
+      let nextSectionStartBeat = beatMapRef.current.sectionStartBeats[activeIdx + 1];
+      if (nextSectionStartBeat === undefined) nextSectionStartBeat = beatMapRef.current.nodes.length;
+      
+      const totalSectionBeats = nextSectionStartBeat - sectionStartAbsoluteBeat;
+      const sectionDurationMs = totalSectionBeats * beatSpeedMs;
+      const progressRatio = Math.min(1, Math.max(0, elapsedMs / sectionDurationMs));
+
+      if (backdropProgressRef.current) backdropProgressRef.current.style.transform = `scaleX(${progressRatio})`;
+      if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = `scaleX(${progressRatio})`;
+
+      // ✅ SURGICAL ADDITION: 60FPS Hardware Line Highlighting
+      const activeSectionObj = memoizedSongAstTree[activeIdx];
+      if (activeSectionObj && activeSectionObj.lines.length > 0) {
+        // Calculate which line we are currently on based on section progress
+        const currentLineIndex = Math.min(activeSectionObj.lines.length - 1, Math.floor(progressRatio * activeSectionObj.lines.length));
         
-        const nextIndex = idx + 1;
-        if (nextIndex < memoizedSongAstTree.length) {
-          currentSectionIndexRef.current = nextIndex;
-          setCurrentSectionIndex(nextIndex);
-          
-          const targetSection = memoizedSongAstTree[nextIndex];
-          if (targetSection) {
-            const targetElement = sectionRefs.current[targetSection.id];
-            if (targetElement) targetElement.scrollIntoView({ behavior: "smooth", block: "center" });
+        if (activeLineIndexRef.current !== currentLineIndex || lastHighlightedSectionRef.current !== activeIdx) {
+          // Remove highlight from previous line
+          if (lastHighlightedSectionRef.current !== null && activeLineIndexRef.current !== null) {
+            const prevEl = document.getElementById(`line-${lastHighlightedSectionRef.current}-${activeLineIndexRef.current}`);
+            if (prevEl) prevEl.classList.remove('bg-blue-50/50', 'border-blue-500', 'pl-3');
           }
-        } else {
-          isPlayingRef.current = false;
-          setIsPlayingFlow(false);
-          if (backdropProgressRef.current) backdropProgressRef.current.style.transform = `scaleX(0)`;
-          if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = `scaleX(0)`;
-          return;
+          // Add highlight to active line
+          const newEl = document.getElementById(`line-${activeIdx}-${currentLineIndex}`);
+          if (newEl) newEl.classList.add('bg-blue-50/50', 'border-blue-500', 'pl-3');
+          
+          activeLineIndexRef.current = currentLineIndex;
+          lastHighlightedSectionRef.current = activeIdx;
         }
+      }
+
+      if (lastHighlightedSectionRef.current !== null && activeLineIndexRef.current !== null) {
+      const prevEl = document.getElementById(`line-${lastHighlightedSectionRef.current}-${activeLineIndexRef.current}`);
+      if (prevEl) prevEl.classList.remove('bg-blue-50/50', 'border-blue-500', 'pl-3');
+    }
+    activeLineIndexRef.current = null;
+    lastHighlightedSectionRef.current = null;
+
+      // Guide Cues
+      const remainingMs = sectionDurationMs - elapsedMs;
+      if (remainingMs <= 4050 && remainingMs > 0 && !hasPlayedCueRef.current) {
+        hasPlayedCueRef.current = true;
+        const targetNextIdx = pendingQuantizedJumpRef.current ? pendingQuantizedJumpRef.current.sectionIndex : activeIdx + 1;
+        if (targetNextIdx < memoizedSongAstTree.length) {
+          playGuideCue(memoizedSongAstTree[targetNextIdx].section_name);
+        }
+      }
+
+      // Execute Jump or Auto-Advance
+      if (elapsedMs >= sectionDurationMs) {
+        if (pendingQuantizedJumpRef.current) {
+          currentSectionIndexRef.current = pendingQuantizedJumpRef.current.sectionIndex;
+          setCurrentSectionIndex(pendingQuantizedJumpRef.current.sectionIndex);
+          sectionStartTimeRef.current = pendingQuantizedJumpRef.current.jumpTime;
+          lastAudioBeatRef.current = beatMapRef.current.sectionStartBeats[pendingQuantizedJumpRef.current.sectionIndex];
+          setQueuedSectionIndex(null);
+          pendingQuantizedJumpRef.current = null;
+        } else {
+          const nextIndex = activeIdx + 1;
+          if (nextIndex < memoizedSongAstTree.length) {
+            currentSectionIndexRef.current = nextIndex;
+            setCurrentSectionIndex(nextIndex);
+            sectionStartTimeRef.current += sectionDurationMs;
+          } else {
+            executeStopSequence();
+            return;
+          }
+        }
+        
+        hasPlayedCueRef.current = false;
+        const targetElement = sectionRefs.current[memoizedSongAstTree[currentSectionIndexRef.current].id];
+        if (targetElement) targetElement.scrollIntoView({ behavior: "smooth", block: "center" });
       }
 
       animationFrameRef.current = requestAnimationFrame(clockExecutionTick);
     };
 
     animationFrameRef.current = requestAnimationFrame(clockExecutionTick);
-
     return () => {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
   }, [isPlayingFlow]); 
 
-  // =======================================================
-  // UI HANDLERS
-  // =======================================================
+  // Interactive Section Jumping
   function handleSectionClick(idx: number) {
-    currentSectionIndexRef.current = idx;
-    setCurrentSectionIndex(idx);
-    
-    if (isPlayingRef.current) {
-      sectionStartTimeRef.current = performance.now();
-      hasPlayedCueRef.current = false; // Reset cue lock when jumping
+    if (isPlayingFlow) {
+      if (idx === currentSectionIndex) return;
+      
+      const beatSpeedMs = (60 / (song?.tempo || 75)) * 1000;
+      const measureDurationMs = beatSpeedMs * 4; 
+      const elapsed = getGlobalTime() - sectionStartTimeRef.current;
+      const timeToNextMeasure = measureDurationMs - (elapsed % measureDurationMs);
+      const jumpTime = getGlobalTime() + timeToNextMeasure;
+
+      pendingQuantizedJumpRef.current = { sectionIndex: idx, jumpTime };
+      setQueuedSectionIndex(idx);
+      
+      if (globalAudioContext) {
+        const audioJumpTime = globalAudioContext.currentTime + (timeUntilJumpSecs => timeUntilJumpSecs / 1000)(jumpTime - getGlobalTime());
+        scheduledClicksRef.current.forEach(click => {
+          if (click.audioTime >= audioJumpTime - 0.05) {
+            try { click.source.stop(); click.source.disconnect(); } catch(e) {}
+          }
+        });
+        scheduledClicksRef.current = scheduledClicksRef.current.filter(click => click.audioTime < audioJumpTime - 0.05);
+      }
+    } else {
+      currentSectionIndexRef.current = idx;
+      setCurrentSectionIndex(idx);
     }
   }
 
+  // =======================================================
+  // UI HANDLERS
+  // =======================================================
   function handleOpenTransposerModal() {
     if (!song) return;
     const cleanKeyBase = activeDisplayKey.endsWith("m") ? activeDisplayKey.slice(0, -1) : activeDisplayKey;
@@ -538,6 +722,173 @@ export default function MasterSongProfilePage() {
     medium: "py-3 gap-5",
     large: "py-5 gap-6"
   }[lineSpacing];
+
+  // =======================================================
+  // ✅ SURGICAL ADDITION: SOLO PRACTICE HARDWARE ENGINES
+  // =======================================================
+  const getGlobalTime = () => performance.now();
+  
+  const [countdownValue, setCountdownValue] = useState<number | null>(null);
+  const countdownValueRef = useRef<number | null>(null);
+  const [queuedSectionIndex, setQueuedSectionIndex] = useState<number | null>(null);
+  
+  const [isMetronomeSoundEnabled, setIsMetronomeSoundEnabled] = useState(false);
+  const [isDoubleMetronomeEnabled, setIsDoubleMetronomeEnabled] = useState(false);
+  const [localClickVolume, setLocalClickVolume] = useState(0.8);
+  const isMetronomeEnabledRef = useRef(false);
+  const isDoubleMetronomeRef = useRef(false);
+  const localClickVolumeRef = useRef(0.8);
+
+  const [isYoutubeSyncEnabled, setIsYoutubeSyncEnabled] = useState(false);
+  const [youtubeVolume, setYoutubeVolume] = useState(0.8);
+  const [isYtBuffering, setIsYtBuffering] = useState(false);
+  
+  const ytPlayerRef = useRef<any>(null);
+  const isYtPlayerReadyRef = useRef(false);
+  const loadedVideoIdRef = useRef<string | null>(null);
+  const isYtBackingTrackStartRef = useRef(false);
+  const ytSyncPendingRef = useRef(false);
+
+  const pendingQuantizedJumpRef = useRef<{ sectionIndex: number; jumpTime: number } | null>(null);
+  const scheduledClicksRef = useRef<{ source: AudioBufferSourceNode, audioTime: number }[]>([]);
+  const lastAudioBeatRef = useRef<number>(0);
+  const beatMapRef = useRef<{ nodes: { isDownbeat: boolean, sectionIndex: number }[], sectionStartBeats: number[] }>({ nodes: [], sectionStartBeats: [] });
+
+  const activeLineIndexRef = useRef<number | null>(null);
+  const lastHighlightedSectionRef = useRef<number | null>(null);
+
+  // ✅ SURGICAL ADDITION: Bulletproof Metronome Trigger
+  const triggerMetronomeSound = (beatNum: number, time: number) => {
+    if (!globalAudioContext) return;
+    const targetKey = beatNum === 1 ? "metronome_1" : "metronome_2";
+    if (!audioBufferCache[targetKey]) return;
+    
+    try {
+      const source = globalAudioContext.createBufferSource();
+      source.buffer = audioBufferCache[targetKey];
+      const gain = globalAudioContext.createGain();
+      
+      // If it's a double metronome 8th note, drop the volume slightly
+      gain.gain.value = localClickVolumeRef.current * (beatNum === 2 && isDoubleMetronomeRef.current ? 0.7 : 1.0);
+      
+      source.connect(gain);
+      gain.connect(globalAudioContext.destination);
+      source.start(time);
+      
+      scheduledClicksRef.current.push({ source, audioTime: time });
+      source.onended = () => {
+        const idx = scheduledClicksRef.current.findIndex(s => s.source === source);
+        if (idx > -1) scheduledClicksRef.current.splice(idx, 1);
+      };
+    } catch(e) { console.warn("Metronome trigger failed", e) }
+  };
+
+  // Sync state to refs for the hardware loop
+  useEffect(() => { isMetronomeEnabledRef.current = isMetronomeSoundEnabled; }, [isMetronomeSoundEnabled]);
+  useEffect(() => { isDoubleMetronomeRef.current = isDoubleMetronomeEnabled; }, [isDoubleMetronomeEnabled]);
+  useEffect(() => { localClickVolumeRef.current = localClickVolume; }, [localClickVolume]);
+  
+  useEffect(() => {
+    if (isYtPlayerReadyRef.current && ytPlayerRef.current && typeof ytPlayerRef.current.setVolume === 'function') {
+      try { ytPlayerRef.current.setVolume(youtubeVolume * 100); } catch(e) {}
+    }
+  }, [youtubeVolume]);
+
+  // Load preferences from cache
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      if (localStorage.getItem("wm_prefs_clickOn") === "true") setIsMetronomeSoundEnabled(true);
+      if (localStorage.getItem("wm_prefs_doubleMetronome") === "true") setIsDoubleMetronomeEnabled(true);
+      
+      const savedFormat = localStorage.getItem("wm_prefs_chordFormat");
+      if (savedFormat === "numbers" || savedFormat === "key") setChordFormat(savedFormat);
+      const vol = localStorage.getItem("wm_prefs_clickVolume");
+      if (vol) setLocalClickVolume(Number(vol));
+      const ytVol = localStorage.getItem("wm_prefs_ytVolume");
+      if (ytVol) setYoutubeVolume(Number(ytVol));
+    }
+  }, []);
+
+  // Generate the Master Beat Map for the song
+  useEffect(() => {
+    if (!song || memoizedSongAstTree.length === 0) return;
+    const nodes: { isDownbeat: boolean, sectionIndex: number }[] = [];
+    const sectionStartBeats: number[] = [];
+    
+    memoizedSongAstTree.forEach((section, idx) => {
+      sectionStartBeats.push(nodes.length);
+      const timings = song.section_timings?.[section.section_name] || { measures: 4, beats: 0, head_m: 0, tail_m: 0, repeats: 0 };
+      const sectionMultiplier = (timings.repeats || 0) + 1;
+      const totalBeats = (((timings.measures * 4) + (timings.beats || 0)) * sectionMultiplier) + ((timings.head_m || 0) * 4) + ((timings.tail_m || 0) * 4);
+      
+      for (let i = 0; i < (totalBeats || 32); i++) {
+        nodes.push({ isDownbeat: i % 4 === 0, sectionIndex: idx });
+      }
+    });
+    beatMapRef.current = { nodes, sectionStartBeats };
+  }, [song, memoizedSongAstTree]);
+
+  // YouTube Pre-Warm Engine
+  useEffect(() => {
+    if (!song?.youtube_url || !isYoutubeSyncEnabled) return;
+    const match = song.youtube_url.match(/^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/);
+    const videoId = match && match[2].length === 11 ? match[2] : null;
+    if (!videoId) return;
+
+    const initPlayer = () => {
+      if (!(window as any).YT || !(window as any).YT.Player) {
+        setTimeout(initPlayer, 200);
+        return;
+      }
+      
+      if (ytPlayerRef.current && isYtPlayerReadyRef.current && typeof ytPlayerRef.current.cueVideoById === 'function') {
+        if (loadedVideoIdRef.current !== videoId) {
+          loadedVideoIdRef.current = videoId;
+          try { ytPlayerRef.current.cueVideoById(videoId); } catch(e) {}
+        }
+      } else if (!ytPlayerRef.current) {
+        loadedVideoIdRef.current = videoId;
+        ytPlayerRef.current = new (window as any).YT.Player('yt-solo-player-container', {
+          height: '10px', width: '10px', videoId: videoId,
+          playerVars: { 'playsinline': 1, 'controls': 0, 'disablekb': 1 },
+          events: {
+            'onReady': (event: any) => {
+              isYtPlayerReadyRef.current = true;
+              event.target.setVolume(youtubeVolume * 100);
+              event.target.mute();
+              event.target.playVideo();
+              setTimeout(() => {
+                try { event.target.pauseVideo(); event.target.seekTo(0); event.target.unMute(); } catch(e) {}
+              }, 500);
+            },
+            'onStateChange': (event: any) => {
+              if (event.data === 1 && ytSyncPendingRef.current) {
+                ytSyncPendingRef.current = false;
+                setIsYtBuffering(false);
+                const currentVideoTimeMs = (event.target.getCurrentTime() || 0) * 1000;
+                const offsetMs = song.youtube_sync_offset_ms || 0;
+                executeStartSequence(false, getGlobalTime() + (offsetMs - currentVideoTimeMs), true);
+              }
+            }
+          }
+        });
+      }
+    };
+
+    if (!(window as any).YT) {
+      const tag = document.createElement('script');
+      tag.src = "https://www.youtube.com/iframe_api";
+      const firstScriptTag = document.getElementsByTagName('script')[0];
+      firstScriptTag?.parentNode?.insertBefore(tag, firstScriptTag);
+    }
+    initPlayer();
+
+    return () => {
+      if (isYtPlayerReadyRef.current && ytPlayerRef.current && typeof ytPlayerRef.current.pauseVideo === 'function') {
+        try { ytPlayerRef.current.pauseVideo(); } catch(e) {}
+      }
+    };
+  }, [song?.youtube_url, isYoutubeSyncEnabled, youtubeVolume]);
 
   if (loading) {
     return <GlobalLoader message="SYNCING MASTER SHEET ENGINE..." />;
@@ -612,24 +963,16 @@ export default function MasterSongProfilePage() {
                   : "bg-blue-600 border-blue-500 text-white shadow-sm"
               }`}
             >
-              {isPlayingFlow ? "⏹ STOP" : "▶ PLAY"}
+              {isPlayingFlow ? "⏹" : "▶"}
             </button>
-            
-            <button
-              type="button"
-              onClick={handleOpenTransposerModal}
-              className="bg-white border border-zinc-200 rounded-xl p-2.5 px-3.5 text-xs font-bold text-zinc-400 shadow-sm flex items-center gap-1 hover:border-blue-500 hover:text-blue-600 transition-colors cursor-pointer h-10"
-            >
-              KEY <span className="text-blue-600 font-black text-sm">{activeDisplayKey}</span>
-            </button>
-
+               
             <button
               type="button"
               onClick={() => setIsPrefsModalOpen(true)}
               className="w-10 h-10 bg-white hover:bg-zinc-50 border border-zinc-200 text-zinc-700 font-bold text-sm rounded-xl shadow-sm flex items-center justify-center cursor-pointer hover:border-blue-500 hover:text-blue-600 transition-colors"
               title="Open Console Settings Preferences"
             >
-              🎛️
+              <img alt="Settings" class="w-3 h-3 opacity-60" src="/assets/settings.svg"></img>
             </button>
           </div>
 
@@ -655,7 +998,9 @@ export default function MasterSongProfilePage() {
                 ref={(el) => { sectionRefs.current[section.id] = el; }}
                 onClick={() => handleSectionClick(idx)}
                 className={`bg-white border border-zinc-200 rounded-2xl p-6 shadow-sm relative transition-all duration-300 cursor-pointer hover:border-blue-300 ${
-                  currentSectionIndex === idx ? "border-blue-500 ring-4 ring-blue-500/10 shadow-md z-10" : ""
+                  queuedSectionIndex === idx 
+                    ? "border-purple-500 ring-4 ring-purple-500/20 bg-purple-50/30"
+                    : currentSectionIndex === idx ? "border-blue-500 ring-4 ring-blue-500/10 shadow-md z-10" : ""
                 }`}
               >
                 <div className="flex items-center justify-between border-b border-zinc-100/80 pb-2.5 mb-4 select-none">
@@ -675,7 +1020,11 @@ export default function MasterSongProfilePage() {
                     <div className="h-4" />
                   ) : (
                     section.lines.map((line, lIdx) => (
-                      <div key={lIdx} className={`flex flex-col sm:flex-row sm:items-center justify-between border-b border-zinc-50/20 last:border-0 ${rowSpacingStyles}`}>
+                      <div 
+                        key={lIdx} 
+                        id={`line-${idx}-${lIdx}`} 
+                        className={`flex flex-col sm:flex-row sm:items-center justify-between border-b border-zinc-50/20 last:border-0 ${rowSpacingStyles} transition-all duration-300 border-l-4 border-transparent`}
+                      >
                         
                         <div className="flex flex-wrap items-end gap-x-2.5 gap-y-4 py-1 leading-none flex-1">
                           {line.words.map((wordObj, wIdx) => (
@@ -720,164 +1069,264 @@ export default function MasterSongProfilePage() {
       </div>
 
       {/* ======================================================================= */}
-      {/* --- UNIFIED CONSOLE PREFERENCES INTERACTIVE OVERLAY ------------------- */}
+      {/* --- UNIFIED BOTTOM SHEET PREFERENCES MODAL ---------------------------- */}
       {/* ======================================================================= */}
       {isPrefsModalOpen && (
-        <div className="fixed inset-0 bg-zinc-950/50 backdrop-blur-sm z-[200000] flex items-center justify-center p-4 select-none animate-in fade-in duration-100">
-          <div className="bg-white rounded-[2rem] border border-zinc-200 shadow-2xl max-w-md w-full p-6 space-y-6 text-left relative animate-in zoom-in-95 duration-150">
+        <div className="fixed inset-0 bg-zinc-950/60 backdrop-blur-sm z-[200000] flex justify-center items-end sm:items-center p-0 sm:p-4 animate-in fade-in duration-200 select-none">
+          <div className="bg-white w-full sm:max-w-md rounded-t-[2rem] sm:rounded-[2rem] shadow-2xl relative animate-in slide-in-from-bottom-full sm:slide-in-from-bottom-0 sm:zoom-in-95 duration-300 flex flex-col max-h-[90vh] overflow-hidden">
             
-            <button
-              type="button"
-              onClick={() => setIsPrefsModalOpen(false)}
-              className="absolute top-6 right-6 w-8 h-8 rounded-full bg-zinc-50 hover:bg-zinc-100 border text-zinc-400 text-xs font-bold flex items-center justify-center cursor-pointer transition-colors"
-            >
-              ✕
-            </button>
-
-            <div className="space-y-1">
-              <h3 className="text-lg font-black text-zinc-900 tracking-tight">Console Preferences</h3>
-              <p className="text-xs text-zinc-400 font-bold">Tweak user accessibility and dynamic track constraints.</p>
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-[10px] font-black uppercase text-zinc-400 tracking-wider block">Chord Notation Display</label>
-              <div className="flex bg-zinc-50 p-1 rounded-full border shadow-inner items-center relative h-[42px]">
+            {/* Drag Handle & Dynamic Header */}
+            <div className="sticky top-0 bg-white z-20 border-b border-zinc-100 pb-4 pt-4 px-6 flex flex-col items-center shrink-0">
+              <div className="w-12 h-1.5 bg-zinc-200 rounded-full mb-4 sm:hidden" />
+              <div className="flex items-center justify-between w-full relative">
+                {activeSettingsPane === "structure" ? (
+                  <button onClick={() => setActiveSettingsPane("main")} className="w-8 h-8 rounded-full bg-zinc-50 hover:bg-zinc-100 text-zinc-500 text-lg font-black flex items-center justify-center transition-colors">
+                    ‹
+                  </button>
+                ) : (
+                  <div className="w-8" /> /* Spacer for centering */
+                )}
+                
+                <h3 className="text-lg font-black text-zinc-900 tracking-tight text-center absolute left-1/2 -translate-x-1/2">
+                  {activeSettingsPane === "main" ? "Preferences" : "Edit Structure"}
+                </h3>
+                
                 <button
-                  type="button"
-                  onClick={() => setShowChords(true)}
-                  className={`flex-1 text-center text-[11px] font-serif font-black rounded-full tracking-wider uppercase h-full transition-all flex items-center justify-center gap-1 ${
-                    showChords ? "bg-[#18181b] text-white shadow-md" : "text-zinc-400 hover:text-zinc-600"
-                  }`}
+                  onClick={() => setIsPrefsModalOpen(false)}
+                  className="w-8 h-8 rounded-full bg-zinc-50 hover:bg-zinc-100 text-zinc-500 text-xs font-bold flex items-center justify-center transition-colors"
                 >
-                  👁️ Show Chords
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowChords(false)}
-                  className={`flex-1 text-center text-[11px] font-serif font-black rounded-full tracking-wider uppercase h-full transition-all flex items-center justify-center gap-1 ${
-                    !showChords ? "bg-[#18181b] text-white shadow-md" : "text-zinc-400 hover:text-zinc-600"
-                  }`}
-                >
-                  🙈 Hide Chords
+                  ✕
                 </button>
               </div>
             </div>
 
-            <div className="space-y-2">
-              <label className="text-[10px] font-black uppercase text-zinc-400 tracking-wider block">Lyrics Font Display Size</label>
-              <div className="grid grid-cols-4 bg-zinc-50 p-1 rounded-full border shadow-inner items-center h-[42px]">
-                {(["default", "medium", "large", "huge"] as const).map((opt) => (
-                  <button
-                    key={opt}
-                    type="button"
-                    onClick={() => setLyricsFontSize(opt)}
-                    className={`text-center text-[10px] font-serif font-black rounded-full uppercase tracking-tight h-full flex items-center justify-center transition-all ${
-                      lyricsFontSize === opt ? "bg-[#2563eb] text-white shadow-md" : "text-zinc-400 hover:text-zinc-600"
-                    }`}
-                  >
-                    {opt}
-                  </button>
-                ))}
-              </div>
-            </div>
+            {/* Scrollable Content */}
+            <div className="overflow-y-auto p-6 custom-scrollbar pb-12 min-h-[50vh]">
+              
+              {activeSettingsPane === "main" && (
+                <div className="space-y-8 animate-in slide-in-from-left-4 fade-in duration-200">
+                  
+                  {/* --- 1. INSTANT TRANSPOSER --- */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-black uppercase text-zinc-900 tracking-wider">Transpose Key</label>
+                      <span className="text-[10px] font-black text-blue-600 bg-blue-50 px-2 py-0.5 rounded-md shadow-inner">
+                        Original: {song?.original_key || "--"}
+                      </span>
+                    </div>
+                    
+                    <div className="grid grid-cols-7 gap-1.5">
+                      {BASE_LETTER_ROOTS.map(letter => {
+                        const currentRoot = activeDisplayKey.replace(/[m#b]/g, "");
+                        const currentAccidental = activeDisplayKey.includes("#") ? "#" : activeDisplayKey.includes("b") ? "b" : "";
+                        const isMinor = activeDisplayKey.endsWith("m");
+                        const isSelected = currentRoot === letter;
+                        
+                        return (
+                          <button
+                            key={letter}
+                            onClick={() => setActiveDisplayKey(`${letter}${currentAccidental}${isMinor ? 'm' : ''}`)}
+                            className={`aspect-square rounded-xl text-center text-sm font-black transition-all flex items-center justify-center cursor-pointer ${
+                              isSelected ? "bg-blue-600 text-white shadow-md scale-105" : "bg-zinc-50 border border-zinc-200 text-zinc-700 hover:bg-zinc-100"
+                            }`}
+                          >
+                            {letter}
+                          </button>
+                        );
+                      })}
+                    </div>
 
-            <div className="space-y-2">
-              <label className="text-[10px] font-black uppercase text-zinc-400 tracking-wider block">Line Spacing Padding</label>
-              <div className="grid grid-cols-3 bg-zinc-50 p-1 rounded-full border shadow-inner items-center h-[42px]">
-                {(["default", "medium", "large"] as const).map((opt) => (
-                  <button
-                    key={opt}
-                    type="button"
-                    onClick={() => setLineSpacing(opt)}
-                    className={`text-center text-[10px] font-serif font-black rounded-full uppercase tracking-tight h-full flex items-center justify-center transition-all ${
-                      lineSpacing === opt ? "bg-[#2563eb] text-white shadow-md" : "text-zinc-400 hover:text-zinc-600"
-                    }`}
-                  >
-                    {opt}
-                  </button>
-                ))}
-              </div>
-            </div>
+                    <div className="grid grid-cols-2 divide-x border border-zinc-200 rounded-xl overflow-hidden h-10 shadow-sm">
+                      {['b', '#'].map(acc => {
+                        const currentRoot = activeDisplayKey.replace(/[m#b]/g, "");
+                        const currentAccidental = activeDisplayKey.includes("#") ? "#" : activeDisplayKey.includes("b") ? "b" : "";
+                        const isMinor = activeDisplayKey.endsWith("m");
+                        const isSelected = currentAccidental === acc;
 
-            <div className="pt-2">
-              <button
-                type="button"
-                onClick={() => setIsPrefsModalOpen(false)}
-                className="w-full py-3 bg-zinc-950 hover:bg-zinc-900 text-white font-black text-xs uppercase tracking-widest rounded-xl shadow-md transition-all active:scale-[0.99] text-center cursor-pointer"
-              >
-                Close Parameters
-              </button>
-            </div>
+                        return (
+                          <button
+                            key={acc}
+                            onClick={() => setActiveDisplayKey(`${currentRoot}${isSelected ? '' : acc}${isMinor ? 'm' : ''}`)}
+                            className={`text-center font-black transition-colors flex items-center justify-center h-full cursor-pointer ${
+                              isSelected ? "bg-blue-50 text-blue-600" : "bg-zinc-50 text-zinc-600 hover:bg-zinc-100"
+                            }`}
+                          >
+                            {acc === 'b' ? '♭' : '#'}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
 
+                  {/* --- 2. DISPLAY OPTIONS --- */}
+                  <div className="space-y-4 pt-2 border-t border-zinc-100">
+                    <label className="text-xs font-black uppercase text-zinc-900 tracking-wider">Display Options</label>
+
+                    <div className="space-y-2">
+                      <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block">Chord Notation</span>
+                      <div className="flex bg-zinc-50 p-1 rounded-xl border border-zinc-200 shadow-inner items-center h-10">
+                        <button onClick={() => setShowChords(true)} className={`flex-1 text-[11px] font-black rounded-lg h-full transition-all ${showChords ? "bg-white text-zinc-900 shadow-sm border border-zinc-200" : "text-zinc-500 hover:text-zinc-700"}`}>Show</button>
+                        <button onClick={() => setShowChords(false)} className={`flex-1 text-[11px] font-black rounded-lg h-full transition-all ${!showChords ? "bg-white text-zinc-900 shadow-sm border border-zinc-200" : "text-zinc-500 hover:text-zinc-700"}`}>Hide</button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">Chord Format <span className="bg-blue-100 text-blue-600 text-[8px] px-1.5 py-0.5 rounded-sm">Beta</span></span>
+                      <div className="flex bg-zinc-50 p-1 rounded-xl border border-zinc-200 shadow-inner items-center h-10">
+                        <button onClick={() => { setChordFormat("key"); localStorage.setItem("wm_prefs_chordFormat", "key"); }} className={`flex-1 text-[11px] font-black rounded-lg h-full transition-all ${chordFormat === "key" ? "bg-white text-zinc-900 shadow-sm border border-zinc-200" : "text-zinc-500 hover:text-zinc-700"}`}>Key</button>
+                        <button onClick={() => { setChordFormat("numbers"); localStorage.setItem("wm_prefs_chordFormat", "numbers"); }} className={`flex-1 text-[11px] font-black rounded-lg h-full transition-all ${chordFormat === "numbers" ? "bg-white text-zinc-900 shadow-sm border border-zinc-200" : "text-zinc-500 hover:text-zinc-700"}`}>Numbers</button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3 pt-2">
+                      <div className="space-y-2">
+                        <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block">Line Spacing</span>
+                        <div className="flex bg-zinc-50 p-1 rounded-xl border border-zinc-200 shadow-inner items-center h-[36px]">
+                          {(["default", "medium", "large"] as const).map((opt) => (
+                            <button key={opt} onClick={() => setLineSpacing(opt)} className={`flex-1 text-[10px] font-black rounded-lg uppercase h-full transition-all ${lineSpacing === opt ? "bg-white text-zinc-900 shadow-sm border border-zinc-200" : "text-zinc-400 hover:text-zinc-700"}`}>{opt.slice(0,1)}</button>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block">Lyrics Size</span>
+                        <div className="flex bg-zinc-50 p-1 rounded-xl border border-zinc-200 shadow-inner items-center h-[36px]">
+                          {(["default", "medium", "large", "huge"] as const).map((opt) => (
+                            <button key={opt} onClick={() => setLyricsFontSize(opt)} className={`flex-1 text-[10px] font-black rounded-lg uppercase h-full transition-all ${lyricsFontSize === opt ? "bg-white text-zinc-900 shadow-sm border border-zinc-200" : "text-zinc-400 hover:text-zinc-700"}`}>{opt.slice(0,1)}</button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* --- 3. HARDWARE & SYNC ENGINES --- */}
+                  <div className="space-y-4 pt-2 border-t border-zinc-100">
+                    <label className="text-xs font-black uppercase text-zinc-900 tracking-wider">Metronome & Audio</label>
+                    
+                    <div className="flex items-center justify-between bg-zinc-50 border border-zinc-200 rounded-xl p-3 shadow-sm">
+                      <div className="flex flex-col">
+                        <span className="text-[11px] font-bold text-zinc-800">Local Click Track</span>
+                        <span className="text-[9px] font-bold text-zinc-400">Zero-latency metronome</span>
+                      </div>
+                      <button onClick={() => setIsMetronomeSoundEnabled(!isMetronomeSoundEnabled)} className={`w-11 h-6 rounded-full flex items-center p-1 transition-colors shadow-inner ${isMetronomeSoundEnabled ? 'bg-blue-500' : 'bg-zinc-200'}`}>
+                        <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform ${isMetronomeSoundEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                      </button>
+                    </div>
+
+                    {/* YouTube Sync Settings */}
+                    {song?.youtube_url && song?.youtube_sync_offset_ms !== undefined && (
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between bg-zinc-50 border border-zinc-200 rounded-xl p-3 shadow-sm">
+                          <div className="flex flex-col">
+                            <span className="text-[11px] font-bold text-zinc-800 flex items-center gap-1.5"><span className="text-red-600 text-sm">▶</span> YouTube Sync</span>
+                            <span className="text-[9px] font-bold text-zinc-400">Lock metronome to backing track</span>
+                          </div>
+                          <button onClick={() => setIsYoutubeSyncEnabled(!isYoutubeSyncEnabled)} className={`w-11 h-6 rounded-full flex items-center p-1 transition-colors shadow-inner ${isYoutubeSyncEnabled ? 'bg-red-500' : 'bg-zinc-200'}`}>
+                            <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform ${isYoutubeSyncEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                          </button>
+                        </div>
+                        {isYoutubeSyncEnabled && (
+                          <div className="flex flex-col gap-2 bg-red-50/50 border border-red-100 rounded-xl p-3 animate-in slide-in-from-top-1">
+                            <span className="text-[10px] font-bold text-red-800">Track Mix Volume</span>
+                            <input type="range" min="0" max="1" step="0.05" value={youtubeVolume} onChange={(e) => setYoutubeVolume(parseFloat(e.target.value))} className="w-full accent-red-600" />
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  
+                  {/* --- THE NEW ACTIONS MENU --- */}
+                  <div className="space-y-4 pt-2 border-t border-zinc-100">
+                    <label className="text-xs font-black uppercase text-zinc-900 tracking-wider">Actions</label>
+                    <div className="bg-white border border-zinc-200 rounded-2xl shadow-sm overflow-hidden divide-y divide-zinc-100">
+                      
+                      {/* <button onClick={() => router.push(`/songs/${songId}/edit`)} className="w-full flex items-center justify-between p-4 hover:bg-zinc-50 transition-colors">
+                        <div className="flex items-center gap-3">
+                          <span className="text-lg">📝</span>
+                          <span className="text-sm font-bold text-zinc-800">Edit Song</span>
+                        </div>
+                        <span className="text-zinc-300 font-bold text-lg leading-none">›</span>
+                      </button> */}
+
+                      <button onClick={() => setActiveSettingsPane("structure")} className="w-full flex items-center justify-between p-4 hover:bg-zinc-50 transition-colors">
+                        <div className="flex items-center gap-3">
+                          <span className="text-lg">🧱</span>
+                          <span className="text-sm font-bold text-zinc-800">Edit Structure</span>
+                        </div>
+                        <span className="text-zinc-300 font-bold text-lg leading-none">›</span>
+                      </button>
+
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {activeSettingsPane === "structure" && (
+                <div className="flex flex-col gap-3 animate-in slide-in-from-right-4 fade-in duration-200">
+                  
+                  {/* Draggable List Items */}
+                  {localSections.map((sec, i) => (
+                    <div key={`${sec.id}-${i}`} className="flex items-center justify-between p-3.5 bg-white border border-zinc-200 rounded-2xl shadow-sm transition-all hover:border-zinc-300">
+                      <div className="flex items-center gap-3.5">
+                        {/* 6-dot drag handle icon */}
+                        <div className="grid grid-cols-2 gap-[2px] opacity-20 cursor-grab px-1">
+                          {[...Array(6)].map((_, dot) => <div key={dot} className="w-1 h-1 bg-black rounded-full" />)}
+                        </div>
+                        
+                        <div className={`w-9 h-9 rounded-full border-2 flex items-center justify-center text-[10px] font-black ${getSectionBadgeStyle(sec.section_name)}`}>
+                          {getSectionAbbreviation(sec.section_name)}
+                        </div>
+                        
+                        <span className="text-sm font-bold text-zinc-900">{sec.section_name}</span>
+                      </div>
+                      
+                      <button onClick={() => setLocalSections(prev => prev.filter((_, index) => index !== i))} className="w-8 h-8 flex items-center justify-center text-zinc-300 hover:text-red-500 transition-colors text-lg">
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+
+                  {localSections.length === 0 && (
+                    <div className="p-8 text-center text-zinc-400 font-bold text-sm border-2 border-dashed border-zinc-200 rounded-2xl">
+                      No sections in arrangement.
+                    </div>
+                  )}
+
+                  {/* Add New Structures Engine */}
+                  <div className="mt-4 pt-4 border-t border-zinc-100 flex flex-col items-start gap-4">
+                    <button 
+                      onClick={() => setIsAddingSection(!isAddingSection)}
+                      className="text-blue-500 hover:text-blue-600 font-bold text-sm flex items-center gap-2 transition-colors"
+                    >
+                      <span className="text-lg leading-none">{isAddingSection ? '−' : '+'}</span> Add New Structures
+                    </button>
+
+                    {isAddingSection && (
+                      <div className="flex flex-wrap gap-2 animate-in slide-in-from-top-2 fade-in">
+                        {Array.from(new Set(originalSections.map(s => s.section_name))).map(uniqueName => {
+                          const origSec = originalSections.find(s => s.section_name === uniqueName);
+                          if (!origSec) return null;
+                          return (
+                            <button 
+                              key={`add-${uniqueName}`} 
+                              onClick={() => { setLocalSections(prev => [...prev, origSec]); setIsAddingSection(false); }} 
+                              className={`border px-3 py-1.5 rounded-xl text-xs font-bold transition-all shadow-sm ${getSectionBadgeStyle(uniqueName)} hover:scale-105 cursor-pointer`}
+                            >
+                              + {uniqueName}
+                            </button>
+                          );
+                        })}
+                        <button onClick={() => { setLocalSections(originalSections); setIsAddingSection(false); }} className="bg-zinc-800 text-white px-3 py-1.5 rounded-xl text-xs font-bold hover:bg-zinc-900 shadow-sm ml-auto cursor-pointer">
+                          ↺ Reset Original
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                </div>
+              )}
+
+            </div>
           </div>
-        </div>
-      )}
-
-      {/* OVERLAY KEY REMODAL TRANSPOSER INTERFACE */}
-      {isTransposerOpen && (
-        <div className="fixed inset-0 bg-zinc-950/50 backdrop-blur-sm z-[200000] flex items-center justify-center p-4 md:p-6 animate-in fade-in duration-100 select-none">
-          <form 
-            onSubmit={handleCommitTransposition}
-            className="bg-[#f8f9fa] border border-zinc-200 rounded-2xl shadow-2xl max-w-xl w-full p-7 px-8 space-y-6 text-left relative animate-in zoom-in-95"
-          >
-            <button
-              type="button"
-              onClick={() => setIsTransposerOpen(false)}
-              className="absolute top-6 right-6 w-8 h-8 rounded-full bg-white hover:bg-zinc-100 border text-zinc-400 text-xs font-bold flex items-center justify-center shadow-sm cursor-pointer"
-            >
-              ✕
-            </button>
-
-            <div className="space-y-1">
-              <h3 className="text-2xl font-black text-zinc-900 tracking-tight">Rehearsal Sheet Transposer</h3>
-              <p className="text-xs font-black text-blue-500">Master Catalog Baseline Key: {song.original_key || "--"}</p>
-            </div>
-
-            <div className="grid grid-cols-7 gap-2 bg-white p-2 rounded-2xl border shadow-inner">
-              {BASE_LETTER_ROOTS.map((letter) => {
-                const isSelected = modalRoot === letter;
-                return (
-                  <button
-                    key={letter}
-                    type="button"
-                    onClick={() => setModalRoot(letter)}
-                    className={`aspect-square rounded-xl text-center text-sm font-black transition-all flex items-center justify-center cursor-pointer ${
-                      isSelected ? "bg-blue-600 text-white shadow-md scale-105" : "bg-zinc-50/50 text-zinc-700 hover:bg-zinc-100"
-                    }`}
-                  >
-                    {letter}
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="grid grid-cols-2 divide-x bg-white rounded-2xl border overflow-hidden shadow-inner h-12">
-              <button
-                type="button"
-                onClick={() => setModalAccidental(modalAccidental === "b" ? "" : "b")}
-                className={`text-center text-base font-black transition-colors flex items-center justify-center h-full cursor-pointer ${
-                  modalAccidental === "b" ? "bg-blue-50/80 text-blue-600" : "text-zinc-600 hover:bg-zinc-50/50"
-                }`}
-              >
-                ♭
-              </button>
-              <button
-                type="button"
-                onClick={() => setModalAccidental(modalAccidental === "#" ? "" : "#")}
-                className={`text-center text-sm font-black transition-colors flex items-center justify-center h-full cursor-pointer ${
-                  modalAccidental === "#" ? "bg-blue-50/80 text-blue-600" : "text-zinc-600 hover:bg-zinc-50/50"
-                }`}
-              >
-                #
-              </button>
-            </div>
-
-            <div className="pt-2">
-              <button type="submit" className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white font-black text-sm uppercase tracking-widest rounded-2xl shadow-md text-center">
-                Transpose Sheet Read View
-              </button>
-            </div>
-          </form>
         </div>
       )}
       
@@ -938,7 +1387,33 @@ export default function MasterSongProfilePage() {
           </div>
         </div>
       )}
+    {/* ======================================================= */}
+      {/* ✅ SURGICAL ADDITION: RENDER OVERLAYS                     */}
+      {/* ======================================================= */}
+      
+      {/* 3... 2... 1... Overlay */}
+      {countdownValue !== null && (
+        <div className="absolute inset-0 z-[100000] flex items-center justify-center bg-zinc-950/80 backdrop-blur-md pointer-events-none select-none">
+          <div key={countdownValue} className="animate-in zoom-in-50 fade-in duration-300 zoom-out-150 fade-out slide-out-to-top-8">
+            <span className="text-[250px] font-black text-white leading-none tracking-tighter drop-shadow-2xl">
+              {countdownValue}
+            </span>
+          </div>
+        </div>
+      )}
 
+      {/* Buffering Overlay */}
+      {isYtBuffering && (
+        <div className="fixed inset-0 z-[400000] bg-zinc-950/90 backdrop-blur-md flex flex-col items-center justify-center animate-in fade-in duration-100 select-none touch-none">
+          <span className="text-red-500 font-black tracking-widest uppercase mb-4 text-xl md:text-2xl animate-pulse">Buffering Track</span>
+          <span className="text-[100px] md:text-[150px] font-black text-white leading-none tracking-tighter drop-shadow-2xl">∞</span>
+        </div>
+      )}
+
+      {/* Hidden YouTube Target */}
+      <div className="absolute opacity-0 pointer-events-none w-[1px] h-[1px] overflow-hidden -z-50">
+        <div id="yt-solo-player-container"></div>
+      </div>
     </div>
   );
 }

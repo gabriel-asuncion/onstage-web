@@ -22,13 +22,19 @@ export default function SongsListPage() {
   const supabase = createClient();
   const router = useRouter();
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  const scrollContainerRef = useRef<HTMLElement>(null);
   
-  const { simulatedRole, simulatedUserId } = useEngine();
+  const {simulatedUserId } = useEngine();
 
   const [loading, setLoading] = useState(true);
   const [allDatabaseSongs, setAllDatabaseSongs] = useState<any[]>([]);
   const [songSearchQuery, setSongSearchQuery] = useState("");
   const [bookmarkedSongIds, setBookmarkedSongIds] = useState<string[]>([]);
+
+  // ✅ SURGICAL ADDITION: Pagination State
+  const [currentPage, setCurrentPage] = useState(1);
+  const ITEMS_PER_PAGE = 20;
 
   const loadSongsData = async () => {
     try {
@@ -66,6 +72,20 @@ export default function SongsListPage() {
   useEffect(() => {
     loadSongsData();
   }, []);
+
+  useEffect(() => {
+    loadSongsData();
+  }, []);
+
+  // ✅ SURGICAL ADDITION: Smooth scroll to top when pagination changes
+  useEffect(() => {
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTo({
+        top: 0,
+        behavior: "smooth"
+      });
+    }
+  }, [currentPage]);
 
   const handleToggleBookmark = async (e: React.MouseEvent, songId: string) => {
     e.stopPropagation();
@@ -128,6 +148,25 @@ export default function SongsListPage() {
     return true;
   });
 
+  // ✅ SURGICAL ADDITION: Pagination Array Slicing & Page Number Generation
+  const totalPages = Math.ceil(filteredSongs.length / ITEMS_PER_PAGE);
+  const paginatedSongs = filteredSongs.slice(
+    (currentPage - 1) * ITEMS_PER_PAGE,
+    currentPage * ITEMS_PER_PAGE
+  );
+
+  const getPageNumbers = () => {
+    const maxPagesToShow = 5;
+    let start = Math.max(1, currentPage - Math.floor(maxPagesToShow / 2));
+    let end = start + maxPagesToShow - 1;
+    
+    if (end > totalPages) {
+      end = totalPages;
+      start = Math.max(1, end - maxPagesToShow + 1);
+    }
+    return Array.from({ length: end - start + 1 }, (_, i) => start + i);
+  };
+
   const typingWordsArray = songSearchQuery.split(/\s+/);
   const currentActiveWordFragment = typingWordsArray[typingWordsArray.length - 1] || "";
   const shouldShowHintsDropdown = currentActiveWordFragment.startsWith(":");
@@ -153,7 +192,7 @@ export default function SongsListPage() {
 
   return (
   /* SURGICAL DE-CONTAINERIZATION: Bounding cards, rounded frame parameters, and absolute centrations removed */
-  <div className="h-screen w-full overflow-hidden bg-[#f8f9fa] flex flex-col relative animate-in fade-in duration-200">
+  <div className="h-[100dvh] w-full overflow-hidden bg-[#f8f9fa] flex flex-col relative animate-in fade-in duration-200">
     <style dangerouslySetInnerHTML={{__html: `@import url('https://fonts.googleapis.com/css2?family=Nothing+You+Could+Do&display=swap');`}} />
 
     {/* ========================================= */}
@@ -174,7 +213,7 @@ export default function SongsListPage() {
       </div>
       
       {/* FULL SEARCH BAR CONTAINER */}
-      <div className="w-full max-w-xl flex flex-col relative overflow-visible">
+      <div className="flex flex-col relative overflow-visible">
         <div className="w-full flex flex-wrap items-center gap-2 bg-[#f3f4f6] rounded-full px-5 py-3 border border-zinc-200 shadow-inner focus-within:bg-white focus-within:border-blue-500 transition-all">
           
           {searchTokens.artist && (
@@ -240,9 +279,11 @@ export default function SongsListPage() {
     {/* ========================================= */}
     {/* 2. SCROLLING GRID CONTENT                 */}
     {/* ========================================= */}
-    <main className="flex-1 overflow-y-auto p-4 md:p-8 custom-scrollbar w-full">
+    <main ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4 md:p-8 md:pb-8 custom-scrollbar w-full">
+      
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 content-start w-full">
-        {filteredSongs.map(song => {
+        {/* ✅ SURGICAL FIX: Map over paginatedSongs instead of filteredSongs */}
+        {paginatedSongs.map(song => {
           const isBookmarked = bookmarkedSongIds.includes(song.id);
           return (
             <div 
@@ -298,7 +339,46 @@ export default function SongsListPage() {
             No arrangements found matching the current criteria tracking parameters.
           </div>
         )}
+        {filteredSongs.length === 0 && (
+          <div className="col-span-full py-16 text-center text-xs font-semibold italic text-zinc-400 select-none border border-dashed border-zinc-200 rounded-2xl bg-zinc-50/50 w-full">
+            No arrangements found matching the current criteria tracking parameters.
+          </div>
+        )}
       </div>
+    {/* ✅ SURGICAL ADDITION: Numbered Pagination Controls */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center gap-2 mt-8 pb-4 animate-in fade-in">
+          <button
+            onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+            disabled={currentPage === 1}
+            className="px-3 py-1.5 text-xs font-bold text-zinc-600 bg-white border border-zinc-200 rounded-lg disabled:opacity-40 hover:bg-zinc-50 transition-colors cursor-pointer"
+          >
+            &lt; Prev
+          </button>
+
+          {getPageNumbers().map(pageNum => (
+            <button
+              key={pageNum}
+              onClick={() => setCurrentPage(pageNum)}
+              className={`w-8 h-8 flex items-center justify-center text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                currentPage === pageNum
+                  ? "bg-[#2563eb] text-white shadow-md scale-105"
+                  : "bg-white border border-zinc-200 text-zinc-600 hover:bg-zinc-50"
+              }`}
+            >
+              {pageNum}
+            </button>
+          ))}
+
+          <button
+            onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+            disabled={currentPage === totalPages}
+            className="px-3 py-1.5 text-xs font-bold text-zinc-600 bg-white border border-zinc-200 rounded-lg disabled:opacity-40 hover:bg-zinc-50 transition-colors cursor-pointer"
+          >
+            Next &gt;
+          </button>
+        </div>
+      )}
     </main>
 
   </div>

@@ -26,7 +26,7 @@ export default function ClientLayoutWrapper({ children }: { children: React.Reac
     <div className="flex min-h-screen w-full relative">
       <Sidebar />
       <main className="flex-1 overflow-x-hidden relative min-w-0 pb-24 md:pb-0">
-        <div className="w-full max-w-7xl">
+        <div className="">
           {children}
         </div>
         {/* {children} */}

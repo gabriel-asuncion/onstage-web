@@ -261,7 +261,7 @@ export default function DashboardPage() {
 }
 
   return (
-    <div className="h-full max-h-screen overflow-y-auto custom-scrollbar p-4 md:p-4 max-w-7xl w-full mx-auto space-y-4 md:space-y-8 animate-in fade-in duration-150 pb-24 md:pb-4">
+    <div className="h-full max-h-screen overflow-y-auto custom-scrollbar p-4 md:p-4 mx-auto space-y-4 md:space-y-8 animate-in fade-in duration-150 pb-24 md:pb-4">
       
       {/* MASTER HERO HEADER CONTAINER BLOCK */}
       <div className="bg-white border border-zinc-200 rounded-2xl p-6 shadow-sm space-y-4">
@@ -369,7 +369,7 @@ export default function DashboardPage() {
                         router.push(`/events/${evt.id}`);
                       }
                     }}
-                    className="px-5 py-2.5 bg-blue-50 border border-blue-100 text-blue-600 hover:bg-blue-600 hover:text-white rounded-xl text-xs font-black uppercase tracking-widest transition-all shadow-sm shrink-0 cursor-pointer text-center w-full sm:w-auto"
+                    className="px-5 py-2.5 bg-blue-50 border border-blue-100 text-blue-600 hover:bg-blue-600 hover:text-white rounded-xl text-xs font-black uppercase tracking-widest transition-all shadow-sm shrink-0 cursor-pointer text-center sm:w-auto"
                   >
                     Start Rehearsal
                   </button>
@@ -436,7 +436,7 @@ export default function DashboardPage() {
       {/* BOOKMARKS INTERACTIVE OVERLAY MODAL PANEL */}
       {isBookmarksModalOpen && (
         <div className="fixed inset-0 bg-zinc-950/60 backdrop-blur-sm z-[250000] flex items-center justify-center p-4 animate-in fade-in duration-105">
-          <div className="bg-white rounded-xl md:rounded-[2.5rem] shadow-2xl border w-full max-w-lg p-4 md:p-6 flex flex-col space-y-3 md:space-y-4 max-h-[80vh] overflow-hidden animate-in zoom-in-95 duration-150">
+          <div className="bg-white rounded-xl md:rounded-[2.5rem] shadow-2xl border max-w-lg p-4 md:p-6 flex flex-col space-y-3 md:space-y-4 max-h-[80vh] overflow-hidden animate-in zoom-in-95 duration-150">
             
             <div className="flex items-center justify-between border-b border-zinc-100 pb-2 select-none">
               <div className="flex items-center gap-2">
