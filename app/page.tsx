@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from 'react';
-import { createClient, getURL } from '../utils/supabase/client';
+import { createClient } from '../utils/supabase/client';
 
 import dynamic from 'next/dynamic';
 
@@ -46,8 +46,8 @@ export default function Home() {
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: { 
-          // ✅ SURGICAL FIX: Dynamically build the redirect URL!
-          redirectTo: `${getURL()}dashboard` 
+          // ✅ SURGICAL FIX: Go back to the absolute browser truth
+          redirectTo: `${window.location.origin}/dashboard` 
         },
       });
       if (error) throw error;
