@@ -1,9 +1,10 @@
 "use client";
 
 import React, { useState, useEffect } from 'react';
-import { createClient } from '../utils/supabase/client';
+import { createClient, getURL } from '../utils/supabase/client';
 
 import dynamic from 'next/dynamic';
+
 
 // ✅ SURGICAL FIX: Force the Lottie Player to only load on the client side (browser)
 const Player = dynamic(
@@ -44,7 +45,10 @@ export default function Home() {
       console.log("Attempting Google Login...");
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
-        options: { redirectTo: `${window.location.origin}/dashboard` },
+        options: { 
+          // ✅ SURGICAL FIX: Dynamically build the redirect URL!
+          redirectTo: `${getURL()}dashboard` 
+        },
       });
       if (error) throw error;
     } catch (err: any) {
