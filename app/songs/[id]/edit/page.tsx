@@ -1015,11 +1015,11 @@ export default function SongEditPage() {
                       setManualExtensionNumber("");
                       setChordPickerConfig({
                         isOpen: true,
-                        sectionType: sec.type,
+                        sectionType: sectionType,
                         lineIdx,
                         wordIdx: currentWordIdx,
                         cleanWord: cleanWordDisplay || "$word"
-                        });
+                      });
                       }
                   }} 
                   className={`
@@ -1090,9 +1090,9 @@ export default function SongEditPage() {
   });
 
   // ✅ SURGICAL FIX: Separate the Mismatch error from the Disabled state
-  const isMismatched = isRealtimePreviewActive && isAnySectionMismatchedAcrossModal;
-  const isSaveDisabled = isMismatched || !hasUnsavedChanges;
-  // const isSaveDisabled = isRealtimePreviewActive && isAnySectionMismatchedAcrossModal;
+  const isMismatched = isRealtimePreviewActive && isAnySectionMismatchedAcrossModal; // Is there a calculation error?
+  const isSaveDisabled = isMismatched || !hasUnsavedChanges; // The button is disabled if there's an error OR if there are no changes.
+  
 
   return (
     <div ref={editorContentContainerRef} className="h-screen w-full overflow-hidden bg-[#f8f9fa] flex flex-col relative animate-in fade-in duration-200">
@@ -1134,7 +1134,7 @@ export default function SongEditPage() {
                 className={`px-4 py-1.5 rounded-lg font-black text-[11px] uppercase tracking-wider transition-all ${isSaveDisabled ? "bg-zinc-100 text-zinc-400 border border-zinc-200 cursor-not-allowed opacity-80" : "bg-blue-600 hover:bg-blue-700 text-white shadow-md cursor-pointer"}`} 
                 onClick={handleCommitSongChangesToDB}
               >
-                {isMismatched ? "🔒 Calculations Mismatched" : (!hasUnsavedChanges ? "No Changes" : "Save Arrangement")}
+                {isMismatched ? "🔒 Mismatch" : (!hasUnsavedChanges ? "No Changes" : "Save Arrangement")}
               </button>
             )}
           </div>
@@ -1157,7 +1157,7 @@ export default function SongEditPage() {
                   className={`px-3 py-1.5 rounded-md font-black text-[9px] uppercase tracking-wider transition-all shadow-sm ${isSaveDisabled ? "bg-zinc-100 text-zinc-400 border border-zinc-200 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700 text-white"}`} 
                   onClick={handleCommitSongChangesToDB}
                 >
-                  {isMismatched ? "Mismatched" : (!hasUnsavedChanges ? "Saved" : "Save")}
+                  {isMismatched ? "Error" : (!hasUnsavedChanges ? "Saved" : "Save")}
                 </button>
               )}
             </div>

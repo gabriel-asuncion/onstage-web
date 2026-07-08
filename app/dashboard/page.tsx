@@ -183,7 +183,11 @@ export default function DashboardPage() {
         if (insertErr) {
           // Note: If 5 users log in at exactly midnight, you might get a "duplicate key" error here.
           // That is totally fine, it just means someone else beat them to the insert!
-          console.error("Auto-seed daily verse error:", insertErr);
+          if (insertErr?.code === '23505') {
+            console.log("ℹ️ Auto-seed skipped: Daily verse already seeded by another user.");
+          } else {
+            console.error("Auto-seed daily verse error:", insertErr?.message || insertErr);
+          }
         }
       }
 
