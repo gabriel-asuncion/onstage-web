@@ -154,6 +154,11 @@ export default function SongEditPage() {
 
   const isYtPlayerReadyRef = useRef<boolean>(false);
 
+  // ✅ SURGICAL ADDITION: Live MS Timer Refs
+  const [isTestingActive, setIsTestingActive] = useState(false);
+  const liveTimeDisplayRef = useRef<HTMLSpanElement>(null);
+  const testTimerRafRef = useRef<number | null>(null);
+
   const activeOscillatorsRef = useRef<OscillatorNode[]>([]);
   const liveTempoRef = useRef(formTempo);
   const liveOffsetRef = useRef(formYoutubeSyncOffset);
@@ -229,6 +234,10 @@ export default function SongEditPage() {
   // ✅ SURGICAL ADDITION: 3-State Chords Toggle Engine State
   const [chordMode, setChordMode] = useState<"Off" | "Chords" | "Keyboard">("Off");
   const [isAddNotesModeActive, setIsAddNotesModeActive] = useState(false); 
+
+  const [multiSelectedChords, setMultiSelectedChords] = useState<{sectionType: string, lineIdx: number, wordIdx: number}[]>([]);
+
+  const [selectedStagedChordIndices, setSelectedStagedChordIndices] = useState<number[]>([]);
 
   // ✅ SURGICAL ADDITION: Mobile-Friendly Bottom Sheet Config States
   const [sectionAdjustmentsConfig, setSectionAdjustmentsConfig] = useState<{ isOpen: boolean; sectionType: string | null }>({ isOpen: false, sectionType: null });
@@ -501,7 +510,24 @@ export default function SongEditPage() {
           'onStateChange': (event: any) => {
             if (event.data === 1 && isTestingSyncRef.current) { 
               isTestingSyncRef.current = false;
+              setIsTestingActive(true); // ✅ Turn on the UI Tracker
               runTestMetronome();
+
+              // ✅ SURGICAL ADDITION: 60fps Hardware Loop tied to YouTube's brain
+              const trackTime = () => {
+                if (ytPlayerRef.current && typeof ytPlayerRef.current.getCurrentTime === 'function' && liveTimeDisplayRef.current) {
+                   const ms = Math.floor(ytPlayerRef.current.getCurrentTime() * 1000);
+                   liveTimeDisplayRef.current.innerText = `${ms} ms`;
+                }
+                testTimerRafRef.current = requestAnimationFrame(trackTime);
+              };
+              if (testTimerRafRef.current) cancelAnimationFrame(testTimerRafRef.current);
+              testTimerRafRef.current = requestAnimationFrame(trackTime);
+
+            } else if (event.data === 2 || event.data === 0) {
+              // ✅ Turn off the timer if the video is paused or ends
+              setIsTestingActive(false);
+              if (testTimerRafRef.current) cancelAnimationFrame(testTimerRafRef.current);
             }
           }
         }
@@ -542,6 +568,12 @@ export default function SongEditPage() {
 
     if (isYtPlayerReadyRef.current && ytPlayerRef.current && typeof ytPlayerRef.current.seekTo === 'function') {
       isTestingSyncRef.current = true;
+      
+      // ✅ SURGICAL ADDITION: Reset UI instantly on click
+      setIsTestingActive(false);
+      if (testTimerRafRef.current) cancelAnimationFrame(testTimerRafRef.current);
+      if (liveTimeDisplayRef.current) liveTimeDisplayRef.current.innerText = "0 ms";
+
       try {
         ytPlayerRef.current.seekTo(0);
         ytPlayerRef.current.playVideo();
@@ -661,28 +693,20 @@ export default function SongEditPage() {
     setCustomChordInputValue("");
   };
 
-  // ✅ Advanced Chord Sheet Submission Engine (Multi-Chord & Slash Rules Support)
+  // ✅ Standardized Submission Engine
   const executeChordPickerConfirm = () => {
-    const { sectionType, lineIdx, wordIdx } = chordPickerConfig;
-    if (!sectionType || lineIdx === -1 || wordIdx === -1) return;
+    if (!chordPickerConfig.sectionType || chordPickerConfig.lineIdx === -1) return;
 
     setHasUnsavedChanges(true);
     setFormSections(prev => prev.map(sec => {
-      if (sec.type !== sectionType) return sec;
+      if (sec.type !== chordPickerConfig.sectionType) return sec;
       const lines = sec.content.split("\n");
       let realWordCounter = 0;
-      
-      lines[lineIdx] = (lines[lineIdx] || "").replace(/(?:\[[^\]]+\]|\{\s*[^\}]+\s*\}|\S)+/g, (match) => {
-        if (realWordCounter === wordIdx) {
+      lines[chordPickerConfig.lineIdx] = (lines[chordPickerConfig.lineIdx] || "").replace(/(?:\[[^\]]+\]|\{\s*[^\}]+\s*\}|\S)+/g, (match) => {
+        if (realWordCounter === chordPickerConfig.wordIdx) {
           realWordCounter++;
           const cleanTextWord = match.replace(/\[[^\]]+\]/g, "").replace(/\{[^\}]+\}/g, "");
-          
-          // Split space-separated entries into clean individual chord blocks
-          const compiledBrackets = stagedChordsText.trim().split(/\s+/).map(ch => {
-            if (!ch.trim()) return "";
-            return `[${ch.trim()}]`;
-          }).join("");
-
+          const compiledBrackets = stagedChordsText.trim().split(/\s+/).filter(Boolean).map(ch => `[${ch.trim()}]`).join("");
           return `${compiledBrackets}${cleanTextWord}`;
         }
         realWordCounter++;
@@ -692,37 +716,62 @@ export default function SongEditPage() {
     }));
 
     setChordPickerConfig({ isOpen: false, sectionType: null, lineIdx: -1, wordIdx: -1, cleanWord: "" });
+    setSelectedStagedChordIndices([]);
   };
 
-  // ✅ Advanced Chord Sheet Removal Engine
+  // ✅ Standardized Removal Engine
   const executeChordPickerRemoval = () => {
-    const { sectionType, lineIdx, wordIdx } = chordPickerConfig;
-    if (!sectionType || lineIdx === -1 || wordIdx === -1) return;
+    if (!chordPickerConfig.sectionType || chordPickerConfig.lineIdx === -1) return;
 
     setHasUnsavedChanges(true);
     setFormSections(prev => prev.map(sec => {
-      if (sec.type !== sectionType) return sec;
+      if (sec.type !== chordPickerConfig.sectionType) return sec;
       const lines = sec.content.split("\n");
       let realWordCounter = 0;
-      lines[lineIdx] = (lines[lineIdx] || "").replace(/(?:\[[^\]]+\]|\{\s*[^\}]+\s*\}|\S)+/g, (match) => {
-        if (realWordCounter === wordIdx) { realWordCounter++; return match.replace(/\[[^\]]+\]/g, ""); }
-        realWordCounter++; return match;
+      lines[chordPickerConfig.lineIdx] = (lines[chordPickerConfig.lineIdx] || "").replace(/(?:\[[^\]]+\]|\{\s*[^\}]+\s*\}|\S)+/g, (match) => {
+        if (realWordCounter === chordPickerConfig.wordIdx) {
+          realWordCounter++;
+          return match.replace(/\[[^\]]+\]/g, "");
+        }
+        realWordCounter++;
+        return match;
       });
       return { ...sec, content: lines.join("\n") };
     }));
 
     setChordPickerConfig({ isOpen: false, sectionType: null, lineIdx: -1, wordIdx: -1, cleanWord: "" });
+    setSelectedStagedChordIndices([]);
   };
 
-  // ✅ Helper builder to merge chords intelligently or format trailing slashes
+  // ✅ Intelligent replacement if chords are selected in the modal
   const handlePickerChordTap = (chordComponent: string) => {
-    setStagedChordsText(prev => {
-      const cleanPrev = prev.trim();
-      if (!cleanPrev || cleanPrev.endsWith("/")) {
-        return `${prev}${chordComponent}`;
-      }
-      return `${cleanPrev} ${chordComponent}`;
-    });
+    if (selectedStagedChordIndices.length > 0) {
+      setStagedChordsText(prev => {
+        const arr = prev.split(/\s+/).filter(Boolean);
+        selectedStagedChordIndices.forEach(idx => { if (arr[idx]) arr[idx] = chordComponent; });
+        return arr.join(" ");
+      });
+      setSelectedStagedChordIndices([]);
+    } else {
+      setStagedChordsText(prev => {
+        const cleanPrev = prev.trim();
+        if (!cleanPrev || cleanPrev.endsWith("/")) return `${prev}${chordComponent}`;
+        return `${cleanPrev} ${chordComponent}`;
+      });
+    }
+  };
+
+  // ✅ Allows you to select multiple chords and add "m", "#", or "sus" to all of them at once!
+  const handlePickerModifierTap = (modifier: string) => {
+    if (selectedStagedChordIndices.length > 0) {
+      setStagedChordsText(prev => {
+        const arr = prev.split(/\s+/).filter(Boolean);
+        selectedStagedChordIndices.forEach(idx => { if (arr[idx]) arr[idx] += modifier; });
+        return arr.join(" ");
+      });
+    } else {
+      setStagedChordsText(prev => prev + modifier);
+    }
   };
 
   const executeLineCommentInjection = (injectedCommentStr: string) => {
@@ -960,17 +1009,18 @@ export default function SongEditPage() {
                     } else if (chordMode === "Chords") {
                       // ✅ Open design-spec Advanced Bottom Sheet notation picker instead of standard field injection
                       e.stopPropagation();
+                      setMultiSelectedChords([]);
                       setPickerLayoutView("family");
                       setStagedChordsText(extractedChordsList.join(" "));
                       setManualExtensionNumber("");
                       setChordPickerConfig({
                         isOpen: true,
-                        sectionType,
+                        sectionType: sec.type,
                         lineIdx,
                         wordIdx: currentWordIdx,
                         cleanWord: cleanWordDisplay || "$word"
-                      });
-                    }
+                        });
+                      }
                   }} 
                   className={`
                     flex flex-col items-start relative select-none rounded-lg px-2 py-0.5 transition-all duration-150 cursor-pointer
@@ -1214,7 +1264,16 @@ export default function SongEditPage() {
                     <div className="bg-zinc-50 border border-zinc-200 p-3 rounded-xl space-y-3 shadow-inner">
                       <div className="flex flex-col sm:flex-row gap-2">
                         <div className="flex-1">
-                          <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Downbeat Offset (ms)</label>
+                          {/* ✅ SURGICAL ADDITION: Live Timer Layout */}
+                          <div className="flex items-center justify-between mb-1 pr-1">
+                            <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block">Downbeat Offset (ms)</label>
+                            <span 
+                              ref={liveTimeDisplayRef} 
+                              className={`text-[9px] font-mono font-black text-red-600 bg-red-100 px-1.5 py-0.5 rounded shadow-inner transition-opacity duration-200 ${isTestingActive ? 'opacity-100' : 'opacity-0'}`}
+                            >
+                              0 ms
+                            </span>
+                          </div>
                           <div className="flex items-center gap-2">
                             <input 
                               type="number" 
@@ -1420,11 +1479,39 @@ export default function SongEditPage() {
                                       >
                                         {hasNotation && (
                                           <div className="min-h-[1rem] text-[10px] font-mono font-black flex flex-wrap gap-0.5 mb-0.5 leading-none">
-                                            {extractedChordsList.map((ch, cIndex) => (
-                                              <span key={cIndex} className={`px-0.5 rounded border font-bold ${isTargetedCoordinate ? 'text-white border-transparent' : 'text-blue-600 bg-blue-100/50 border-blue-200'}`}>
-                                                {ch}
-                                              </span>
-                                            ))}
+                                            {extractedChordsList.map((ch, cIndex) => {
+                                              // ✅ SURGICAL FIX: Check if this specific chord is in the multi-select array
+                                              const isMultiSelected = multiSelectedChords.some(m => m.sectionType === sec.type && m.lineIdx === lineIdx && m.wordIdx === currentWordIdx);
+                                              return (
+                                                <span 
+                                                  key={cIndex} 
+                                                  onClick={(e) => {
+                                                    if (chordMode === "Chords") {
+                                                      e.stopPropagation(); // Block the main word click
+                                                      setMultiSelectedChords(prev => {
+                                                        const exists = prev.find(p => p.sectionType === sec.type && p.lineIdx === lineIdx && p.wordIdx === currentWordIdx);
+                                                        const next = exists ? prev.filter(p => p !== exists) : [...prev, { sectionType: sec.type, lineIdx, wordIdx: currentWordIdx }];
+                                                        
+                                                        if (next.length > 0) {
+                                                          if (!chordPickerConfig.isOpen) {
+                                                            setPickerLayoutView("family");
+                                                            setStagedChordsText(extractedChordsList.join(" "));
+                                                            setManualExtensionNumber("");
+                                                          }
+                                                          setChordPickerConfig(cfg => ({...cfg, isOpen: true, sectionType: sec.type, lineIdx, wordIdx: currentWordIdx, cleanWord: "Multiple" }));
+                                                        } else {
+                                                          setChordPickerConfig(cfg => ({...cfg, isOpen: false}));
+                                                        }
+                                                        return next;
+                                                      });
+                                                    }
+                                                  }}
+                                                  className={`px-0.5 rounded border font-bold transition-all cursor-pointer ${isMultiSelected ? '!bg-amber-500 !text-white !border-amber-600 shadow-sm scale-110' : isTargetedCoordinate ? 'text-white border-transparent' : 'text-blue-600 bg-blue-100/50 border-blue-200 hover:bg-blue-200/50'}`}
+                                                >
+                                                  {ch}
+                                                </span>
+                                              );
+                                            })}
                                           </div>
                                         )}
                                         <div className={`text-[13px] font-sans font-bold leading-tight ${isTargetedCoordinate ? 'text-white' : 'text-zinc-800'}`}>
@@ -1759,7 +1846,7 @@ export default function SongEditPage() {
             
             {/* Header section with closing cross anchor */}
             <div className="relative flex items-center justify-center p-4 border-b bg-white shrink-0">
-              <button type="button" onClick={() => setChordPickerConfig({ isOpen: false, sectionType: null, lineIdx: -1, wordIdx: -1, cleanWord: "" })} className="absolute left-4 w-7 h-7 flex items-center justify-center rounded-full bg-zinc-100 text-zinc-500">✕</button>
+              <button type="button" onClick={() => { setMultiSelectedChords([]); setChordPickerConfig({ isOpen: false, sectionType: null, lineIdx: -1, wordIdx: -1, cleanWord: "" }); }} className="absolute left-4 w-7 h-7 flex items-center justify-center rounded-full bg-zinc-100 text-zinc-500 hover:bg-zinc-200 transition-colors">✕</button>
               <h3 className="text-[14px] font-black text-zinc-800 tracking-tight">Assign Notation</h3>
             </div>
 
@@ -1768,12 +1855,26 @@ export default function SongEditPage() {
               <div className="border border-zinc-200 rounded-xl p-3 bg-zinc-50/50 min-h-[56px] flex flex-col justify-center">
                 {stagedChordsText ? (
                   <div className="flex flex-wrap gap-1 mb-1 font-mono font-black text-[10px] text-blue-600">
-                    {stagedChordsText.split(/\s+/).map((c, i) => c && <span key={i} className="bg-blue-100/60 border border-blue-200 px-1 rounded">{c}</span>)}
+                    {/* ✅ SURGICAL FIX: Render clickable staging chips */}
+                    {stagedChordsText.split(/\s+/).filter(Boolean).map((c, i) => {
+                      const isSelected = selectedStagedChordIndices.includes(i);
+                      return (
+                        <span 
+                          key={i} 
+                          onClick={() => setSelectedStagedChordIndices(prev => prev.includes(i) ? prev.filter(x => x !== i) : [...prev, i])}
+                          className={`px-1.5 py-0.5 rounded cursor-pointer transition-all border ${isSelected ? 'bg-amber-500 text-white border-amber-600 shadow-sm scale-110' : 'bg-blue-100/60 border-blue-200 hover:bg-blue-200/60'}`}
+                        >
+                          {c}
+                        </span>
+                      );
+                    })}
                   </div>
                 ) : (
                   <div className="text-[10px] font-mono font-bold text-zinc-300 italic mb-1">[Staging...]</div>
                 )}
-                <div className="text-xs font-bold text-zinc-800">{chordPickerConfig.cleanWord}</div>
+                <div className="text-xs font-bold text-zinc-800">
+                  {chordPickerConfig.cleanWord}
+                </div>
               </div>
 
               {/* View Layout Switch Toolbar Header */}
@@ -1822,7 +1923,7 @@ export default function SongEditPage() {
                   {/* Accidental modifiers layout deck */}
                   <div className="grid grid-cols-4 gap-2">
                     {["m", "dim", "#", "b"].map(modifier => (
-                      <button key={modifier} type="button" onClick={() => setStagedChordsText(p => p + modifier)} className="h-11 bg-white rounded-xl font-black text-xs shadow-sm flex items-center justify-center border text-zinc-700 bg-zinc-50/50">
+                      <button key={modifier} type="button" onClick={() => handlePickerModifierTap(modifier)} className="h-11 bg-white rounded-xl font-black text-xs shadow-sm flex items-center justify-center border text-zinc-700 bg-zinc-50/50">
                         {modifier}
                       </button>
                     ))}
@@ -1830,8 +1931,8 @@ export default function SongEditPage() {
 
                   {/* Extensions structure additions footer row mapping */}
                   <div className="grid grid-cols-3 gap-2">
-                    <button type="button" onClick={() => setStagedChordsText(p => p + "add")} className="h-11 bg-white rounded-xl font-bold text-xs shadow-sm flex items-center justify-center border text-zinc-600">add</button>
-                    <button type="button" onClick={() => setStagedChordsText(p => p + "sus")} className="h-11 bg-white rounded-xl font-bold text-xs shadow-sm flex items-center justify-center border text-zinc-600">sus</button>
+                    <button type="button" onClick={() => handlePickerModifierTap("add")} className="h-11 bg-white rounded-xl font-bold text-xs shadow-sm flex items-center justify-center border text-zinc-600">add</button>
+                    <button type="button" onClick={() => handlePickerModifierTap("sus")} className="h-11 bg-white rounded-xl font-bold text-xs shadow-sm flex items-center justify-center border text-zinc-600">sus</button>
                     
                     {/* Number Dropdown Interface Module selector */}
                     <div className="bg-white rounded-xl border shadow-sm flex items-center px-3 h-11 relative">
@@ -1840,7 +1941,7 @@ export default function SongEditPage() {
                         onChange={e => {
                           const val = e.target.value;
                           setManualExtensionNumber(val);
-                          if (val) setStagedChordsText(p => p + val);
+                          if (val) handlePickerModifierTap(val);
                         }} 
                         className="w-full bg-transparent text-xs font-bold text-zinc-700 outline-none appearance-none"
                       >
@@ -1856,10 +1957,24 @@ export default function SongEditPage() {
 
             {/* Bottom Form Submissions Commit Section Layer */}
             <div className="p-4 border-t bg-white flex gap-2 shrink-0 pb-safe">
-              <button type="button" onClick={executeChordPickerRemoval} className="flex-1 py-3.5 bg-red-100 hover:bg-red-200 text-red-600 font-black text-xs uppercase tracking-wider rounded-xl transition-all">
-                Remove
+              <button 
+                type="button" 
+                onClick={() => {
+                  if (selectedStagedChordIndices.length > 0) {
+                    setStagedChordsText(prev => {
+                      const arr = prev.split(/\s+/).filter(Boolean);
+                      return arr.filter((_, i) => !selectedStagedChordIndices.includes(i)).join(" ");
+                    });
+                    setSelectedStagedChordIndices([]);
+                  } else {
+                    executeChordPickerRemoval();
+                  }
+                }} 
+                className="flex-1 py-3.5 bg-red-100 hover:bg-red-200 text-red-600 font-black text-xs uppercase tracking-wider rounded-xl transition-all"
+              >
+                {selectedStagedChordIndices.length > 0 ? `Remove Selected (${selectedStagedChordIndices.length})` : "Remove All"}
               </button>
-              <button type="button" onClick={executeChordPickerConfirm} className="flex-1 py-3.5 bg-blue-600 hover:bg-blue-700 text-white font-black text-xs uppercase tracking-wider rounded-xl shadow-md transition-all">
+              <button type="button" onClick={executeChordPickerConfirm} className="flex-1 py-3.5 bg-blue-600 hover:bg-blue-700 text-white font-black text-xs uppercase tracking-wider rounded-xl shadow-md transition-all active:scale-[0.98]">
                 Confirm
               </button>
             </div>
