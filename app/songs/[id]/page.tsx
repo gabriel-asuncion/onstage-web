@@ -972,7 +972,7 @@ export default function MasterSongProfilePage() {
               className="w-10 h-10 bg-white hover:bg-zinc-50 border border-zinc-200 text-zinc-700 font-bold text-sm rounded-xl shadow-sm flex items-center justify-center cursor-pointer hover:border-blue-500 hover:text-blue-600 transition-colors"
               title="Open Console Settings Preferences"
             >
-              <img alt="Settings" class="w-3 h-3 opacity-60" src="/assets/settings.svg"></img>
+              <img alt="Settings" className="w-3 h-3 opacity-60" src="/assets/settings.svg" />
             </button>
           </div>
 
