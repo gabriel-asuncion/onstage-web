@@ -501,6 +501,8 @@ export default function SetlistPerformanceRoomPage() {
   const ytSyncPendingRef = useRef<boolean>(false);
   const loadedVideoIdRef = useRef<string | null>(null);
 
+  const ytExpectedStartTimeRef = useRef<number>(0);
+
   const isYtPlayerReadyRef = useRef<boolean>(false);
 
   // ✅ SURGICAL ADDITION: YouTube Volume Engine
@@ -511,7 +513,8 @@ export default function SetlistPerformanceRoomPage() {
     youtubeVolumeRef.current = youtubeVolume;
     // ✅ SURGICAL FIX: Check the Readiness Lock before touching the volume!
     if (isYtPlayerReadyRef.current && ytPlayerRef.current && typeof ytPlayerRef.current.setVolume === 'function') {
-      try { ytPlayerRef.current.pauseVideo(); } catch(e) {}
+      // Send the actual volume command instead of pausing! (YT API takes 0-100)
+      try { ytPlayerRef.current.setVolume(youtubeVolume * 100); } catch(e) {}
     }
   }, [youtubeVolume]);
 
@@ -575,13 +578,19 @@ export default function SetlistPerformanceRoomPage() {
                 ytSyncPendingRef.current = false;
                 setIsYtBuffering(false);
                 
-                const currentVideoTimeMs = (event.target.getCurrentTime() || 0) * 1000;
-                const offsetMs = activeSongRef.current?.youtube_sync_offset_ms || 0;
+                // ✅ SURGICAL FIX: Stop trusting the drifty video playhead! 
+                // Use the exact theoretical timestamp we requested.
+                const currentVideoTimeMs = ytExpectedStartTimeRef.current * 1000;
                 
-                const timeUntilBeat1 = offsetMs - currentVideoTimeMs;
-                const exactStartTimestamp = getGlobalTime() + timeUntilBeat1;
+                const songBeat1OffsetMs = activeSongRef.current?.youtube_sync_offset_ms || 0;
                 
-                // ✅ SURGICAL FIX: Pass `true` to activate the Silencer Flag!
+                const targetAbsoluteBeat = beatMapRef.current.sectionStartBeats[currentSectionIndexRef.current] || 0;
+                const beatSpeedMs = (60 / (activeSongRef.current?.tempo || 75)) * 1000;
+                const sectionVideoStartMs = songBeat1OffsetMs + (targetAbsoluteBeat * beatSpeedMs);
+                
+                const timeUntilSectionStart = sectionVideoStartMs - currentVideoTimeMs;
+                const exactStartTimestamp = getGlobalTime() + timeUntilSectionStart;
+                
                 executeStartSequence(false, exactStartTimestamp, true);
               }
             }
@@ -1212,6 +1221,15 @@ export default function SetlistPerformanceRoomPage() {
         
         // Anchor the infinite grid to the theoretical beginning of the song!
         audioContextStartTimeRef.current = absoluteHardwareTimeAtJump - theoreticalSongStartOffset;
+
+        // ✅ SURGICAL ADDITION: Instantly seek the YouTube Backing Track!
+        if (isYtBackingTrackStartRef.current && ytPlayerRef.current && typeof ytPlayerRef.current.seekTo === 'function') {
+          const ytOffsetSecs = (activeSongRef.current?.youtube_sync_offset_ms || 0) / 1000;
+          const targetVideoTime = ytOffsetSecs + theoreticalSongStartOffset;
+          try {
+            ytPlayerRef.current.seekTo(targetVideoTime, true);
+          } catch(e) {}
+        }
 
         if (timeUntilJumpMs >= 3000 && !isYtBackingTrackStartRef.current) {
           triggerMetronomeSound(2, absoluteHardwareTimeAtJump - 3); 
@@ -1941,7 +1959,20 @@ export default function SetlistPerformanceRoomPage() {
         if (ytPlayerRef.current && typeof ytPlayerRef.current.playVideo === 'function') {
           setIsYtBuffering(true);
           ytSyncPendingRef.current = true;
-          ytPlayerRef.current.seekTo(0);
+          
+          let targetVideoTime = 0;
+          
+          if (currentSectionIndexRef.current > 0) {
+            const targetAbsoluteBeat = beatMapRef.current.sectionStartBeats[currentSectionIndexRef.current] || 0;
+            const beatSpeedSecs = 60 / (activeSongRef.current?.tempo || 75);
+            const ytBeat1OffsetSecs = (activeSongRef.current?.youtube_sync_offset_ms || 0) / 1000;
+            targetVideoTime = ytBeat1OffsetSecs + (targetAbsoluteBeat * beatSpeedSecs);
+          }
+          
+          // ✅ SURGICAL FIX: Save the exact mathematical time we are requesting!
+          ytExpectedStartTimeRef.current = targetVideoTime;
+          
+          ytPlayerRef.current.seekTo(targetVideoTime, true);
           ytPlayerRef.current.playVideo();
         } else {
           console.warn("YT Player not ready. Falling back.");

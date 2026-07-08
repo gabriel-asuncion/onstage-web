@@ -441,30 +441,36 @@ export default function SongEditPage() {
 
   // ✅ SURGICAL ADDITION: Phase 2 YouTube Player API & Metronome Synthesizer
   useEffect(() => {
-    if (!youtubeVideoId) return;
+    // ✅ SURGICAL FIX: Only initialize if we have an ID AND we are looking at the Details tab!
+    if (!youtubeVideoId || editorActiveTab !== "details") {
+      // If we leave the tab, aggressively destroy the old iframe so it doesn't get orphaned in memory
+      if (ytPlayerRef.current && typeof ytPlayerRef.current.destroy === 'function') {
+        try { ytPlayerRef.current.destroy(); } catch(e) {}
+        ytPlayerRef.current = null;
+        isYtPlayerReadyRef.current = false;
+      }
+      return;
+    }
 
     const runTestMetronome = () => {
       if (!audioCtxRef.current) return;
 
-      // 1. Clear any currently scheduled clicks so they don't overlap!
       activeOscillatorsRef.current.forEach(osc => {
         try { osc.stop(); osc.disconnect(); } catch (e) {}
       });
       activeOscillatorsRef.current = [];
 
-      // 2. Read from the silent Live Refs instead of React state!
       const bpm = parseInt(liveTempoRef.current) || 75;
       const beatDuration = 60 / bpm;
       const offsetSecs = liveOffsetRef.current / 1000;
       const startTime = audioCtxRef.current.currentTime + offsetSecs;
 
-      // Synthesize 16 beats of testing blips
       for (let i = 0; i < 16; i++) {
         const osc = audioCtxRef.current.createOscillator();
         const gain = audioCtxRef.current.createGain();
         osc.connect(gain);
         gain.connect(audioCtxRef.current.destination);
-        osc.frequency.value = i % 4 === 0 ? 1200 : 800; // Accent on downbeat
+        osc.frequency.value = i % 4 === 0 ? 1200 : 800; 
         osc.type = "sine";
         const t = startTime + (i * beatDuration);
         gain.gain.setValueAtTime(0, t);
@@ -473,7 +479,6 @@ export default function SongEditPage() {
         osc.start(t);
         osc.stop(t + 0.1);
         
-        // Track this specific beep so we can kill it later if needed
         activeOscillatorsRef.current.push(osc);
       }
     };
@@ -483,29 +488,24 @@ export default function SongEditPage() {
         setTimeout(initPlayer, 200);
         return;
       }
-      if (ytPlayerRef.current) {
-        // Only load if the actual Video ID changed!
-        ytPlayerRef.current.loadVideoById(youtubeVideoId);
-      } else {
-        ytPlayerRef.current = new (window as any).YT.Player('yt-player-container', {
-          height: '100%', width: '100%', videoId: youtubeVideoId,
-          playerVars: { 'playsinline': 1, 'controls': 1 },
-          events: {
-            // ✅ SURGICAL FIX: Explicitly handle the ready state to guarantee the API loaded
-            'onReady': () => {
-              isYtPlayerReadyRef.current = true;
-               console.log("📺 YouTube Player API fully loaded and ready for commands.");
-            },
-            'onStateChange': (event: any) => {
-              // 1 === YT.PlayerState.PLAYING. The moment audio actually starts!
-              if (event.data === 1 && isTestingSyncRef.current) { 
-                isTestingSyncRef.current = false;
-                runTestMetronome();
-              }
+      
+      // ✅ SURGICAL FIX: Because we destroy the player on tab switches, we can always safely build a fresh one here
+      ytPlayerRef.current = new (window as any).YT.Player('yt-player-container', {
+        height: '100%', width: '100%', videoId: youtubeVideoId,
+        playerVars: { 'playsinline': 1, 'controls': 1 },
+        events: {
+          'onReady': () => {
+            isYtPlayerReadyRef.current = true;
+            console.log("📺 YouTube Player API fully loaded and ready for commands.");
+          },
+          'onStateChange': (event: any) => {
+            if (event.data === 1 && isTestingSyncRef.current) { 
+              isTestingSyncRef.current = false;
+              runTestMetronome();
             }
           }
-        });
-      }
+        }
+      });
     };
 
     if (!(window as any).YT) {
@@ -516,9 +516,17 @@ export default function SongEditPage() {
     }
     initPlayer();
     
-  // ✅ SURGICAL FIX: Removed formTempo and formYoutubeSyncOffset from the dependency array 
-  // so the player does NOT reload while the user is typing!
-  }, [youtubeVideoId]);
+    // ✅ SURGICAL FIX: Cleanup function for when you paste a new URL
+    return () => {
+      if (ytPlayerRef.current && typeof ytPlayerRef.current.destroy === 'function') {
+        try { ytPlayerRef.current.destroy(); } catch(e) {}
+        ytPlayerRef.current = null;
+        isYtPlayerReadyRef.current = false;
+      }
+    };
+    
+  // ✅ SURGICAL FIX: Add `editorActiveTab` so the player accurately rebuilds when tabbing back to Details!
+  }, [youtubeVideoId, editorActiveTab]);
 
   const handleTestYoutubeSync = () => {
     if (!audioCtxRef.current) {
@@ -1008,6 +1016,34 @@ export default function SongEditPage() {
     return <GlobalLoader message="LOADING SONGS DETAILS..." />;
   }
 
+  // ✅ SURGICAL ADDITION: Hoisted the Save Validation logic so the Header can read it!
+  const isAnySectionMismatchedAcrossModal = formSections.some((checkSec) => {
+    const checkTuple = getCentralizedMetricsTuple(checkSec.type);
+    const checkLines = checkSec.content.split("\n").map(l => l.replace(/\[[^\]]+\]/g, "").trim()).filter(l => l.length > 0);
+    if (checkLines.length === 0) return false;
+    const totalCheckPasses = (checkTuple.repeats || 0) + 1; 
+    const totalLineSegments = checkLines.length * totalCheckPasses;
+    const targetAbsoluteBeats = (checkTuple.measures * 4) + checkTuple.beats;
+    const checkSpreadMeasures = Math.floor(checkTuple.measures / totalLineSegments);
+    const checkRemainderMeasures = checkTuple.measures % totalLineSegments;
+    const checkSpreadBeats = Math.floor(checkTuple.beats / totalLineSegments);
+    const checkRemainderBeats = checkTuple.beats % totalLineSegments;
+
+    const calculatedBeatsSum = (checkLines.reduce((sum, _, lineIndex) => {
+      const lineOverride = (lineOverrides as any)?.[checkSec.type]?.[lineIndex];
+      const measures = lineOverride?.measures ?? (checkSpreadMeasures + (lineIndex < checkRemainderMeasures ? 1 : 0));
+      const beats = lineOverride?.beats ?? (checkSpreadBeats + (lineIndex < checkRemainderBeats ? 1 : 0));
+      return sum + (measures * 4) + beats;
+    }, 0) * totalCheckPasses) + (checkTuple.head_m * 4) + (checkTuple.tail_m * 4);
+
+    return calculatedBeatsSum !== targetAbsoluteBeats;
+  });
+
+  // ✅ SURGICAL FIX: Separate the Mismatch error from the Disabled state
+  const isMismatched = isRealtimePreviewActive && isAnySectionMismatchedAcrossModal;
+  const isSaveDisabled = isMismatched || !hasUnsavedChanges;
+  // const isSaveDisabled = isRealtimePreviewActive && isAnySectionMismatchedAcrossModal;
+
   return (
     <div ref={editorContentContainerRef} className="h-screen w-full overflow-hidden bg-[#f8f9fa] flex flex-col relative animate-in fade-in duration-200">
       <style dangerouslySetInnerHTML={{__html: `@import url('https://fonts.googleapis.com/css2?family=Nothing+You+Could+Do&display=swap');`}} />
@@ -1031,7 +1067,6 @@ export default function SongEditPage() {
                 <button type="button" onClick={() => setIsImportModalOpen(true)} className="px-3 py-1.5 text-[11px] font-black text-blue-600 bg-blue-50 border border-blue-200 hover:bg-blue-100 rounded-lg block shadow-sm">📥 Import Raw</button>
                 <button type="button" onClick={() => { const nextState = !isRealtimePreviewActive; setIsRealtimePreviewActive(nextState); if (!nextState) { setChordMode("Off"); setIsAddNotesModeActive(false); } }} className={`px-3 py-1.5 text-[11px] font-black rounded-lg border transition-all ${isRealtimePreviewActive ? 'bg-blue-600 border-blue-500 text-white shadow-md' : 'bg-white border-zinc-200 text-zinc-700'}`}> {isRealtimePreviewActive ? "👁️ Hide Preview" : "👁️ Show Preview"} </button>
                 
-                {/* ✅ 3-State Toggle Button Hook */}
                 <button type="button" disabled={!isRealtimePreviewActive} onClick={cycleChordMode} className={`px-3 py-1.5 text-[11px] font-black rounded-lg border transition-all disabled:opacity-40 min-w-[110px] ${chordMode !== "Off" ? 'bg-amber-500 border-amber-400 text-white' : 'bg-white border-zinc-200 text-zinc-700'}`}> 
                   🎸 Chords: {chordMode}
                 </button>
@@ -1039,14 +1074,43 @@ export default function SongEditPage() {
                 <button type="button" disabled={!isRealtimePreviewActive} onClick={() => { setIsAddNotesModeActive(!isAddNotesModeActive); setChordMode("Off"); }} className={`px-3 py-1.5 text-[11px] font-black rounded-lg border transition-all disabled:opacity-40 ${isAddNotesModeActive ? 'bg-purple-600 border-purple-500 text-white shadow-md' : 'bg-white border-zinc-200 text-zinc-700'}`}> 📝 Add Notes </button>
               </>
             )}
+
+            {/* ✅ SURGICAL FIX: Desktop Save Button respects hasUnsavedChanges */}
+            <div className="w-px h-6 bg-zinc-200 mx-1" />
+            {(activeRole === "admin" || activeRole === "member") && (
+              <button 
+                type="button" 
+                disabled={isSaveDisabled} 
+                className={`px-4 py-1.5 rounded-lg font-black text-[11px] uppercase tracking-wider transition-all ${isSaveDisabled ? "bg-zinc-100 text-zinc-400 border border-zinc-200 cursor-not-allowed opacity-80" : "bg-blue-600 hover:bg-blue-700 text-white shadow-md cursor-pointer"}`} 
+                onClick={handleCommitSongChangesToDB}
+              >
+                {isMismatched ? "🔒 Calculations Mismatched" : (!hasUnsavedChanges ? "No Changes" : "Save Arrangement")}
+              </button>
+            )}
           </div>
         </div>
 
         <nav className="flex flex-col select-none w-full border-t border-zinc-100">
-          <div className="px-4 md:px-8 flex gap-4 text-xs font-bold bg-zinc-50/30">
-            {(["details", "content", "structure"] as const).map(tab => (
-              <button key={tab} type="button" onClick={() => setEditorActiveTab(tab)} className={`py-3 capitalize tracking-wide transition-all border-b-2 font-black ${editorActiveTab === tab ? 'border-blue-600 text-blue-600' : 'border-transparent text-zinc-400 hover:text-zinc-600'}`}>{tab}</button>
-            ))}
+          <div className="px-4 md:px-8 flex justify-between items-center bg-zinc-50/30">
+            <div className="flex gap-4 text-xs font-bold">
+              {(["details", "content", "structure"] as const).map(tab => (
+                <button key={tab} type="button" onClick={() => setEditorActiveTab(tab)} className={`py-3 capitalize tracking-wide transition-all border-b-2 font-black ${editorActiveTab === tab ? 'border-blue-600 text-blue-600' : 'border-transparent text-zinc-400 hover:text-zinc-600'}`}>{tab}</button>
+              ))}
+            </div>
+
+            {/* ✅ SURGICAL FIX: Mobile Save Button respects hasUnsavedChanges */}
+            <div className="md:hidden flex items-center py-1.5">
+              {(activeRole === "admin" || activeRole === "member") && (
+                <button 
+                  type="button" 
+                  disabled={isSaveDisabled} 
+                  className={`px-3 py-1.5 rounded-md font-black text-[9px] uppercase tracking-wider transition-all shadow-sm ${isSaveDisabled ? "bg-zinc-100 text-zinc-400 border border-zinc-200 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700 text-white"}`} 
+                  onClick={handleCommitSongChangesToDB}
+                >
+                  {isMismatched ? "Mismatched" : (!hasUnsavedChanges ? "Saved" : "Save")}
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Mobile Quick Action Action Row */}
@@ -1067,7 +1131,7 @@ export default function SongEditPage() {
       </header>
 
       {/* FULL-BLEED WORKSPACE CANVAS */}
-      <div className="flex-1 overflow-y-auto p-4 md:p-8 pb-32 custom-scrollbar space-y-3 w-full" onScroll={handleCanvasScroll}>
+      <div className="flex-1 overflow-y-auto p-4 md:p-8 custom-scrollbar space-y-3 w-full" onScroll={handleCanvasScroll}>
         {editorActiveTab === "details" && (
           <div className="w-full animate-in fade-in">
             <div className="bg-white p-4 md:p-6 rounded-xl md:rounded-2xl border border-zinc-200 space-y-4 shadow-sm">
@@ -1134,7 +1198,7 @@ export default function SongEditPage() {
                 </div>
 
                 <div className="space-y-3">
-                  <div className="relative">
+                  {/* <div className="relative">
                     <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Source URL</label>
                     <input 
                       type="text" 
@@ -1144,14 +1208,10 @@ export default function SongEditPage() {
                       placeholder="https://youtu.be/..." 
                     />
                     {formYoutubeUrl && !youtubeVideoId && <span className="text-[9px] font-bold text-red-500 absolute top-1 right-2">Invalid Link</span>}
-                  </div>
+                  </div> */}
 
                   {youtubeVideoId && (
                     <div className="bg-zinc-50 border border-zinc-200 p-3 rounded-xl space-y-3 shadow-inner">
-                      <div className="aspect-video w-full max-w-sm mx-auto bg-black rounded-lg overflow-hidden shadow-md">
-                        <div id="yt-player-container"></div>
-                      </div>
-                      
                       <div className="flex flex-col sm:flex-row gap-2">
                         <div className="flex-1">
                           <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Downbeat Offset (ms)</label>
@@ -1168,6 +1228,9 @@ export default function SongEditPage() {
                         <div className="flex items-end shrink-0 w-full sm:w-auto">
                           <button type="button" onClick={handleTestYoutubeSync} className="w-full sm:w-auto px-5 py-2 bg-red-600 hover:bg-red-700 text-white font-black text-[10px] uppercase tracking-wider rounded-lg shadow-sm active:scale-95 transition-all">Test Timing</button>
                         </div>
+                      </div>
+                      <div className="aspect-video w-full max-w-sm mx-auto bg-black rounded-lg overflow-hidden shadow-md">
+                        <div id="yt-player-container"></div>
                       </div>
                     </div>
                   )}
@@ -1443,16 +1506,9 @@ export default function SongEditPage() {
             : "-bottom-24 opacity-0"
         }`}
       >
-        <div className="bg-white/95 backdrop-blur-md border border-zinc-200/80 shadow-[0_12px_40px_rgb(0,0,0,0.12)] p-2 md:p-2.5 rounded-2xl flex items-center justify-between w-full max-w-4xl pointer-events-auto">
+        {/* <div className="bg-white/95 backdrop-blur-md border border-zinc-200/80 shadow-[0_12px_40px_rgb(0,0,0,0.12)] p-2 md:p-2.5 rounded-2xl flex items-center justify-between w-full max-w-4xl pointer-events-auto">
           <div className="flex items-center gap-2 flex-1 min-w-0 pr-2">
-            {editorActiveTab === "content" && chordMode === "Keyboard" && (
-              <div className="flex items-center gap-1 bg-amber-50/40 border border-amber-200/60 p-1 rounded-xl animate-in slide-in-from-bottom-1 max-w-full overflow-x-auto">
-                <span className="text-[8px] font-black uppercase text-amber-600 tracking-tight shrink-0 px-1">🎹 Nashville Quick Key</span>
-                <select value={selectedChordRoot} className="bg-white border rounded-md px-1.5 py-0.5 text-[10px] font-bold outline-none" onChange={e => { const r = e.target.value; setSelectedChordRoot(r); const m = activeScaleDiatonicDeck.find(o => o.root === r); setCustomChordInputValue(`${r}${m ? m.suffix : ""}`); }}>{activeScaleDiatonicDeck.map((opt, i) => <option key={i} value={opt.root}>{opt.root}{opt.suffix}</option>)}</select>
-                <input type="text" value={customChordInputValue} className="border bg-white rounded-md px-1.5 py-0.5 text-center w-14 text-[10px] font-black outline-none" onChange={e => setCustomChordInputValue(e.target.value)} />
-                <button type="button" className="px-2.5 py-1 rounded-md font-black text-[9px] uppercase tracking-wide text-white bg-blue-600 shrink-0" onClick={() => executeChordInjectionAtIndex(customChordInputValue)}>Add</button>
-              </div>
-            )}
+            
           </div>
 
           {(() => {
@@ -1489,7 +1545,7 @@ export default function SongEditPage() {
               </div>
             );
           })()}
-        </div>
+        </div> */}
       </div>
 
       {/* DISCARD OVERLAY MODAL */}
