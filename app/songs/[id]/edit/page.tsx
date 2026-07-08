@@ -1198,7 +1198,7 @@ export default function SongEditPage() {
                 </div>
 
                 <div className="space-y-3">
-                  {/* <div className="relative">
+                  <div className="relative">
                     <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Source URL</label>
                     <input 
                       type="text" 
@@ -1208,7 +1208,7 @@ export default function SongEditPage() {
                       placeholder="https://youtu.be/..." 
                     />
                     {formYoutubeUrl && !youtubeVideoId && <span className="text-[9px] font-bold text-red-500 absolute top-1 right-2">Invalid Link</span>}
-                  </div> */}
+                  </div>
 
                   {youtubeVideoId && (
                     <div className="bg-zinc-50 border border-zinc-200 p-3 rounded-xl space-y-3 shadow-inner">

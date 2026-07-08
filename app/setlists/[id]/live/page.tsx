@@ -578,9 +578,8 @@ export default function SetlistPerformanceRoomPage() {
                 ytSyncPendingRef.current = false;
                 setIsYtBuffering(false);
                 
-                // ✅ SURGICAL FIX: Stop trusting the drifty video playhead! 
-                // Use the exact theoretical timestamp we requested.
-                const currentVideoTimeMs = ytExpectedStartTimeRef.current * 1000;
+                // ⚡ BACK TO BASICS: Trust the playhead! It inherently absorbs browser lag.
+                const currentVideoTimeMs = (event.target.getCurrentTime() || 0) * 1000;
                 
                 const songBeat1OffsetMs = activeSongRef.current?.youtube_sync_offset_ms || 0;
                 
@@ -1106,7 +1105,8 @@ export default function SetlistPerformanceRoomPage() {
           // ✅ SURGICAL FIX: Suppress follower countdown if MD used YouTube
           isYtBackingTrackStartRef.current = payload.isYtSource || false;
 
-          executeJumpNow(targetTrackIdx, payload.sectionIndex, payload.mdSectionStartTime);
+          // ✅ SURGICAL FIX: Pass true so the engine knows NOT to seek the video!
+          executeJumpNow(targetTrackIdx, payload.sectionIndex, payload.mdSectionStartTime, true);
         }
         else if (payload.action === "STOP") {
           executeLocalResetSequence();
@@ -1199,7 +1199,7 @@ export default function SetlistPerformanceRoomPage() {
   }, [setlistId, localPresenceUser]);
 
   // ✅ SURGICAL REFACTOR: A unified engine to seamlessly execute jumps without freezing the clock
-  const executeJumpNow = (targetTrackIdx: number, targetSectionIdx: number, jumpTime: number) => {
+  const executeJumpNow = (targetTrackIdx: number, targetSectionIdx: number, jumpTime: number, isInitialStart: boolean = false) => {
     // 1. Handle Track Change if necessary
     if (targetTrackIdx !== undefined && targetTrackIdx !== playingTrackIndexRef.current) {
       mountTargetSetlistTrackIndex(targetTrackIdx, tracksListRef.current, false, true);
@@ -1222,8 +1222,8 @@ export default function SetlistPerformanceRoomPage() {
         // Anchor the infinite grid to the theoretical beginning of the song!
         audioContextStartTimeRef.current = absoluteHardwareTimeAtJump - theoreticalSongStartOffset;
 
-        // ✅ SURGICAL ADDITION: Instantly seek the YouTube Backing Track!
-        if (isYtBackingTrackStartRef.current && ytPlayerRef.current && typeof ytPlayerRef.current.seekTo === 'function') {
+        // ✅ SURGICAL FIX: ONLY jump the YouTube video if this is a manual mid-song jump.
+        if (!isInitialStart && isYtBackingTrackStartRef.current && ytPlayerRef.current && typeof ytPlayerRef.current.seekTo === 'function') {
           const ytOffsetSecs = (activeSongRef.current?.youtube_sync_offset_ms || 0) / 1000;
           const targetVideoTime = ytOffsetSecs + theoreticalSongStartOffset;
           try {
@@ -1609,13 +1609,12 @@ export default function SetlistPerformanceRoomPage() {
       const headBeats = (timings.head_m || 0) * 4;
       const tailBeats = (timings.tail_m || 0) * 4;
 
-      let totalBeats = (timings.measures * 4) + (timings.beats || 0);
-      let loopBeats = totalBeats / sectionMultiplier;
+      // ✅ SURGICAL FIX: Calculate the base loop FIRST without dividing!
+      let loopBeats = (timings.measures * 4) + (timings.beats || 0);
 
       const lineTimingsObj = timings.line_timings;
       const parsedLinesCount = astTreeRef.current[idx]?.lines.length || 1;
 
-      // Check if we have specific custom line timings mapped out
       let calculatedLoopBeats = 0;
       const lineBeatsArray: number[] = [];
       
@@ -1628,11 +1627,13 @@ export default function SetlistPerformanceRoomPage() {
         }
         if (calculatedLoopBeats > 0) {
           loopBeats = calculatedLoopBeats;
-          totalBeats = loopBeats * sectionMultiplier; 
         }
       }
 
-      // ✅ SURGICAL FIX: Add the head and tail padding to the absolute section duration
+      // ✅ SURGICAL FIX: Apply the multiplier to the final calculated loop block!
+      let totalBeats = loopBeats * sectionMultiplier;
+
+      // Add the head and tail padding to the absolute section duration
       totalBeats += headBeats + tailBeats;
       const totalDurationMs = totalBeats * beatSpeedMsCurrent;
       
@@ -1969,10 +1970,13 @@ export default function SetlistPerformanceRoomPage() {
             targetVideoTime = ytBeat1OffsetSecs + (targetAbsoluteBeat * beatSpeedSecs);
           }
           
-          // ✅ SURGICAL FIX: Save the exact mathematical time we are requesting!
-          ytExpectedStartTimeRef.current = targetVideoTime;
+          // ⚡ THE FIX: Only seek if the playhead is actually in the wrong spot!
+          // This prevents YouTube from dumping its pre-warmed buffer at 0:00.
+          const currentYtTime = ytPlayerRef.current.getCurrentTime() || 0;
+          if (Math.abs(currentYtTime - targetVideoTime) > 0.5) {
+            ytPlayerRef.current.seekTo(targetVideoTime, true);
+          }
           
-          ytPlayerRef.current.seekTo(targetVideoTime, true);
           ytPlayerRef.current.playVideo();
         } else {
           console.warn("YT Player not ready. Falling back.");
@@ -2383,12 +2387,33 @@ export default function SetlistPerformanceRoomPage() {
       const timings = activeSong.section_timings?.[section.section_name] || { measures: 4, beats: 0, repeats: 0, head_m: 0, tail_m: 0 };
       const sectionMultiplier = (timings.repeats || 0) + 1;
       
-      const headMeasures = timings.head_m || 0;
-      const coreMeasures = timings.measures || 0;
-      const coreLeftoverBeats = timings.beats || 0;
-      const tailMeasures = timings.tail_m || 0;
+      const headBeats = (timings.head_m || 0) * 4;
+      const tailBeats = (timings.tail_m || 0) * 4;
 
-      // Helper function to stamp a measure onto the timeline
+      let loopBeats = ((timings.measures || 0) * 4) + (timings.beats || 0);
+      
+      // ✅ SURGICAL FIX: Pre-calculate if line timings override the core measures!
+      const lineTimingsObj = timings.line_timings;
+      const parsedLinesCount = memoizedSongAstTree[sIdx]?.lines.length || 1;
+      
+      let hasLineOverrides = false;
+      const lineBeatsMap: number[] = [];
+      
+      if (lineTimingsObj && Object.keys(lineTimingsObj).length > 0) {
+        let sumBeats = 0;
+        for (let i = 0; i < parsedLinesCount; i++) {
+          const t = lineTimingsObj[String(i)] || { measures: 0, beats: 0 };
+          const lineBeats = (t.measures * 4) + (t.beats || 0);
+          lineBeatsMap.push(lineBeats);
+          sumBeats += lineBeats;
+        }
+        if (sumBeats > 0) {
+          hasLineOverrides = true;
+          loopBeats = sumBeats; // Keep reference of total loop length
+        }
+      }
+
+      // Helper functions to stamp dynamic measure lengths onto the timeline
       const stampMeasure = (length: number) => {
         if (length <= 0) return;
         for (let b = 1; b <= length; b++) {
@@ -2403,19 +2428,29 @@ export default function SetlistPerformanceRoomPage() {
         }
       };
 
+      const stampBeats = (totalBeatsToStamp: number) => {
+          let remaining = totalBeatsToStamp;
+          while (remaining > 0) {
+             const mLen = remaining >= 4 ? 4 : remaining;
+             stampMeasure(mLen);
+             remaining -= mLen;
+          }
+      };
+
       // 1. Stamp Head Padding
-      for (let m = 0; m < headMeasures; m++) stampMeasure(4);
+      stampBeats(headBeats);
 
       // 2. Stamp Core block (and repeat it if necessary)
       for (let r = 0; r < sectionMultiplier; r++) {
-         for (let m = 0; m < coreMeasures; m++) stampMeasure(4);
-         
-         // ⚡ THE MAGIC SAUCE: If there are leftover beats, it generates a truncated measure!
-         if (coreLeftoverBeats > 0) stampMeasure(coreLeftoverBeats); 
+         if (hasLineOverrides) {
+            lineBeatsMap.forEach(b => stampBeats(b));
+         } else {
+            stampBeats(loopBeats);
+         }
       }
 
       // 3. Stamp Tail Padding
-      for (let m = 0; m < tailMeasures; m++) stampMeasure(4);
+      stampBeats(tailBeats);
     });
 
     return {
@@ -2423,7 +2458,8 @@ export default function SetlistPerformanceRoomPage() {
       nodes: map,
       sectionStartBeats
     };
-  }, [activeSong, sections]);
+  // ✅ SURGICAL FIX: Added memoizedSongAstTree so line timings recalculate instantly!
+  }, [activeSong, sections, memoizedSongAstTree]);
 
   // Cache it in a ref so our high-speed execution loop can read it later without React state lag
   const beatMapRef = useRef<CompiledBeatMap>({ totalBeats: 0, nodes: [], sectionStartBeats: [] });
@@ -2687,16 +2723,33 @@ export default function SetlistPerformanceRoomPage() {
       {/* ======================================================================= */}
       
       {(() => {
-        // ✅ SURGICAL ADDITION: Centralized Duration Calculator for both views
-        const getSectionDurationString = (sectionName: string) => {
+        // ✅ SURGICAL FIX: Centralized Duration Calculator that respects Line Timings!
+        const getSectionDurationString = (sectionName: string, sectionIdx?: number) => {
           const timings = activeSong?.section_timings?.[sectionName] || { measures: 4, beats: 0, repeats: 0, head_m: 0, tail_m: 0 };
           const sectionMultiplier = (timings.repeats || 0) + 1;
           const headBeats = (timings.head_m || 0) * 4;
           const tailBeats = (timings.tail_m || 0) * 4;
-          const baseBeats = ((timings.measures || 0) * 4) + (timings.beats || 0);
+          
+          let loopBeats = ((timings.measures || 0) * 4) + (timings.beats || 0);
+          
+          // ✅ Incorporate line timings for accurate UI display!
+          if (sectionIdx !== undefined && timings.line_timings) {
+             const astNode = memoizedSongAstTree[sectionIdx];
+             if (astNode) {
+               let calc = 0;
+               for (let i = 0; i < astNode.lines.length; i++) {
+                  const t = timings.line_timings[String(i)];
+                  if (t) calc += (t.measures * 4) + (t.beats || 0);
+               }
+               if (calc > 0) loopBeats = calc;
+             }
+          }
 
-          let totalBeats = (baseBeats * sectionMultiplier) + headBeats + tailBeats;
-          if (totalBeats <= 0) totalBeats = 32;
+          let totalBeats = (loopBeats * sectionMultiplier) + headBeats + tailBeats;
+          
+          // ✅ SURGICAL FIX: Do not arbitrarily force 32 beats (8 measures) if it equals 0. 
+          // Default to 16 beats (4 measures) only as a last resort safety net.
+          if (totalBeats <= 0) totalBeats = 16; 
 
           const tempo = activeSong?.tempo || 75;
           const msPerBeat = 60000 / tempo;
@@ -2716,7 +2769,7 @@ export default function SetlistPerformanceRoomPage() {
                   const getSecData = (idx: number) => {
                     const ast = memoizedSongAstTree[idx];
                     if (!ast) return null;
-                    const duration = getSectionDurationString(ast.section_name);
+                    const duration = getSectionDurationString(ast.section_name, idx);
                     return { ast, duration };
                   };
 
@@ -2839,7 +2892,7 @@ export default function SetlistPerformanceRoomPage() {
                     const isThisSectionQueuedNext = queuedTrackIndex === currentTrackIndex && queuedSectionIndex === idx;
                     const isStagedUnstartedTarget = !isPlayingFlow && currentSectionIndex === idx;
                     
-                    const formattedDuration = getSectionDurationString(section.section_name);
+                    const formattedDuration = getSectionDurationString(section.section_name, idx);
 
                     return (
                       <div

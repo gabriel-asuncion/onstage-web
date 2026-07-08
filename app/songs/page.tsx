@@ -113,13 +113,15 @@ export default function SongsListPage() {
   };
 
   const parseColonWrappedKeywords = (rawQuery: string) => {
-    const tokens = { title: "", artist: "", key: "", lyrics: "", theme: "" };
+    // ✅ SURGICAL FIX: Added bpm and bpmRange to the token object
+    const tokens = { title: "", artist: "", key: "", lyrics: "", theme: "", bpm: "", bpmRange: "" };
     if (!rawQuery.trim()) return tokens;
 
     let processedString = rawQuery;
 
     const isolateToken = (prefix: string) => {
-      const regex = new RegExp(`${prefix}\\s*([^:]+?)(?=\\s*(?::artist:|:key:|:lyrics:|:theme:|$))`, 'i');
+      // ✅ SURGICAL FIX: Added :bpm: and :bpm-range: to the regex exclusion list
+      const regex = new RegExp(`${prefix}\\s*([^:]+?)(?=\\s*(?::artist:|:key:|:lyrics:|:theme:|:bpm:|:bpm-range:|$))`, 'i');
       const match = processedString.match(regex);
       if (match) {
         processedString = processedString.replace(match[0], "").trim();
@@ -132,6 +134,8 @@ export default function SongsListPage() {
     tokens.key = isolateToken(":key:");
     tokens.lyrics = isolateToken(":lyrics:");
     tokens.theme = isolateToken(":theme:");
+    tokens.bpm = isolateToken(":bpm:");
+    tokens.bpmRange = isolateToken(":bpm-range:");
     
     tokens.title = processedString.trim().toLowerCase();
     return tokens;
@@ -145,6 +149,19 @@ export default function SongsListPage() {
     if (searchTokens.key && !song.original_key?.toLowerCase().includes(searchTokens.key)) return false;
     if (searchTokens.theme && !song.themes?.toLowerCase().includes(searchTokens.theme)) return false;
     if (searchTokens.lyrics && !song.chordpro_content?.toLowerCase().includes(searchTokens.lyrics)) return false;
+    
+    // ✅ SURGICAL FIX: Exact BPM Match
+    if (searchTokens.bpm && String(song.tempo) !== searchTokens.bpm) return false;
+    
+    // ✅ SURGICAL FIX: Range BPM Math (e.g. 70-90)
+    if (searchTokens.bpmRange) {
+      const [minStr, maxStr] = searchTokens.bpmRange.split("-");
+      const min = parseInt(minStr) || 0;
+      const max = parseInt(maxStr) || 999;
+      const songTempo = parseInt(song.tempo) || 0;
+      if (songTempo < min || songTempo > max) return false;
+    }
+    
     return true;
   });
 
@@ -245,6 +262,24 @@ export default function SongsListPage() {
               <span className="opacity-40 font-mono text-[9px]">:theme:</span>
               <span className="capitalize max-w-[70px] truncate">{searchTokens.theme}</span>
               <button type="button" onClick={() => handleClearSpecificTokenChip(":theme:", searchTokens.theme)} className="text-[10px] ml-0.5 font-bold text-zinc-400 hover:text-red-500">✕</button>
+            </div>
+          )}
+
+          {/* ✅ SURGICAL ADDITION: UI Chip for Exact BPM */}
+          {searchTokens.bpm && (
+            <div className="inline-flex items-center gap-1 bg-white border text-zinc-800 text-[10px] font-black px-2 py-0.5 rounded-full shadow-sm animate-in zoom-in-95">
+              <span className="opacity-40 font-mono text-[9px]">:bpm:</span>
+              <span>{searchTokens.bpm}</span>
+              <button type="button" onClick={() => handleClearSpecificTokenChip(":bpm:", searchTokens.bpm)} className="text-[10px] ml-0.5 font-bold text-zinc-400 hover:text-red-500">✕</button>
+            </div>
+          )}
+
+          {/* ✅ SURGICAL ADDITION: UI Chip for BPM Range */}
+          {searchTokens.bpmRange && (
+            <div className="inline-flex items-center gap-1 bg-white border text-zinc-800 text-[10px] font-black px-2 py-0.5 rounded-full shadow-sm animate-in zoom-in-95">
+              <span className="opacity-40 font-mono text-[9px]">:bpm-range:</span>
+              <span>{searchTokens.bpmRange}</span>
+              <button type="button" onClick={() => handleClearSpecificTokenChip(":bpm-range:", searchTokens.bpmRange)} className="text-[10px] ml-0.5 font-bold text-zinc-400 hover:text-red-500">✕</button>
             </div>
           )}
 
