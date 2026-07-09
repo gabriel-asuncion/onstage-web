@@ -37,7 +37,7 @@ export interface HardwareClockConfig {
   getGlobalTime: () => number;
   executeJumpNow: (trackIdx: number, secIdx: number, time: number, isInitialStart?: boolean) => void;
   localPresenceUserRef: React.MutableRefObject<any>;
-  realtimeChannelRef: React.MutableRefObject<any>;
+  broadcastRef: React.MutableRefObject<(payload: any) => void>; // ✅ FULL FIX: Converted to Ref
   updateMetronomeUI: (beat: number, isPlaying: boolean, measureLength?: number) => void;
   activeLineIndexRef: React.MutableRefObject<number>;
   setActiveLineIndex: (idx: number) => void;
@@ -82,7 +82,6 @@ export function useHardwareClock(config: HardwareClockConfig) {
       const headBeats = (timings.head_m || 0) * 4;
       const tailBeats = (timings.tail_m || 0) * 4;
       
-      // ✅ FIX: Treat timings.measures as the Absolute Total Core block
       let totalCoreBeats = ((timings.measures || 0) * 4) + (timings.beats || 0);
       let baseLoopBeats = totalCoreBeats / sectionMultiplier;
 
@@ -103,14 +102,13 @@ export function useHardwareClock(config: HardwareClockConfig) {
         }
         if (calculatedBaseLoopBeats > 0) {
           baseLoopBeats = calculatedBaseLoopBeats;
-          totalCoreBeats = baseLoopBeats * sectionMultiplier; // Override total if explicit lines are set
+          totalCoreBeats = baseLoopBeats * sectionMultiplier; 
         }
       }
 
       let totalBeats = totalCoreBeats + headBeats + tailBeats;
       const totalDurationMs = totalBeats * beatSpeedMsCurrent;
       
-      // ✅ SURGICAL FIX: Idle instead of permanently killing the timeline if a variable is missing
       if (!config.mdSectionStartTimeRef.current || isNaN(config.mdSectionStartTimeRef.current)) {
         config.animationFrameRef.current = requestAnimationFrame(clockExecutionTick);
         return; 
@@ -136,7 +134,6 @@ export function useHardwareClock(config: HardwareClockConfig) {
         if (config.countdownValueRef.current !== null) { config.countdownValueRef.current = null; config.setCountdownValue(null); }
       }
       
-      // ✅ Visuals run on true zero-latency global time
       const visualElapsedMs = Math.max(0, elapsedMs);
       
       const progressRatio = Math.min(1, visualElapsedMs / totalDurationMs);
@@ -147,7 +144,6 @@ export function useHardwareClock(config: HardwareClockConfig) {
       const msRemaining = totalDurationMs - visualElapsedMs;
       const fourBeatsMs = beatSpeedMsCurrent * 4;
 
-      // ✅ Trigger cue as soon as we cross the 4-beat threshold
       if (!config.hasPlayedCueRef.current && msRemaining > 0 && msRemaining <= fourBeatsMs) {
         config.hasPlayedCueRef.current = true; 
         const nextSecIndex = (config.queuedSectionIndexRef.current !== null) ? config.queuedSectionIndexRef.current : idx + 1;
@@ -161,8 +157,7 @@ export function useHardwareClock(config: HardwareClockConfig) {
         const beatSpeedSecs = beatSpeedMsCurrent / 1000;
         const currentAudioTime = audioCtx.currentTime;
         
-        // ✅ Add bluetooth offset to delay the audio hardware
-        const audioOffsetSecs = config.audioLatencyOffsetMs / 1000; 
+        const audioOffsetSecs = -(config.audioLatencyOffsetMs / 1000); 
 
         let nextBeatTime = config.audioContextStartTimeRef.current + (config.lastAudioBeatRef.current * beatSpeedSecs);
         
@@ -176,8 +171,6 @@ export function useHardwareClock(config: HardwareClockConfig) {
           }
           if (absoluteBeatIndex < mapNodes.length) {
             const beatNode = mapNodes[absoluteBeatIndex];
-            
-            // ✅ Schedule the sound with the offset applied
             config.triggerMetronomeSound(beatNode.isDownbeat ? 1 : 2, nextBeatTime + audioOffsetSecs);
             if (config.isDoubleMetronomeEnabledRef.current) {
               config.triggerMetronomeSound(2, nextBeatTime + audioOffsetSecs + (beatSpeedSecs / 2));
@@ -187,23 +180,20 @@ export function useHardwareClock(config: HardwareClockConfig) {
           nextBeatTime = config.audioContextStartTimeRef.current + (config.lastAudioBeatRef.current * beatSpeedSecs);
         }
         
-        if (isCurrentlyMD && config.realtimeChannelRef.current && config.lastAudioBeatRef.current > 0 && config.lastAudioBeatRef.current % 16 === 0) {
+        if (isCurrentlyMD && config.lastAudioBeatRef.current > 0 && config.lastAudioBeatRef.current % 16 === 0) {
           if ((window as any)._lastHeartbeatBeat !== config.lastAudioBeatRef.current) {
             (window as any)._lastHeartbeatBeat = config.lastAudioBeatRef.current;
             
-            // ✅ SURGICAL FIX: Calculate correct local beat time instead of absolute song time!
             const sectionStartBeat = config.beatMapRef.current.sectionStartBeats[config.currentSectionIndexRef.current] || 0;
             const localBeatCount = config.lastAudioBeatRef.current - sectionStartBeat;
             const exactGlobalBeatTime = config.mdSectionStartTimeRef.current + (localBeatCount * beatSpeedSecs * 1000);
             
-            config.realtimeChannelRef.current.send({
-              type: "broadcast", event: "lobby_sync",
-              payload: { 
+            // ✅ FULL FIX: Triggers via Ref to bypass stale closure!
+            config.broadcastRef.current({ 
                 action: "HEARTBEAT", 
                 mdAbsoluteBeat: config.lastAudioBeatRef.current, 
                 mdGlobalBeatTime: exactGlobalBeatTime,
-                mdSectionIndex: config.currentSectionIndexRef.current // ✅ Send section index to ensure safe tracking
-              }
+                mdSectionIndex: config.currentSectionIndexRef.current 
             });
           }
         }
@@ -232,9 +222,8 @@ export function useHardwareClock(config: HardwareClockConfig) {
       const sectionAbsoluteBeat = Math.floor(cappedElapsedMs / beatSpeedMsCurrent);
       const coreAbsoluteBeat = Math.max(0, sectionAbsoluteBeat - headBeats);
       
-      // ✅ SURGICAL FIX: Use totalCoreBeats since loopBeats was removed!
-      const maxCoreBeats = totalCoreBeats; 
-      const cappedCoreBeat = Math.min(coreAbsoluteBeat, Math.max(0, maxCoreBeats - 1));
+      const cappedCoreBeat = Math.min(coreAbsoluteBeat, Math.max(0, totalCoreBeats - 1));
+
       const safeBaseLoopBeats = Math.max(1, baseLoopBeats); 
       
       let targetLineIdx = 0;
@@ -248,7 +237,7 @@ export function useHardwareClock(config: HardwareClockConfig) {
         }
       } else {
         const safeLinesCount = Math.max(1, parsedLinesCount); 
-        const beatsPerLine = safeBaseLoopBeats / safeLinesCount; // Divides the base loop, NOT the total!
+        const beatsPerLine = safeBaseLoopBeats / safeLinesCount; 
         const beatWithinCurrentLoop = cappedCoreBeat % safeBaseLoopBeats;
         targetLineIdx = Math.floor(beatWithinCurrentLoop / beatsPerLine);
         if (targetLineIdx >= safeLinesCount) targetLineIdx = safeLinesCount - 1;
@@ -269,20 +258,14 @@ export function useHardwareClock(config: HardwareClockConfig) {
           nextSectionIdx = config.queuedSectionIndexRef.current as number;
           const jumpTime = config.mdSectionStartTimeRef.current + totalDurationMs;
           config.executeJumpNow(nextTrackIdx, nextSectionIdx, jumpTime);
-          if (isCurrentlyMD && config.realtimeChannelRef.current) {
-            config.realtimeChannelRef.current.send({
-              type: "broadcast", event: "lobby_sync",
-              payload: { action: "JUMP", trackIndex: nextTrackIdx, sectionIndex: nextSectionIdx, mdSectionStartTime: jumpTime }
-            });
+          if (isCurrentlyMD) {
+            config.broadcastRef.current({ action: "JUMP", trackIndex: nextTrackIdx, sectionIndex: nextSectionIdx, mdSectionStartTime: jumpTime }); // ✅ FULL FIX
           }
         } else if (nextSectionIdx >= secs.length) {
           const jumpTime = config.mdSectionStartTimeRef.current + totalDurationMs;
           config.executeJumpNow(nextTrackIdx, 0, jumpTime);
-          if (isCurrentlyMD && config.realtimeChannelRef.current) {
-            config.realtimeChannelRef.current.send({
-              type: "broadcast", event: "lobby_sync",
-              payload: { action: "JUMP", trackIndex: nextTrackIdx, sectionIndex: 0, mdSectionStartTime: jumpTime }
-            });
+          if (isCurrentlyMD) {
+            config.broadcastRef.current({ action: "JUMP", trackIndex: nextTrackIdx, sectionIndex: 0, mdSectionStartTime: jumpTime }); // ✅ FULL FIX
           }
         } else {
           config.currentSectionIndexRef.current = nextSectionIdx;

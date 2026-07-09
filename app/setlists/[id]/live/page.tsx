@@ -9,7 +9,7 @@ import { useTimesync } from '../../../../hooks/useTimesync';
 
 import { CompiledSectionToken, CompiledBeatMap, BeatNode, ArrangementSection, SongRecord, ParsedLineToken, ParsedWordToken } from "./types/setlist";
 import { CHROMATIC_SCALE, transposeBracketContent, normalizeKeyNote } from "./utils/music-math";
-import { normalizeSectionNameToAudioFile } from "./utils/setlist-helpers"; // ✅ SURGICAL FIX: Restored missing import
+import { normalizeSectionNameToAudioFile } from "./utils/setlist-helpers"; 
 
 import { useWakeLock } from "./hooks/useWakeLock";
 import { useWebAudioEngine } from "./hooks/useWebAudioEngine";
@@ -18,6 +18,7 @@ import { useSetlistData } from "./hooks/useSetlistData";
 import { useLivePresence } from "./hooks/useLivePresence";
 import { useYouTubeSync } from "./hooks/useYouTubeSync";
 import { useHardwareClock } from "./hooks/useHardwareClock";
+import { useWebRTCSync } from "./hooks/useWebRTCSync"; 
 
 import { LiveHeader } from "./components/LiveHeader";
 import { SimplifiedStackView } from "./components/SimplifiedStackView";
@@ -49,7 +50,7 @@ export default function SetlistPerformanceRoomPage() {
     isDoubleMetronomeEnabled, setIsDoubleMetronomeEnabled, isDoubleMetronomeEnabledRef,
     localClickVolume, setLocalClickVolume, localClickVolumeRef,
     youtubeVolume, setYoutubeVolume, youtubeVolumeRef,
-    isYoutubeSyncEnabled, setIsYoutubeSyncEnabled // ✅ Restored
+    isYoutubeSyncEnabled, setIsYoutubeSyncEnabled
   } = useLocalPreferences();
 
   const {
@@ -115,7 +116,6 @@ export default function SetlistPerformanceRoomPage() {
   const currentSectionIndexRef = useRef(0);
   const sectionStartTimeRef = useRef<number>(0);
   const pauseOffsetMsRef = useRef<number>(0);
-  const totalBeatsRef = useRef<number>(0);
   const lastBeatRef = useRef<number>(1);
   const animationFrameRef = useRef<number | null>(null);
   const sectionRefs = useRef<{ [key: string]: HTMLDivElement | null }>({});
@@ -136,31 +136,6 @@ export default function SetlistPerformanceRoomPage() {
   useEffect(() => { queuedSectionIndexRef.current = queuedSectionIndex; }, [queuedSectionIndex]);
 
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      fetchAndDecodeAudio("/sound_files/metronome_blip_1.wav", "metronome_1");
-      fetchAndDecodeAudio("/sound_files/metronome_blip_2.wav", "metronome_2");
-    }
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined" || tracksList.length === 0) return;
-    
-    // ✅ SURGICAL FIX: Restored the preloader so audio callouts actually exist in RAM!
-    const uniqueFiles = new Set<string>();
-    tracksList.forEach(track => {
-      const structure = track.custom_structure || [];
-      structure.forEach(section => {
-        const fileName = normalizeSectionNameToAudioFile(section.section_name);
-        if (fileName) uniqueFiles.add(fileName);
-      });
-    });
-    uniqueFiles.forEach(fileName => {
-      fetchAndDecodeAudio(`/sound_files/${fileName}.wav`, fileName);
-    });
-  }, [tracksList]);
-
-  // ✅ FIX: Global Audio Unlocker. Browsers mute followers until they interact with the page!
-  useEffect(() => {
     const unlockAudio = () => {
       initAudioContext();
       document.removeEventListener("click", unlockAudio);
@@ -174,7 +149,26 @@ export default function SetlistPerformanceRoomPage() {
     };
   }, []);
 
-  // ✅ Auto-scroll Logic (restored and correctly wired)
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      fetchAndDecodeAudio("/sound_files/metronome_blip_1.wav", "metronome_1");
+      fetchAndDecodeAudio("/sound_files/metronome_blip_2.wav", "metronome_2");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || tracksList.length === 0) return;
+    const uniqueFiles = new Set<string>();
+    tracksList.forEach(track => {
+      const structure = track.custom_structure || [];
+      structure.forEach(section => {
+        const fileName = normalizeSectionNameToAudioFile(section.section_name);
+        if (fileName) uniqueFiles.add(fileName);
+      });
+    });
+    uniqueFiles.forEach(fileName => fetchAndDecodeAudio(`/sound_files/${fileName}.wav`, fileName));
+  }, [tracksList]);
+
   useEffect(() => {
     if (isPlayingFlow && !showSyncBack) {
       const activeLineId = `line-${currentSectionIndex}-${activeLineIndex}`;
@@ -258,6 +252,83 @@ export default function SetlistPerformanceRoomPage() {
     }
   };
 
+  const beatMapRef = useRef<CompiledBeatMap>({ totalBeats: 0, nodes: [], sectionStartBeats: [] });
+
+  const handleWebRTCCommand = (payload: any) => {
+    if (payload.action === "START") {
+      const targetTrackIdx = payload.trackIndex !== undefined ? payload.trackIndex : currentTrackIndexRef.current;
+      isPlayingRef.current = true; setIsPlayingFlow(true);
+      isYtBackingTrackStartRef.current = payload.isYtSource || false;
+      
+      if (payload.isYtSource && ytPlayerRef.current && typeof ytPlayerRef.current.playVideo === 'function') {
+        let targetVideoTime = 0;
+        if (payload.sectionIndex > 0) {
+          const beatSpeedSecs = 60 / (activeSongRef.current?.tempo || 75);
+          targetVideoTime = ((activeSongRef.current?.youtube_sync_offset_ms || 0) / 1000) + ((beatMapRef.current.sectionStartBeats[payload.sectionIndex] || 0) * beatSpeedSecs);
+        }
+        try {
+          if (Math.abs((ytPlayerRef.current.getCurrentTime() || 0) - targetVideoTime) > 0.5) ytPlayerRef.current.seekTo(targetVideoTime, true);
+          ytPlayerRef.current.playVideo();
+        } catch (e) {}
+      }
+      executeJumpNow(targetTrackIdx, payload.sectionIndex, payload.mdSectionStartTime, true);
+    }
+    else if (payload.action === "STOP") { executeLocalResetSequence(); } 
+    else if (payload.action === "JUMP") {
+      const jumpTime = payload.mdSectionStartTime || getGlobalTime();
+      const timeUntilJump = jumpTime - getGlobalTime();
+      if (isPlayingRef.current && timeUntilJump > 50) {
+        pendingQuantizedJumpRef.current = { trackIndex: payload.trackIndex ?? currentTrackIndexRef.current, sectionIndex: payload.sectionIndex, jumpTime };
+        setQueuedTrackIndex(payload.trackIndex ?? currentTrackIndexRef.current);
+        setQueuedSectionIndex(payload.sectionIndex);
+      } else {
+        executeJumpNow(payload.trackIndex ?? currentTrackIndexRef.current, payload.sectionIndex, jumpTime);
+      }
+    }
+    else if (payload.action === "TRACK_CHANGE") { mountTargetSetlistTrackIndex(payload.trackIndex); }
+    else if (payload.action === "QUEUE") { setQueuedTrackIndex(payload.trackIndex); setQueuedSectionIndex(payload.sectionIndex); }
+    else if (payload.action === "HEARTBEAT" && !localPresenceUserRef.current?.isMD) {
+      if (audioContextStartTimeRef.current !== null && mdSectionStartTimeRef.current !== null && isPlayingRef.current) {
+        const { mdAbsoluteBeat, mdGlobalBeatTime, mdSectionIndex } = payload;
+        if (mdSectionIndex === currentSectionIndexRef.current) {
+          const beatSpeedMs = (60 / (activeSongRef.current?.tempo || 75)) * 1000;
+          const sectionStartAbsoluteBeat = beatMapRef.current.sectionStartBeats[currentSectionIndexRef.current] || 0;
+          const localBeatCount = mdAbsoluteBeat - sectionStartAbsoluteBeat;
+          const mdImpliedStartMs = mdGlobalBeatTime - (localBeatCount * beatSpeedMs);
+          const driftMs = mdSectionStartTimeRef.current - mdImpliedStartMs;
+          if (Math.abs(driftMs) > 15) {
+            mdSectionStartTimeRef.current = mdImpliedStartMs;
+            const audioCtx = getAudioContext();
+            if (audioCtx) {
+               const timeUntilStartSecs = (mdImpliedStartMs - getGlobalTime()) / 1000;
+               const theoreticalSongStartOffset = sectionStartAbsoluteBeat * (beatSpeedMs / 1000); 
+               audioContextStartTimeRef.current = (audioCtx.currentTime + timeUntilStartSecs) - theoreticalSongStartOffset;
+            }
+          }
+        }
+      }
+    }
+    else if (payload.action === "MD_TAKEOVER") {
+      if (localPresenceUserRef.current?.isMD && localPresenceUserRef.current.id !== payload.newMdId) {
+        const downgradedPayload = { ...localPresenceUserRef.current, isMD: false };
+        setLocalPresenceUser(downgradedPayload);
+        localPresenceUserRef.current = downgradedPayload;
+        if (isChannelSubscribedRef.current) realtimeChannelRef.current?.track(downgradedPayload);
+        executeLocalResetSequence();
+      }
+    }
+  };
+
+  const { rtcStatus, broadcastToFollowers: rawBroadcast } = useWebRTCSync(setlistId, localPresenceUser?.isMD || false, handleWebRTCCommand);
+
+  // ✅ FULL FIX: Wormhole Ref to bypass stale closures
+  const broadcastRef = useRef<(payload: any) => void>(() => {});
+  useEffect(() => {
+    broadcastRef.current = rawBroadcast;
+  }, [rawBroadcast]);
+  
+  const broadcastToFollowers = (payload: any) => broadcastRef.current(payload);
+
   function executeStartSequence(useCountdown: boolean, forcedStartTimestamp?: number, isYtSource: boolean = false) {
     isYtBackingTrackStartRef.current = isYtSource; 
     playingTrackIndexRef.current = currentTrackIndexRef.current;
@@ -271,22 +342,25 @@ export default function SetlistPerformanceRoomPage() {
     const startTimestamp = forcedStartTimestamp ?? (getGlobalTime() + delayMs);
     mdSectionStartTimeRef.current = startTimestamp;
 
-    if (realtimeChannelRef.current) {
-      realtimeChannelRef.current.send({
-        type: "broadcast", event: "lobby_sync",
-        payload: { action: "START", trackIndex: currentTrackIndexRef.current, sectionIndex: currentSectionIndexRef.current, mdSectionStartTime: startTimestamp, isYtSource: isYtSource }
-      });
-    }
+    // ✅ SURGICAL FIX: MD executes the jump locally since WebRTC doesn't echo to the sender!
+    executeJumpNow(currentTrackIndexRef.current, currentSectionIndexRef.current, startTimestamp, true);
+
+    broadcastToFollowers({ 
+      action: "START", 
+      trackIndex: currentTrackIndexRef.current, 
+      sectionIndex: currentSectionIndexRef.current, 
+      mdSectionStartTime: startTimestamp, 
+      isYtSource: isYtSource 
+    });
   }
 
-  const beatMapRef = useRef<CompiledBeatMap>({ totalBeats: 0, nodes: [], sectionStartBeats: [] });
-  
   const {
     youtubeVideoId, isYtBuffering, setIsYtBuffering,
     ytPlayerRef, isYtPlayerReadyRef, ytSyncPendingRef
   } = useYouTubeSync({
     activeSong, activeSongRef, beatMapRef, currentSectionIndexRef,
-    getGlobalTime, executeStartSequence, youtubeVolumeRef, isYoutubeSyncEnabled // ✅ Restored
+    getGlobalTime, executeStartSequence, youtubeVolumeRef, isYoutubeSyncEnabled,
+    youtubeVolume, audioLatencyOffsetMs 
   });
 
   useHardwareClock({
@@ -296,7 +370,8 @@ export default function SetlistPerformanceRoomPage() {
     backdropProgressRef, accentProgressBarRef, simplifiedProgressBarRef, hasPlayedCueRef, playGuideCue,
     queuedSectionIndexRef, queuedTrackIndexRef, audioContextStartTimeRef, getAudioContext, triggerMetronomeSound,
     isDoubleMetronomeEnabledRef, lastAudioBeatRef, lastVisualBeatRef, lastBeatRef, lastVisualMeasureLengthRef, setCurrentMeasureLength,
-    pendingQuantizedJumpRef, getGlobalTime, executeJumpNow, localPresenceUserRef, realtimeChannelRef,
+    pendingQuantizedJumpRef, getGlobalTime, executeJumpNow, localPresenceUserRef, 
+    broadcastRef, // ✅ Fully wired Ref passed here
     updateMetronomeUI, activeLineIndexRef, setActiveLineIndex, handleAdvanceToNextSetlistTrack,
     sectionStartTimeRef, pauseOffsetMsRef, animationFrameRef, playingTrackIndexRef
   });
@@ -313,88 +388,15 @@ export default function SetlistPerformanceRoomPage() {
       .on("presence", { event: "sync" }, () => {
         const presenceState = lobbyChannel.presenceState();
         setOnlineUsers(Object.values(presenceState).flat() as any[]);
+        
         if (isPlayingRef.current && localPresenceUserRef.current?.isMD) {
-          lobbyChannel.send({ 
-            type: "broadcast", 
-            event: "lobby_sync", 
-            payload: { 
-              action: "START", 
-              trackIndex: currentTrackIndexRef.current, 
-              sectionIndex: currentSectionIndexRef.current, 
-              mdSectionStartTime: mdSectionStartTimeRef.current || Date.now(),
-              isYtSource: isYtBackingTrackStartRef.current // ✅ SURGICAL FIX: Tell late joiners the YT track is running
-            } 
+          broadcastToFollowers({ 
+            action: "START", 
+            trackIndex: currentTrackIndexRef.current, 
+            sectionIndex: currentSectionIndexRef.current, 
+            mdSectionStartTime: mdSectionStartTimeRef.current || Date.now(), 
+            isYtSource: isYtBackingTrackStartRef.current 
           });
-        }
-      })
-      .on("broadcast", { event: "lobby_sync" }, ({ payload }) => {
-        if (payload.action === "START") {
-          const targetTrackIdx = payload.trackIndex !== undefined ? payload.trackIndex : currentTrackIndex;
-          isPlayingRef.current = true; setIsPlayingFlow(true);
-          isYtBackingTrackStartRef.current = payload.isYtSource || false;
-          
-          // ✅ SURGICAL FIX: Followers also respect the 0:00 pre-roll rule!
-          if (payload.isYtSource && ytPlayerRef.current && typeof ytPlayerRef.current.playVideo === 'function') {
-            let targetVideoTime = 0;
-            if (payload.sectionIndex > 0) {
-              const beatSpeedSecs = 60 / (activeSongRef.current?.tempo || 75);
-              targetVideoTime = ((activeSongRef.current?.youtube_sync_offset_ms || 0) / 1000) + ((beatMapRef.current.sectionStartBeats[payload.sectionIndex] || 0) * beatSpeedSecs);
-            }
-            try {
-              if (Math.abs((ytPlayerRef.current.getCurrentTime() || 0) - targetVideoTime) > 0.5) ytPlayerRef.current.seekTo(targetVideoTime, true);
-              ytPlayerRef.current.playVideo();
-            } catch (e) {}
-          }
-          
-          executeJumpNow(targetTrackIdx, payload.sectionIndex, payload.mdSectionStartTime, true);
-        }
-        else if (payload.action === "STOP") { executeLocalResetSequence(); } 
-        else if (payload.action === "JUMP") {
-          const jumpTime = payload.mdSectionStartTime || getGlobalTime();
-          const timeUntilJump = jumpTime - getGlobalTime();
-          if (isPlayingRef.current && timeUntilJump > 50) {
-            pendingQuantizedJumpRef.current = { trackIndex: payload.trackIndex ?? currentTrackIndexRef.current, sectionIndex: payload.sectionIndex, jumpTime };
-            setQueuedTrackIndex(payload.trackIndex ?? currentTrackIndexRef.current);
-            setQueuedSectionIndex(payload.sectionIndex);
-          } else {
-            executeJumpNow(payload.trackIndex ?? currentTrackIndexRef.current, payload.sectionIndex, jumpTime);
-          }
-        }
-        else if (payload.action === "TRACK_CHANGE") { mountTargetSetlistTrackIndex(payload.trackIndex); }
-        else if (payload.action === "QUEUE") { setQueuedTrackIndex(payload.trackIndex); setQueuedSectionIndex(payload.sectionIndex); }
-        else if (payload.action === "HEARTBEAT" && !localPresenceUserRef.current?.isMD) {
-          if (audioContextStartTimeRef.current !== null && mdSectionStartTimeRef.current !== null && isPlayingRef.current) {
-            const { mdAbsoluteBeat, mdGlobalBeatTime, mdSectionIndex } = payload;
-            
-            // ✅ SURGICAL FIX: Only accept heartbeats if the Follower is in the exact same section as the MD!
-            if (mdSectionIndex === currentSectionIndexRef.current) {
-              const beatSpeedMs = (60 / (activeSongRef.current?.tempo || 75)) * 1000;
-              const sectionStartAbsoluteBeat = beatMapRef.current.sectionStartBeats[currentSectionIndexRef.current] || 0;
-              const localBeatCount = mdAbsoluteBeat - sectionStartAbsoluteBeat;
-              
-              const mdImpliedStartMs = mdGlobalBeatTime - (localBeatCount * beatSpeedMs);
-              const driftMs = mdSectionStartTimeRef.current - mdImpliedStartMs;
-              
-              if (Math.abs(driftMs) > 15) {
-                mdSectionStartTimeRef.current = mdImpliedStartMs;
-                const audioCtx = getAudioContext();
-                if (audioCtx) {
-                   const timeUntilStartSecs = (mdImpliedStartMs - getGlobalTime()) / 1000;
-                   const theoreticalSongStartOffset = sectionStartAbsoluteBeat * (beatSpeedMs / 1000); 
-                   audioContextStartTimeRef.current = (audioCtx.currentTime + timeUntilStartSecs) - theoreticalSongStartOffset;
-                }
-              }
-            }
-          }
-        }
-        else if (payload.action === "MD_TAKEOVER") {
-          if (localPresenceUserRef.current?.isMD && localPresenceUserRef.current.id !== payload.newMdId) {
-            const downgradedPayload = { ...localPresenceUserRef.current, isMD: false };
-            setLocalPresenceUser(downgradedPayload);
-            localPresenceUserRef.current = downgradedPayload;
-            if (isChannelSubscribedRef.current) lobbyChannel.track(downgradedPayload);
-            executeLocalResetSequence();
-          }
         }
       })
       .subscribe((status) => {
@@ -408,7 +410,6 @@ export default function SetlistPerformanceRoomPage() {
   function executeJumpNow(targetTrackIdx: number, targetSectionIdx: number, jumpTime: number, isInitialStart: boolean = false) {
     if (targetTrackIdx !== undefined && targetTrackIdx !== playingTrackIndexRef.current) mountTargetSetlistTrackIndex(targetTrackIdx);
     
-    // ✅ FIX: Followers must populate the 'playing' variables, otherwise their timeline crashes!
     playingTrackIndexRef.current = targetTrackIdx !== undefined ? targetTrackIdx : currentTrackIndexRef.current;
     setPlayingTrackIndex(playingTrackIndexRef.current);
     playingSongRef.current = activeSongRef.current;
@@ -442,7 +443,6 @@ export default function SetlistPerformanceRoomPage() {
     scheduledClicksRef.current.forEach(click => { try { click.source.stop(); click.source.disconnect(); } catch(e) {} });
     scheduledClicksRef.current = []; hasPlayedCueRef.current = false; 
     
-    // ✅ FIX: Force followers to resume auto-scrolling when the MD jumps!
     setShowSyncBack(false);
 
     if (backdropProgressRef.current) backdropProgressRef.current.style.transform = "scaleX(0)";
@@ -462,14 +462,15 @@ export default function SetlistPerformanceRoomPage() {
     currentSectionIndexRef.current = 0; lastBeatRef.current = 0; activeLineIndexRef.current = 0;
     setCurrentSectionIndex(0); updateMetronomeUI(1, false); setActiveLineIndex(0);
     setQueuedTrackIndex(null); setQueuedSectionIndex(null); setCurrentDriftMs(null);
+    setShowSyncBack(false);
     if (backdropProgressRef.current) backdropProgressRef.current.style.transform = "scaleX(0)";
     if (accentProgressBarRef.current) accentProgressBarRef.current.style.transform = "scaleX(0)";
   }
 
   function handleUserSelectTrackBadge(trackIdx: number) {
     mountTargetSetlistTrackIndex(trackIdx);
-    if (!isPlayingFlow && localPresenceUser?.isMD && realtimeChannelRef.current) {
-      realtimeChannelRef.current.send({ type: "broadcast", event: "lobby_sync", payload: { action: "TRACK_CHANGE", trackIndex: trackIdx } });
+    if (!isPlayingFlow && localPresenceUser?.isMD) {
+      broadcastToFollowers({ action: "TRACK_CHANGE", trackIndex: trackIdx });
     }
   }
 
@@ -477,8 +478,19 @@ export default function SetlistPerformanceRoomPage() {
     const nextTrackIndex = playingTrackIndexRef.current + 1; 
     if (nextTrackIndex < tracksListRef.current.length) {
       mountTargetSetlistTrackIndex(nextTrackIndex);
-      if (localPresenceUserRef.current?.isMD && realtimeChannelRef.current) realtimeChannelRef.current.send({ type: "broadcast", event: "lobby_sync", payload: { action: "TRACK_CHANGE", trackIndex: nextTrackIndex } });
-      setTimeout(() => { isPlayingRef.current = true; setIsPlayingFlow(true); if (localPresenceUserRef.current?.isMD) mdSectionStartTimeRef.current = getGlobalTime(); }, 120);
+      
+      setTimeout(() => { 
+        isPlayingRef.current = true; 
+        setIsPlayingFlow(true); 
+        
+        if (localPresenceUserRef.current?.isMD) {
+          const jumpTime = getGlobalTime();
+          mdSectionStartTimeRef.current = jumpTime;
+          // ✅ SURGICAL FIX: Ensure the MD actually triggers the audio hardware on song advance
+          executeJumpNow(nextTrackIndex, 0, jumpTime, true);
+          broadcastToFollowers({ action: "START", trackIndex: nextTrackIndex, sectionIndex: 0, mdSectionStartTime: jumpTime, isYtSource: false });
+        }
+      }, 120);
     } else {
       handleResetFlowTrigger();
     }
@@ -496,15 +508,11 @@ export default function SetlistPerformanceRoomPage() {
       const triggerYoutubeSync = () => {
         if (ytPlayerRef.current && typeof ytPlayerRef.current.playVideo === 'function') {
           setIsYtBuffering(true); ytSyncPendingRef.current = true;
-          
-          // ✅ SURGICAL FIX: If starting from the very beginning, play video from 0:00 (Pre-roll). 
-          // Otherwise, jump directly to the offset + section time.
           let targetVideoTime = 0;
           if (currentSectionIndexRef.current > 0) {
             const beatSpeedSecs = 60 / (activeSongRef.current?.tempo || 75);
             targetVideoTime = ((activeSongRef.current?.youtube_sync_offset_ms || 0) / 1000) + ((beatMapRef.current.sectionStartBeats[currentSectionIndexRef.current] || 0) * beatSpeedSecs);
           }
-          
           if (Math.abs((ytPlayerRef.current.getCurrentTime() || 0) - targetVideoTime) > 0.5) ytPlayerRef.current.seekTo(targetVideoTime, true);
           ytPlayerRef.current.playVideo();
         } else { executeStartSequence(true); }
@@ -524,20 +532,20 @@ export default function SetlistPerformanceRoomPage() {
 
   function handleResetFlowTrigger() {
     executeLocalResetSequence();
-    if (localPresenceUser?.isMD && realtimeChannelRef.current) realtimeChannelRef.current.send({ type: "broadcast", event: "lobby_sync", payload: { action: "STOP" } });
+    if (localPresenceUser?.isMD) broadcastToFollowers({ action: "STOP" });
   }
 
   function handleSectionInteractiveSelection(index: number) {
     if (!localPresenceUser?.isMD && (onlineUsers.find(u => u.isMD && u.id !== localPresenceUser?.id) !== undefined)) return; 
     if (!isPlayingFlow) {
       const jumpTime = getGlobalTime() + 150; executeJumpNow(currentTrackIndex, index, jumpTime);
-      if (realtimeChannelRef.current) realtimeChannelRef.current.send({ type: "broadcast", event: "lobby_sync", payload: { action: "JUMP", trackIndex: currentTrackIndex, sectionIndex: index, mdSectionStartTime: jumpTime } });
+      broadcastToFollowers({ action: "JUMP", trackIndex: currentTrackIndex, sectionIndex: index, mdSectionStartTime: jumpTime });
       return;
     }
     if (clickTimeoutRef.current) {
       clearTimeout(clickTimeoutRef.current); clickTimeoutRef.current = null;
       setQueuedTrackIndex(currentTrackIndex); setQueuedSectionIndex(index); pendingQuantizedJumpRef.current = null;
-      if (realtimeChannelRef.current) realtimeChannelRef.current.send({ type: "broadcast", event: "lobby_sync", payload: { action: "QUEUE", trackIndex: currentTrackIndex, sectionIndex: index } });
+      broadcastToFollowers({ action: "QUEUE", trackIndex: currentTrackIndex, sectionIndex: index });
     } else {
       clickTimeoutRef.current = setTimeout(() => {
         clickTimeoutRef.current = null;
@@ -556,7 +564,7 @@ export default function SetlistPerformanceRoomPage() {
           if (sectionsRef.current[index]) playGuideCue(sectionsRef.current[index].section_name);
           hasPlayedCueRef.current = true; 
         } else { executeJumpNow(currentTrackIndex, index, jumpTime); }
-        if (realtimeChannelRef.current) realtimeChannelRef.current.send({ type: "broadcast", event: "lobby_sync", payload: { action: "JUMP", trackIndex: currentTrackIndex, sectionIndex: index, mdSectionStartTime: jumpTime } });
+        broadcastToFollowers({ action: "JUMP", trackIndex: currentTrackIndex, sectionIndex: index, mdSectionStartTime: jumpTime });
       }, 250);
     }
   }
@@ -704,11 +712,11 @@ export default function SetlistPerformanceRoomPage() {
           sectionRefs={sectionRefs} activeLineIndex={activeLineIndex} showChords={showChords} lyricsFontSize={lyricsFontSize}
           lineSpacing={lineSpacing} chordFormat={chordFormat} activeDisplayKey={activeDisplayKey} upcomingTrackItem={tracksList[currentTrackIndex + 1] || null}
           handleUserSelectTrackBadge={handleUserSelectTrackBadge} scrollContainerRef={scrollContainerRef}
-          isAutoScrollingRef={isAutoScrollingRef} setShowSyncBack={setShowSyncBack} // ✅ Wired
+          isAutoScrollingRef={isAutoScrollingRef} setShowSyncBack={setShowSyncBack} 
         />
       )}
 
-      {showSyncBack && (
+      {showSyncBack && isPlayingFlow && (
         <button type="button" onClick={() => {
           if (currentTrackIndex !== playingTrackIndexRef.current) mountTargetSetlistTrackIndex(playingTrackIndexRef.current);
           else {
@@ -777,7 +785,7 @@ export default function SetlistPerformanceRoomPage() {
       <MdLockModal 
         isMdLockModalOpen={isMdLockModalOpen} setIsMdLockModalOpen={setIsMdLockModalOpen} 
         activeMDConnection={onlineUsers.find(u => u.isMD && u.id !== localPresenceUser?.id)} 
-        initAudioContext={initAudioContext} // ✅ Wired
+        initAudioContext={initAudioContext} 
       />
 
       {countdownValue !== null && (
