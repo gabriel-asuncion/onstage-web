@@ -46,8 +46,8 @@ export default function Home() {
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: { 
-          // ✅ SURGICAL FIX: Go back to the absolute browser truth
-          redirectTo: `${window.location.origin}/dashboard` 
+          // ✅ SURGICAL FIX: Send them to the cookie-baker first!
+          redirectTo: `${window.location.origin}/auth/callback` 
         },
       });
       if (error) throw error;
