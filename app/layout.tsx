@@ -4,6 +4,7 @@ import IOSInstallPrompt from "../components/IOSInstallPrompt";
 import "./globals.css";
 import type { Metadata, Viewport } from "next";
 import Script from 'next/script';
+import { Analytics } from "@vercel/analytics/next"
 
 // ✅ SURGICAL FIX: Import the Client-Side Wrapper instead!
 import FabWrapper from "../components/FabWrapper";
