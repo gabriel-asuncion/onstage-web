@@ -5,6 +5,7 @@ import "./globals.css";
 import type { Metadata, Viewport } from "next";
 import Script from 'next/script';
 import { Analytics } from "@vercel/analytics/next"
+import { SpeedInsights } from "@vercel/speed-insights/next"
 
 // ✅ SURGICAL FIX: Import the Client-Side Wrapper instead!
 import FabWrapper from "../components/FabWrapper";
@@ -47,6 +48,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <ClientLayoutWrapper>
             {children}
             {/* ✅ Will now safely mount only on the client! */}
+            <SpeedInsights />
+            <Analytics />
             <FabWrapper />
           </ClientLayoutWrapper>
         </EngineProvider>
