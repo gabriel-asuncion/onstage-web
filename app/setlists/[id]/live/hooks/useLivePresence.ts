@@ -8,6 +8,10 @@ export function useLivePresence(supabase: any, simulatedUserId: string, simulate
   const localPresenceUserRef = useRef<any>(null);
   const isChannelSubscribedRef = useRef<boolean>(false);
   const realtimeChannelRef = useRef<any>(null);
+  
+  // ✅ SURGICAL FIX: The Spam Lock. 
+  // Prevents users from breaking the network state by rapid-firing the MD toggle.
+  const isTogglingRef = useRef<boolean>(false);
 
   // Fetch Current Identity
   useEffect(() => {
@@ -45,7 +49,7 @@ export function useLivePresence(supabase: any, simulatedUserId: string, simulate
           initials, 
           bg: assignedBg,
           avatar: profile?.avatar_url || null,
-          isMD: false
+          isMD: false 
         };
 
         localPresenceUserRef.current = identityPayload;
@@ -55,8 +59,26 @@ export function useLivePresence(supabase: any, simulatedUserId: string, simulate
     fetchCurrentPresenceIdentity();
   }, [simulatedUserId, simulatedRole, supabase]);
 
+  useEffect(() => {
+    const killPresence = () => {
+      if (realtimeChannelRef.current && isChannelSubscribedRef.current) {
+        realtimeChannelRef.current.untrack();
+      }
+    };
+
+    window.addEventListener("beforeunload", killPresence);
+    window.addEventListener("pagehide", killPresence);
+
+    return () => {
+      killPresence();
+      window.removeEventListener("beforeunload", killPresence);
+      window.removeEventListener("pagehide", killPresence);
+    };
+  }, []);
+
   const handleToggleMusicDirectorMode = () => {
-    if (!localPresenceUserRef.current) return;
+    // ✅ Keep the Spam Lock, but drop the async/await
+    if (!localPresenceUserRef.current || isTogglingRef.current) return;
 
     const alternateMD = onlineUsers.find(u => u.isMD && u.id !== localPresenceUserRef.current.id);
     const isTakingOver = !localPresenceUserRef.current.isMD; 
@@ -66,19 +88,36 @@ export function useLivePresence(supabase: any, simulatedUserId: string, simulate
       if (!confirmSteal) return;
     }
 
-    const updatedPresencePayload = { ...localPresenceUserRef.current, isMD: isTakingOver };
+    isTogglingRef.current = true;
+
+    const updatedPresencePayload = { 
+      ...localPresenceUserRef.current, 
+      isMD: isTakingOver,
+      updatedAt: Date.now() 
+    };
+    
     setLocalPresenceUser(updatedPresencePayload);
     localPresenceUserRef.current = updatedPresencePayload;
 
     if (realtimeChannelRef.current && isChannelSubscribedRef.current) {
-      realtimeChannelRef.current.track(updatedPresencePayload);
-      if (isTakingOver) {
-        realtimeChannelRef.current.send({
-          type: "broadcast",
-          event: "lobby_sync",
-          payload: { action: "MD_TAKEOVER", newMdId: localPresenceUserRef.current.id }
-        });
-      }
+      
+      // ✅ 1. INSTANT BROADCAST: Fire the UI update packet immediately. Do not wait for the server!
+      realtimeChannelRef.current.send({
+        type: "broadcast",
+        event: "lobby_sync",
+        payload: { 
+          action: isTakingOver ? "MD_TAKEOVER" : "MD_RELEASE", 
+          [isTakingOver ? "newMdId" : "releasedMdId"]: localPresenceUserRef.current.id 
+        }
+      });
+
+      // ✅ 2. BACKGROUND TRACKING: Send the presence update in the background (no await)
+      realtimeChannelRef.current.track(updatedPresencePayload).catch(console.error);
+
+      // Unlock the spam toggle after 600ms
+      setTimeout(() => { isTogglingRef.current = false; }, 600);
+    } else {
+      isTogglingRef.current = false;
     }
   };
 

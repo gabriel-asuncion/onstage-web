@@ -7,23 +7,25 @@ interface UseYouTubeSyncProps {
   beatMapRef: MutableRefObject<CompiledBeatMap>;
   currentSectionIndexRef: MutableRefObject<number>;
   getGlobalTime: () => number;
-  executeStartSequence: (useCountdown: boolean, forcedStartTimestamp?: number, isYtSource?: boolean) => void;
   youtubeVolumeRef: MutableRefObject<number>;
-  isYoutubeSyncEnabled: boolean; // ✅ Added
+  isYoutubeSyncEnabled: boolean; 
 }
 
 export function useYouTubeSync({
   activeSong, activeSongRef, beatMapRef, currentSectionIndexRef, getGlobalTime,
-  executeStartSequence, youtubeVolumeRef, isYoutubeSyncEnabled
+  youtubeVolumeRef, isYoutubeSyncEnabled
 }: UseYouTubeSyncProps) {
   
   const [youtubeVideoId, setYoutubeVideoId] = useState<string | null>(null);
   const [isYtBuffering, setIsYtBuffering] = useState<boolean>(false);
 
   const ytPlayerRef = useRef<any>(null);
-  const ytSyncPendingRef = useRef<boolean>(false);
   const loadedVideoIdRef = useRef<string | null>(null);
   const isYtPlayerReadyRef = useRef<boolean>(false);
+  const ytSyncPendingRef = useRef<boolean>(false); 
+  
+  // ✅ SURGICAL FIX: A synchronous reference so the hardware clock never waits for a React render
+  const isYtBufferingRef = useRef<boolean>(false);
 
   useEffect(() => {
     if (!activeSong?.youtube_url) { setYoutubeVideoId(null); return; }
@@ -52,25 +54,15 @@ export function useYouTubeSync({
             'onReady': (event: any) => {
               isYtPlayerReadyRef.current = true; 
               event.target.setVolume(youtubeVolumeRef.current * 100);
-              event.target.mute(); event.target.playVideo();
-              setTimeout(() => {
-                if (event.target && typeof event.target.pauseVideo === 'function') {
-                  event.target.pauseVideo(); event.target.seekTo(0); event.target.unMute();
-                }
-              }, 500);
             },
             'onStateChange': (event: any) => {
-              if (event.data === 1 && ytSyncPendingRef.current) {
-                ytSyncPendingRef.current = false; setIsYtBuffering(false);
-                const currentVideoTimeMs = (event.target.getCurrentTime() || 0) * 1000;
-                const songBeat1OffsetMs = activeSongRef.current?.youtube_sync_offset_ms || 0;
-                const targetAbsoluteBeat = beatMapRef.current.sectionStartBeats[currentSectionIndexRef.current] || 0;
-                const beatSpeedMs = (60 / (activeSongRef.current?.tempo || 75)) * 1000;
-                const sectionVideoStartMs = songBeat1OffsetMs + (targetAbsoluteBeat * beatSpeedMs);
-                const timeUntilSectionStart = sectionVideoStartMs - currentVideoTimeMs;
-                const exactStartTimestamp = getGlobalTime() + timeUntilSectionStart;
-                executeStartSequence(false, exactStartTimestamp, true);
-              }
+               if (event.data === 3) {
+                 isYtBufferingRef.current = true;
+                 setIsYtBuffering(true); 
+               } else if (event.data === 1 || event.data === 2 || event.data === 0) {
+                 isYtBufferingRef.current = false;
+                 setIsYtBuffering(false); 
+               }
             }
           }
         });
@@ -89,12 +81,11 @@ export function useYouTubeSync({
     };
   }, [youtubeVideoId, isYoutubeSyncEnabled]);
 
-  // ✅ Physically apply volume changes to the iframe when the slider moves
   useEffect(() => {
     if (ytPlayerRef.current && isYtPlayerReadyRef.current && typeof ytPlayerRef.current.setVolume === 'function') {
       try { ytPlayerRef.current.setVolume(youtubeVolumeRef.current * 100); } catch(e) {}
     }
   }, [youtubeVolumeRef.current]);
 
-  return { youtubeVideoId, isYtBuffering, setIsYtBuffering, ytPlayerRef, isYtPlayerReadyRef, ytSyncPendingRef };
+  return { youtubeVideoId, isYtBuffering, setIsYtBuffering, ytPlayerRef, isYtPlayerReadyRef, ytSyncPendingRef, isYtBufferingRef };
 }

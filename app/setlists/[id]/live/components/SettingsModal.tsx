@@ -14,6 +14,11 @@ interface SettingsModalProps {
   setChordFormat: (val: "Key" | "Numbers") => void;
   isSimplifiedMode: boolean;
   setIsSimplifiedMode: (val: boolean) => void;
+
+  // ✅ Added Zen Mode Props
+  isZenMode: boolean;
+  setIsZenMode: (val: boolean) => void;
+
   lineSpacing: number;
   setLineSpacing: (val: number) => void;
   lyricsFontSize: number;
@@ -47,6 +52,7 @@ export function SettingsModal(props: SettingsModalProps) {
   const {
     isSettingsModalOpen, setIsSettingsModalOpen, localPresenceUser, onlineUsers, handleToggleMusicDirectorMode,
     showChords, setShowChords, chordFormat, setChordFormat, isSimplifiedMode, setIsSimplifiedMode,
+    isZenMode, setIsZenMode, // ✅ Destructured Zen Props
     lineSpacing, setLineSpacing, lyricsFontSize, setLyricsFontSize,
     isMetronomeSoundEnabled, setIsMetronomeSoundEnabled, isDoubleMetronomeEnabled, setIsDoubleMetronomeEnabled,
     localClickVolume, setLocalClickVolume, audioLatencyOffsetMs, setAudioLatencyOffsetMs,
@@ -108,14 +114,33 @@ export function SettingsModal(props: SettingsModalProps) {
                   <button onClick={() => setChordFormat("Numbers")} className={`flex-1 py-2 text-[11px] font-bold rounded-lg transition-all ${chordFormat === "Numbers" ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"}`}>Numbers</button>
                 </div>
               </div>
+              
+              {/* ✅ SURGICAL FIX: Integrated 3-Way Zen Mode Toggle */}
               <div className="space-y-2">
                 <span className="text-[11px] font-bold text-zinc-500">View Mode</span>
                 <span className="bg-blue-50 text-blue-600 font-mono font-black text-[8px] px-1.5 py-0.5 rounded ml-1">Experimental</span>
                 <div className="flex bg-zinc-100 p-1 rounded-xl">
-                  <button onClick={() => setIsSimplifiedMode(false)} className={`flex-1 py-2 text-[11px] font-bold rounded-lg transition-all ${!isSimplifiedMode ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"}`}>Sheet</button>
-                  <button onClick={() => setIsSimplifiedMode(true)} className={`flex-1 py-2 text-[11px] font-bold rounded-lg transition-all ${isSimplifiedMode ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"}`}>Stack</button>
+                  <button 
+                    onClick={() => { setIsZenMode(false); setIsSimplifiedMode(false); }} 
+                    className={`flex-1 py-2 text-[11px] font-bold rounded-lg transition-all ${!isSimplifiedMode && !isZenMode ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"}`}
+                  >
+                    Sheet
+                  </button>
+                  <button 
+                    onClick={() => { setIsZenMode(false); setIsSimplifiedMode(true); }} 
+                    className={`flex-1 py-2 text-[11px] font-bold rounded-lg transition-all ${isSimplifiedMode && !isZenMode ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"}`}
+                  >
+                    Stack
+                  </button>
+                  <button 
+                    onClick={() => { setIsZenMode(true); setIsSettingsModalOpen(false); }} 
+                    className={`flex-1 py-2 text-[11px] font-bold rounded-lg transition-all ${isZenMode ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"}`}
+                  >
+                    Zen
+                  </button>
                 </div>
               </div>
+
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">

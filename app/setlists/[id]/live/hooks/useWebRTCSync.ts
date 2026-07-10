@@ -9,9 +9,11 @@ export function useWebRTCSync(setlistId: string, isMD: boolean, onCommandReceive
   const peerRef = useRef<any>(null);
   const connectionsRef = useRef<Map<string, any>>(new Map());
   const [rtcStatus, setRtcStatus] = useState<"disconnected" | "connecting" | "connected" | "hosting">("disconnected");
+  
+  // ✅ SURGICAL FIX: The reboot tick. This lets us externally force a restart if mobile data drops.
+  const [rebootTick, setRebootTick] = useState(0); 
   const retryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Stable callback reference to prevent stale closures
   const handleCommandRef = useRef(onCommandReceived);
   useEffect(() => { handleCommandRef.current = onCommandReceived; }, [onCommandReceived]);
 
@@ -21,100 +23,62 @@ export function useWebRTCSync(setlistId: string, isMD: boolean, onCommandReceive
     let isMounted = true;
     const mdHostId = `onstage-md-${setlistId}`;
 
-    const initializePeer = async () => {
+    const initializeHost = async () => {
       const Peer = (await import("peerjs")).default;
+      if (peerRef.current) { peerRef.current.destroy(); connectionsRef.current.clear(); }
       
-      // Cleanup previous instances if roles changed (e.g., Follower became MD)
-      if (peerRef.current) {
-        peerRef.current.destroy();
-        connectionsRef.current.clear();
-      }
-      if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
-
       setRtcStatus("connecting");
-
-      try {
-        if (isMD) {
-          // --- HOST MODE (MUSIC DIRECTOR) ---
-          const peer = new Peer(mdHostId, { debug: 1 }); // debug: 1 keeps the console clean
-          
-          peer.on("open", () => {
-            if (isMounted) setRtcStatus("hosting");
-            console.log("👑 WebRTC Host Active: Awaiting Band Members");
-          });
-
-          peer.on("connection", (conn) => {
-            conn.on("open", () => {
-              connectionsRef.current.set(conn.peer, conn);
-              console.log("🎧 Band Member Linked");
-            });
-            conn.on("close", () => connectionsRef.current.delete(conn.peer));
-            conn.on("error", () => connectionsRef.current.delete(conn.peer));
-          });
-          
-          peer.on("error", (err: any) => {
-            if (err.type === "unavailable-id") console.warn("Another MD is already hosting!");
-          });
-
-          peerRef.current = peer;
-
-        } else {
-          // --- FOLLOWER MODE ---
-          const peer = new Peer({ debug: 1 }); 
-          
-          const connectToMD = () => {
-            if (!isMounted || peer.destroyed) return;
-            
-            const conn = peer.connect(mdHostId, { reliable: false }); // Unreliable = UDP Mode (Lightning Fast)
-            
-            conn.on("open", () => {
-              if (isMounted) setRtcStatus("connected");
-              connectionsRef.current.set(mdHostId, conn);
-              console.log("⚡ WebRTC Linked to Music Director");
-            });
-
-            conn.on("data", (data: unknown) => {
-              // Execute the command instantly
-              handleCommandRef.current(data as SyncPayload);
-            });
-
-            conn.on("close", () => {
-              if (isMounted) setRtcStatus("disconnected");
-              connectionsRef.current.delete(mdHostId);
-              // If MD closes laptop or loses connection, start polling again
-              if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
-              retryTimeoutRef.current = setTimeout(connectToMD, 3000);
-            });
-          };
-
-          peer.on("open", () => {
-            connectToMD(); // Attempt first connection
-          });
-
-          peer.on("error", (err: any) => {
-            // If the MD isn't online yet, peerjs throws this error.
-            if (err.type === "peer-unavailable") {
-              if (isMounted) setRtcStatus("disconnected");
-              
-              // ✅ SURGICAL FIX: Quietly try again in 3 seconds!
-              if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
-              retryTimeoutRef.current = setTimeout(connectToMD, 3000);
-            } else {
-              console.warn("PeerJS Error:", err);
-            }
-          });
-
-          peerRef.current = peer;
-        }
-      } catch (err) {
-        console.error("WebRTC Initialization Error:", err);
-        setRtcStatus("disconnected");
-      }
+      const peer = new Peer(mdHostId, { debug: 0 }); 
+      
+      peer.on("open", () => { if (isMounted) setRtcStatus("hosting"); });
+      peer.on("connection", (conn) => {
+        conn.on("open", () => connectionsRef.current.set(conn.peer, conn));
+        conn.on("close", () => connectionsRef.current.delete(conn.peer));
+        conn.on("error", () => connectionsRef.current.delete(conn.peer));
+      });
+      peer.on("disconnected", () => { if (!peer.destroyed) peer.reconnect(); });
+      peerRef.current = peer;
     };
 
-    // Delay init by 800ms to allow Supabase to figure out if we are the MD 
-    // before we accidentally spin up a Follower peer that fails.
-    const initDelay = setTimeout(initializePeer, 800);
+    const initializeFollower = async () => {
+      const Peer = (await import("peerjs")).default;
+      if (peerRef.current) { peerRef.current.destroy(); connectionsRef.current.clear(); }
+      
+      setRtcStatus("connecting");
+      const peer = new Peer({ debug: 0 });
+      
+      peer.on("open", () => {
+        const conn = peer.connect(mdHostId, { reliable: false });
+        
+        conn.on("open", () => {
+          if (isMounted) setRtcStatus("connected");
+          connectionsRef.current.set(mdHostId, conn);
+        });
+
+        conn.on("data", (data: unknown) => {
+          handleCommandRef.current(data as SyncPayload);
+        });
+
+        conn.on("close", () => {
+          if (isMounted) setRtcStatus("disconnected");
+          if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+          retryTimeoutRef.current = setTimeout(initializeFollower, 3000);
+        });
+      });
+
+      peer.on("error", () => {
+        if (isMounted) setRtcStatus("disconnected");
+        if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+        retryTimeoutRef.current = setTimeout(initializeFollower, 3000);
+      });
+
+      peerRef.current = peer;
+    };
+
+    const initDelay = setTimeout(() => {
+      if (isMD) initializeHost();
+      else initializeFollower();
+    }, 800);
 
     return () => {
       isMounted = false;
@@ -122,18 +86,20 @@ export function useWebRTCSync(setlistId: string, isMD: boolean, onCommandReceive
       if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
       if (peerRef.current) peerRef.current.destroy();
     };
-  }, [setlistId, isMD]);
+  }, [setlistId, isMD, rebootTick]); // Reboot anytime tick changes
 
-  // The function the MD calls to blast data to all followers instantly
   const broadcastToFollowers = useCallback((payload: SyncPayload) => {
     if (!isMD || connectionsRef.current.size === 0) return;
-    
     connectionsRef.current.forEach((conn) => {
-      if (conn.open) {
-        conn.send(payload);
-      }
+      if (conn.open) conn.send(payload);
     });
   }, [isMD]);
 
-  return { rtcStatus, broadcastToFollowers };
+  // ✅ Expose a trigger to let Supabase force a WebRTC reboot
+  const forceReconnect = useCallback(() => {
+    if (rtcStatus === "connected" || rtcStatus === "hosting") return;
+    setRebootTick(t => t + 1);
+  }, [rtcStatus]);
+
+  return { rtcStatus, broadcastToFollowers, forceReconnect };
 }

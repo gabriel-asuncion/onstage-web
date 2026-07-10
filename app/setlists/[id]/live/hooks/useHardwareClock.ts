@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { SongRecord, ArrangementSection, CompiledBeatMap, CompiledSectionToken } from "../types/setlist";
 
 export interface HardwareClockConfig {
@@ -35,9 +35,10 @@ export interface HardwareClockConfig {
   setCurrentMeasureLength: (len: number) => void;
   pendingQuantizedJumpRef: React.MutableRefObject<any>;
   getGlobalTime: () => number;
+  getYoutubeTime: () => number | null;
   executeJumpNow: (trackIdx: number, secIdx: number, time: number, isInitialStart?: boolean) => void;
   localPresenceUserRef: React.MutableRefObject<any>;
-  broadcastRef: React.MutableRefObject<(payload: any) => void>; // ✅ FULL FIX: Converted to Ref
+  sendSupabaseBroadcast: (payload: any) => void; // ✅ Restored Supabase hook
   updateMetronomeUI: (beat: number, isPlaying: boolean, measureLength?: number) => void;
   activeLineIndexRef: React.MutableRefObject<number>;
   setActiveLineIndex: (idx: number) => void;
@@ -49,10 +50,20 @@ export interface HardwareClockConfig {
 }
 
 export function useHardwareClock(config: HardwareClockConfig) {
+  const workerRef = useRef<Worker | null>(null);
+  const fallbackTimerRef = useRef<NodeJS.Timeout | null>(null);
+  
+  const configRef = useRef(config);
+  configRef.current = config;
+
   useEffect(() => {
+    const killEngine = () => {
+      if (workerRef.current) { workerRef.current.postMessage('stop'); workerRef.current.terminate(); workerRef.current = null; }
+      if (fallbackTimerRef.current) { clearInterval(fallbackTimerRef.current); fallbackTimerRef.current = null; }
+    };
+
     if (!config.isPlayingFlow || !config.activeSongRef.current || config.sectionsRef.current.length === 0) {
-      if (config.animationFrameRef.current) cancelAnimationFrame(config.animationFrameRef.current);
-      return;
+      killEngine(); return;
     }
 
     if (config.pauseOffsetMsRef.current > 0) config.sectionStartTimeRef.current = performance.now() - config.pauseOffsetMsRef.current;
@@ -60,21 +71,23 @@ export function useHardwareClock(config: HardwareClockConfig) {
     
     config.lastBeatRef.current = 0; 
 
-    const clockExecutionTick = (timestamp: number) => {
-      if (!config.isPlayingRef.current || !config.activeSongRef.current || config.sectionsRef.current.length === 0) return;
+    const clockExecutionTick = () => {
+      const c = configRef.current; 
       
-      if (config.pendingQuantizedJumpRef.current) {
-        const { trackIndex, sectionIndex, jumpTime } = config.pendingQuantizedJumpRef.current;
-        if (config.getGlobalTime() >= jumpTime) config.executeJumpNow(trackIndex, sectionIndex, jumpTime);
+      if (!c.isPlayingRef.current || !c.activeSongRef.current || c.sectionsRef.current.length === 0) return;
+      
+      if (c.pendingQuantizedJumpRef.current) {
+        const { trackIndex, sectionIndex, jumpTime } = c.pendingQuantizedJumpRef.current;
+        if (c.getGlobalTime() >= jumpTime) c.executeJumpNow(trackIndex, sectionIndex, jumpTime);
       }
       
-      const isCurrentlyMD = config.localPresenceUserRef.current?.isMD === true;
-      const song = config.playingSongRef.current || config.activeSongRef.current; 
-      const secs = config.playingSectionsRef.current;
-      const idx = config.currentSectionIndexRef.current;
+      const isCurrentlyMD = c.localPresenceUserRef.current?.isMD === true;
+      const song = c.playingSongRef.current || c.activeSongRef.current; 
+      const secs = c.playingSectionsRef.current;
+      const idx = c.currentSectionIndexRef.current;
       const currentSection = secs[idx];
       
-      if (!currentSection) { config.handleAdvanceToNextSetlistTrack(); return; }
+      if (!currentSection) { c.handleAdvanceToNextSetlistTrack(); return; }
 
       const beatSpeedMsCurrent = (60 / (song.tempo || 75)) * 1000;
       const timings = song.section_timings?.[currentSection.section_name] || { measures: 4, beats: 0, repeats: 0, head_m: 0, tail_m: 0 };
@@ -86,7 +99,7 @@ export function useHardwareClock(config: HardwareClockConfig) {
       let baseLoopBeats = totalCoreBeats / sectionMultiplier;
 
       const lineTimingsObj = timings.line_timings;
-      const currentAstNode = config.astTreeRef.current[idx];
+      const currentAstNode = c.astTreeRef.current[idx];
       const parsedLinesCount = currentAstNode?.lines?.length || 1; 
 
       let calculatedBaseLoopBeats = 0;
@@ -109,111 +122,135 @@ export function useHardwareClock(config: HardwareClockConfig) {
       let totalBeats = totalCoreBeats + headBeats + tailBeats;
       const totalDurationMs = totalBeats * beatSpeedMsCurrent;
       
-      if (!config.mdSectionStartTimeRef.current || isNaN(config.mdSectionStartTimeRef.current)) {
-        config.animationFrameRef.current = requestAnimationFrame(clockExecutionTick);
+      if (!c.mdSectionStartTimeRef.current || isNaN(c.mdSectionStartTimeRef.current)) return;
+
+      let elapsedMs = 0;
+      if (c.isYtBackingTrackStartRef.current) {
+        const ytTimeSecs = c.getYoutubeTime();
+        if (ytTimeSecs === null) return; 
+
+        const targetAbsoluteBeat = c.beatMapRef.current.sectionStartBeats[idx] || 0;
+        const theoreticalSongStartOffsetSecs = targetAbsoluteBeat * (beatSpeedMsCurrent / 1000);
+        const ytOffsetSecs = (song.youtube_sync_offset_ms || 0) / 1000;
+        
+        const sectionElapsedSecs = ytTimeSecs - ytOffsetSecs - theoreticalSongStartOffsetSecs;
+        elapsedMs = sectionElapsedSecs * 1000;
+
+        // ✅ SURGICAL FIX: "Rubber Band" Sync Correction
+        // If the browser was slow to fire playVideo(), or if YouTube buffered mid-song, 
+        // the hardware clock will mathematically drift from the video. We detect the drift here.
+        const audioCtx = c.getAudioContext();
+        if (c.audioContextStartTimeRef.current !== null && audioCtx && audioCtx.state === "running") {
+          const theoreticalSongElapsed = audioCtx.currentTime - c.audioContextStartTimeRef.current;
+          const actualSongElapsed = ytTimeSecs - ytOffsetSecs;
+          const driftSecs = theoreticalSongElapsed - actualSongElapsed;
+
+          // If YouTube drifts by more than 150ms from our flawless hardware clock,
+          // instantly snap the hardware anchor back to perfectly match YouTube.
+          // (We use 150ms to ignore standard iframe API micro-jitter so the metronome stays smooth).
+          if (Math.abs(driftSecs) > 0.150) {
+            c.audioContextStartTimeRef.current = audioCtx.currentTime - actualSongElapsed;
+          }
+        }
+      } else {
+        elapsedMs = c.getGlobalTime() - c.mdSectionStartTimeRef.current;
+      }
+      
+      if (elapsedMs < -500 && !c.isYtBackingTrackStartRef.current) {
+        const secondsLeft = Math.ceil(Math.abs(elapsedMs) / 1000);
+        if (secondsLeft <= 3 && secondsLeft > 0) {
+          if (c.countdownValueRef.current !== secondsLeft) {
+            c.countdownValueRef.current = secondsLeft;
+            c.setCountdownValue(secondsLeft);
+          }
+        }
         return; 
       }
 
-      let elapsedMs = config.getGlobalTime() - config.mdSectionStartTimeRef.current;
-      
-      if (elapsedMs < -500 && !config.isYtBackingTrackStartRef.current) {
-        const secondsLeft = Math.ceil(Math.abs(elapsedMs) / 1000);
-        if (secondsLeft <= 3 && secondsLeft > 0) {
-          if (config.countdownValueRef.current !== secondsLeft) {
-            config.countdownValueRef.current = secondsLeft;
-            config.setCountdownValue(secondsLeft);
-          }
-        }
-        config.animationFrameRef.current = requestAnimationFrame(clockExecutionTick);
-        return; 
-      } else if (elapsedMs < 0) {
-        if (config.countdownValueRef.current !== null) { config.countdownValueRef.current = null; config.setCountdownValue(null); }
-        config.animationFrameRef.current = requestAnimationFrame(clockExecutionTick);
-        return;
-      } else {
-        if (config.countdownValueRef.current !== null) { config.countdownValueRef.current = null; config.setCountdownValue(null); }
+      if (elapsedMs >= 0 && c.countdownValueRef.current !== null) { 
+        c.countdownValueRef.current = null; c.setCountdownValue(null); 
       }
       
       const visualElapsedMs = Math.max(0, elapsedMs);
       
       const progressRatio = Math.min(1, visualElapsedMs / totalDurationMs);
-      if (config.backdropProgressRef.current) config.backdropProgressRef.current.style.transform = `scaleX(${progressRatio})`;
-      if (config.accentProgressBarRef.current) config.accentProgressBarRef.current.style.transform = `scaleX(${progressRatio})`;
-      if (config.simplifiedProgressBarRef.current) config.simplifiedProgressBarRef.current.style.transform = `scaleX(${progressRatio})`;
+      if (c.backdropProgressRef.current) c.backdropProgressRef.current.style.transform = `scaleX(${progressRatio})`;
+      if (c.accentProgressBarRef.current) c.accentProgressBarRef.current.style.transform = `scaleX(${progressRatio})`;
+      if (c.simplifiedProgressBarRef.current) c.simplifiedProgressBarRef.current.style.transform = `scaleX(${progressRatio})`;
 
       const msRemaining = totalDurationMs - visualElapsedMs;
       const fourBeatsMs = beatSpeedMsCurrent * 4;
 
-      if (!config.hasPlayedCueRef.current && msRemaining > 0 && msRemaining <= fourBeatsMs) {
-        config.hasPlayedCueRef.current = true; 
-        const nextSecIndex = (config.queuedSectionIndexRef.current !== null) ? config.queuedSectionIndexRef.current : idx + 1;
+      if (!c.hasPlayedCueRef.current && msRemaining > 0 && msRemaining <= fourBeatsMs) {
+        c.hasPlayedCueRef.current = true; 
+        const nextSecIndex = (c.queuedSectionIndexRef.current !== null) ? c.queuedSectionIndexRef.current : idx + 1;
         const targetSec = secs[nextSecIndex];
-        if (targetSec) config.playGuideCue(targetSec.section_name);
+        if (targetSec) c.playGuideCue(targetSec.section_name);
       }
 
-      const audioCtx = config.getAudioContext();
-      if (config.audioContextStartTimeRef.current !== null && audioCtx) {
+      const audioCtx = c.getAudioContext();
+      if (c.audioContextStartTimeRef.current !== null && audioCtx && audioCtx.state === "running") {
         const lookaheadSecs = 0.200;
         const beatSpeedSecs = beatSpeedMsCurrent / 1000;
         const currentAudioTime = audioCtx.currentTime;
         
-        const audioOffsetSecs = -(config.audioLatencyOffsetMs / 1000); 
+        const audioOffsetSecs = -(c.audioLatencyOffsetMs / 1000); 
 
-        let nextBeatTime = config.audioContextStartTimeRef.current + (config.lastAudioBeatRef.current * beatSpeedSecs);
+        let nextBeatTime = c.audioContextStartTimeRef.current + (c.lastAudioBeatRef.current * beatSpeedSecs);
         
         while (nextBeatTime < currentAudioTime + lookaheadSecs) {
-          const absoluteBeatIndex = config.lastAudioBeatRef.current;
-          const mapNodes = config.beatMapRef.current.nodes;
-          if (config.pendingQuantizedJumpRef.current) {
+          const absoluteBeatIndex = c.lastAudioBeatRef.current;
+          const mapNodes = c.beatMapRef.current.nodes;
+          if (c.pendingQuantizedJumpRef.current) {
             const timeUntilBeatSecs = nextBeatTime - currentAudioTime;
-            const exactGlobalBeatTime = config.getGlobalTime() + (timeUntilBeatSecs * 1000);
-            if (exactGlobalBeatTime >= config.pendingQuantizedJumpRef.current.jumpTime - 10) break; 
+            const exactGlobalBeatTime = c.getGlobalTime() + (timeUntilBeatSecs * 1000);
+            if (exactGlobalBeatTime >= c.pendingQuantizedJumpRef.current.jumpTime - 10) break; 
           }
           if (absoluteBeatIndex < mapNodes.length) {
             const beatNode = mapNodes[absoluteBeatIndex];
-            config.triggerMetronomeSound(beatNode.isDownbeat ? 1 : 2, nextBeatTime + audioOffsetSecs);
+            c.triggerMetronomeSound(beatNode.isDownbeat ? 1 : 2, nextBeatTime + audioOffsetSecs);
             if (config.isDoubleMetronomeEnabledRef.current) {
-              config.triggerMetronomeSound(2, nextBeatTime + audioOffsetSecs + (beatSpeedSecs / 2));
+              c.triggerMetronomeSound(2, nextBeatTime + audioOffsetSecs + (beatSpeedSecs / 2));
             }
           }
-          config.lastAudioBeatRef.current++;
-          nextBeatTime = config.audioContextStartTimeRef.current + (config.lastAudioBeatRef.current * beatSpeedSecs);
+          c.lastAudioBeatRef.current++;
+          nextBeatTime = c.audioContextStartTimeRef.current + (c.lastAudioBeatRef.current * beatSpeedSecs);
         }
         
-        if (isCurrentlyMD && config.lastAudioBeatRef.current > 0 && config.lastAudioBeatRef.current % 16 === 0) {
-          if ((window as any)._lastHeartbeatBeat !== config.lastAudioBeatRef.current) {
-            (window as any)._lastHeartbeatBeat = config.lastAudioBeatRef.current;
+        if (isCurrentlyMD && c.lastAudioBeatRef.current > 0 && c.lastAudioBeatRef.current % 16 === 0) {
+          if ((window as any)._lastHeartbeatBeat !== c.lastAudioBeatRef.current) {
+            (window as any)._lastHeartbeatBeat = c.lastAudioBeatRef.current;
             
-            const sectionStartBeat = config.beatMapRef.current.sectionStartBeats[config.currentSectionIndexRef.current] || 0;
-            const localBeatCount = config.lastAudioBeatRef.current - sectionStartBeat;
-            const exactGlobalBeatTime = config.mdSectionStartTimeRef.current + (localBeatCount * beatSpeedSecs * 1000);
+            const sectionStartBeat = c.beatMapRef.current.sectionStartBeats[c.currentSectionIndexRef.current] || 0;
+            const localBeatCount = c.lastAudioBeatRef.current - sectionStartBeat;
+            const exactGlobalBeatTime = c.mdSectionStartTimeRef.current + (localBeatCount * beatSpeedSecs * 1000);
             
-            // ✅ FULL FIX: Triggers via Ref to bypass stale closure!
-            config.broadcastRef.current({ 
+            // ✅ Sends reliably through Supabase Websocket
+            c.sendSupabaseBroadcast({ 
                 action: "HEARTBEAT", 
-                mdAbsoluteBeat: config.lastAudioBeatRef.current, 
+                mdAbsoluteBeat: c.lastAudioBeatRef.current, 
                 mdGlobalBeatTime: exactGlobalBeatTime,
-                mdSectionIndex: config.currentSectionIndexRef.current 
+                mdSectionIndex: c.currentSectionIndexRef.current 
             });
           }
         }
       }
 
       const localSectionElapsedBeats = visualElapsedMs / beatSpeedMsCurrent;
-      const absoluteVisualBeatFloat = (config.beatMapRef.current.sectionStartBeats[idx] || 0) + localSectionElapsedBeats;
+      const absoluteVisualBeatFloat = (c.beatMapRef.current.sectionStartBeats[idx] || 0) + localSectionElapsedBeats;
       const absoluteVisualBeatIndex = Math.floor(absoluteVisualBeatFloat);
 
-      if (absoluteVisualBeatIndex < config.beatMapRef.current.nodes.length) {
-        const beatNode = config.beatMapRef.current.nodes[absoluteVisualBeatIndex];
+      if (absoluteVisualBeatIndex < c.beatMapRef.current.nodes.length) {
+        const beatNode = c.beatMapRef.current.nodes[absoluteVisualBeatIndex];
         const currentVisualBeatPulse = beatNode.measureBeatIndex;
         const activeMeasureLength = beatNode.measureLength;
-        if (activeMeasureLength !== config.lastVisualMeasureLengthRef.current) {
-          config.lastVisualMeasureLengthRef.current = activeMeasureLength;
-          config.setCurrentMeasureLength(activeMeasureLength);
+        if (activeMeasureLength !== c.lastVisualMeasureLengthRef.current) {
+          c.lastVisualMeasureLengthRef.current = activeMeasureLength;
+          c.setCurrentMeasureLength(activeMeasureLength);
         }
-        if (currentVisualBeatPulse !== config.lastVisualBeatRef.current) {
-          config.lastVisualBeatRef.current = currentVisualBeatPulse;
-          config.updateMetronomeUI(currentVisualBeatPulse, true, activeMeasureLength); 
+        if (currentVisualBeatPulse !== c.lastVisualBeatRef.current) {
+          c.lastVisualBeatRef.current = currentVisualBeatPulse;
+          c.updateMetronomeUI(currentVisualBeatPulse, true, activeMeasureLength); 
         }
       }
 
@@ -221,9 +258,7 @@ export function useHardwareClock(config: HardwareClockConfig) {
       const cappedElapsedMs = Math.max(0, Math.min(elapsedMs, safeDuration - 1));
       const sectionAbsoluteBeat = Math.floor(cappedElapsedMs / beatSpeedMsCurrent);
       const coreAbsoluteBeat = Math.max(0, sectionAbsoluteBeat - headBeats);
-      
       const cappedCoreBeat = Math.min(coreAbsoluteBeat, Math.max(0, totalCoreBeats - 1));
-
       const safeBaseLoopBeats = Math.max(1, baseLoopBeats); 
       
       let targetLineIdx = 0;
@@ -243,41 +278,62 @@ export function useHardwareClock(config: HardwareClockConfig) {
         if (targetLineIdx >= safeLinesCount) targetLineIdx = safeLinesCount - 1;
       }
 
-      if (config.activeLineIndexRef.current !== targetLineIdx) {
-        config.activeLineIndexRef.current = targetLineIdx;
-        config.setActiveLineIndex(targetLineIdx);
+      if (c.activeLineIndexRef.current !== targetLineIdx) {
+        c.activeLineIndexRef.current = targetLineIdx;
+        c.setActiveLineIndex(targetLineIdx);
       }
 
       if (elapsedMs >= totalDurationMs) {
-        const harmsActiveQueue = config.queuedSectionIndexRef.current !== null && config.queuedTrackIndexRef.current !== null;
-        let nextTrackIdx = config.playingTrackIndexRef.current;
+        const harmsActiveQueue = c.queuedSectionIndexRef.current !== null && c.queuedTrackIndexRef.current !== null;
+        let nextTrackIdx = c.playingTrackIndexRef.current;
         let nextSectionIdx = idx + 1;
 
         if (harmsActiveQueue) {
-          nextTrackIdx = config.queuedTrackIndexRef.current as number;
-          nextSectionIdx = config.queuedSectionIndexRef.current as number;
-          const jumpTime = config.mdSectionStartTimeRef.current + totalDurationMs;
-          config.executeJumpNow(nextTrackIdx, nextSectionIdx, jumpTime);
+          nextTrackIdx = c.queuedTrackIndexRef.current as number;
+          nextSectionIdx = c.queuedSectionIndexRef.current as number;
+          const jumpTime = c.mdSectionStartTimeRef.current + totalDurationMs;
+          c.executeJumpNow(nextTrackIdx, nextSectionIdx, jumpTime);
           if (isCurrentlyMD) {
-            config.broadcastRef.current({ action: "JUMP", trackIndex: nextTrackIdx, sectionIndex: nextSectionIdx, mdSectionStartTime: jumpTime }); // ✅ FULL FIX
+            c.sendSupabaseBroadcast({ action: "JUMP", trackIndex: nextTrackIdx, sectionIndex: nextSectionIdx, mdSectionStartTime: jumpTime });
           }
         } else if (nextSectionIdx >= secs.length) {
-          const jumpTime = config.mdSectionStartTimeRef.current + totalDurationMs;
-          config.executeJumpNow(nextTrackIdx, 0, jumpTime);
+          const jumpTime = c.mdSectionStartTimeRef.current + totalDurationMs;
+          c.executeJumpNow(nextTrackIdx, 0, jumpTime);
           if (isCurrentlyMD) {
-            config.broadcastRef.current({ action: "JUMP", trackIndex: nextTrackIdx, sectionIndex: 0, mdSectionStartTime: jumpTime }); // ✅ FULL FIX
+            c.sendSupabaseBroadcast({ action: "JUMP", trackIndex: nextTrackIdx, sectionIndex: 0, mdSectionStartTime: jumpTime }); 
           }
         } else {
-          config.currentSectionIndexRef.current = nextSectionIdx;
-          config.setCurrentSectionIndex(nextSectionIdx);
-          config.hasPlayedCueRef.current = false;
-          config.mdSectionStartTimeRef.current = config.mdSectionStartTimeRef.current + totalDurationMs;
+          c.currentSectionIndexRef.current = nextSectionIdx;
+          c.setCurrentSectionIndex(nextSectionIdx);
+          c.hasPlayedCueRef.current = false;
+          c.mdSectionStartTimeRef.current = c.mdSectionStartTimeRef.current + totalDurationMs;
         }
       }
-      config.animationFrameRef.current = requestAnimationFrame(clockExecutionTick);
     };
 
-    config.animationFrameRef.current = requestAnimationFrame(clockExecutionTick);
-    return () => { if (config.animationFrameRef.current) cancelAnimationFrame(config.animationFrameRef.current); };
-  }, [config.isPlayingFlow]);
+    try {
+      if (!workerRef.current) {
+        const workerCode = `
+          let timerID = null;
+          self.onmessage = function(e) {
+            if (e.data === 'start') {
+              timerID = setInterval(() => postMessage('tick'), 25);
+            } else if (e.data === 'stop') {
+              clearInterval(timerID);
+              timerID = null;
+            }
+          };
+        `;
+        const blob = new Blob([workerCode], { type: 'application/javascript' });
+        workerRef.current = new Worker(URL.createObjectURL(blob));
+        workerRef.current.onmessage = (e) => { if (e.data === 'tick') clockExecutionTick(); };
+        workerRef.current.postMessage('start');
+      }
+    } catch (err) {
+      console.warn("Web Worker blocked. Falling back to main-thread interval.");
+      if (!fallbackTimerRef.current) fallbackTimerRef.current = setInterval(clockExecutionTick, 25);
+    }
+
+    return killEngine;
+  }, [config.isPlayingFlow]); 
 }
