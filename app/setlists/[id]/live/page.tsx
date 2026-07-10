@@ -386,9 +386,13 @@ export default function SetlistPerformanceRoomPage() {
     youtubeVideoId, isYtBuffering, setIsYtBuffering,
     ytPlayerRef, isYtPlayerReadyRef, ytSyncPendingRef, isYtBufferingRef
   } = useYouTubeSync({
-    activeSong, activeSongRef, beatMapRef, currentSectionIndexRef,
-    getGlobalTime, executeStartSequence, youtubeVolumeRef, isYoutubeSyncEnabled,
-    youtubeVolume, audioLatencyOffsetMs 
+    activeSong, 
+    activeSongRef, 
+    beatMapRef, 
+    currentSectionIndexRef,
+    getGlobalTime, 
+    youtubeVolumeRef, 
+    isYoutubeSyncEnabled
   });
 
   useHardwareClock({
