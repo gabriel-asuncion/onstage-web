@@ -587,7 +587,7 @@ export default function EventCockpitPage() {
 
       {/* FIXED POSITION BAR: Persistent Inserter Engine */}
       {viewSubScreen === "songs_view" && activeRole === "admin" && (
-        <div className="bg-white p-3 rounded-2xl border shadow-sm space-y-3 animate-in slide-in-from-top duration-200">
+        <div className="bg-white p-3 rounded-2xl border shadow-sm space-y-3">
           <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block">Song Database</label>
           <div className="flex gap-3 relative overflow-visible">
             <div className="relative flex-1 overflow-visible">

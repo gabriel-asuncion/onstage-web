@@ -27,6 +27,8 @@ interface SettingsModalProps {
   setIsMetronomeSoundEnabled: (val: boolean) => void;
   isDoubleMetronomeEnabled: boolean;
   setIsDoubleMetronomeEnabled: (val: boolean) => void;
+  metronomeSoundType: "blip" | "bell" | "block" | "glass";
+  setMetronomeSoundType: (val: "blip" | "bell" | "block" | "glass") => void;
   localClickVolume: number;
   setLocalClickVolume: (val: number) => void;
   audioLatencyOffsetMs: number;
@@ -39,7 +41,7 @@ interface SettingsModalProps {
   setIsYoutubeSyncEnabled: (val: boolean) => void;
   youtubeVolume: number;
   setYoutubeVolume: (val: number) => void;
-  isAdmin: boolean;
+  canEditSong: boolean;
   isPlayingFlow: boolean;
   router: AppRouterInstance;
   handleOpenTransposerModal: () => void;
@@ -55,9 +57,11 @@ export function SettingsModal(props: SettingsModalProps) {
     isZenMode, setIsZenMode, // ✅ Destructured Zen Props
     lineSpacing, setLineSpacing, lyricsFontSize, setLyricsFontSize,
     isMetronomeSoundEnabled, setIsMetronomeSoundEnabled, isDoubleMetronomeEnabled, setIsDoubleMetronomeEnabled,
+    metronomeSoundType, setMetronomeSoundType, // ✅ Destructured here
     localClickVolume, setLocalClickVolume, audioLatencyOffsetMs, setAudioLatencyOffsetMs,
-    isTestingSync, setIsTestingSync, testVisualBeat, activeSong, isYoutubeSyncEnabled, setIsYoutubeSyncEnabled,
-    youtubeVolume, setYoutubeVolume, isAdmin, isPlayingFlow, router, handleOpenTransposerModal, setIsStructureModalOpen
+    isTestingSync, setIsTestingSync, testVisualBeat, activeSong,
+    isYoutubeSyncEnabled, setIsYoutubeSyncEnabled,
+    youtubeVolume, setYoutubeVolume, canEditSong, isPlayingFlow, router, handleOpenTransposerModal, setIsStructureModalOpen
   } = props;
 
   const alternateMD = onlineUsers.find(u => u.isMD && u.id !== localPresenceUser?.id);
@@ -188,6 +192,21 @@ export function SettingsModal(props: SettingsModalProps) {
                     <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform ${isDoubleMetronomeEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
                   </button>
                 </div>
+                {/* ✅ New Metronome Sound Selector */}
+                <div className="flex items-center justify-between mb-4 border-b border-zinc-200/60 pb-4">
+                  <span className="text-[11px] font-bold text-zinc-600">Click Sound</span>
+                  <div className="flex bg-zinc-100 p-1 rounded-xl gap-1">
+                    {(["blip", "bell", "block", "glass"] as const).map(snd => (
+                      <button 
+                        key={snd}
+                        onClick={() => setMetronomeSoundType(snd)}
+                        className={`px-3 py-1.5 text-[10px] font-bold rounded-lg capitalize transition-all ${metronomeSoundType === snd ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-700'}`}
+                      >
+                        {snd}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 <div className="flex items-center justify-between mb-4 border-b border-zinc-200/60 pb-4">
                   <span className="text-[11px] font-bold text-zinc-600">Local Click Volume</span>
                   <input type="range" min="0" max="1" step="0.05" value={localClickVolume} onChange={(e) => setLocalClickVolume(parseFloat(e.target.value))} className="w-24 accent-blue-600" />
@@ -237,7 +256,8 @@ export function SettingsModal(props: SettingsModalProps) {
           <div className="space-y-3">
             <label className="text-xs font-bold text-zinc-900 block">Actions</label>
             <div className="bg-white border border-zinc-100 rounded-2xl overflow-hidden shadow-sm divide-y divide-zinc-50">
-              {isAdmin && activeSong && (
+              {/* ✅ SURGICAL FIX: Now respects the 4-tier hierarchy */}
+              {canEditSong && activeSong && (
                 <button type="button" disabled={isPlayingFlow} onClick={() => { setIsSettingsModalOpen(false); router.push(`/songs/${activeSong.id}/edit`); }} className="w-full py-4 px-4 flex justify-between items-center hover:bg-zinc-50 transition-colors disabled:opacity-40">
                   <div className="flex items-center gap-3"><span className="text-blue-500">📝</span><span className="text-sm font-bold text-zinc-700">Edit Song</span></div><span className="text-zinc-300 font-bold">›</span>
                 </button>

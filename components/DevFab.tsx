@@ -189,9 +189,8 @@ export default function DevFab() {
     setIsSavingData(false);
   }
 
-  // ✅ ADDED: Fast Role Toggle Function
-  async function handleToggleRole(userId: string, currentRole: string) {
-    const newRole = currentRole === "admin" ? "member" : "admin";
+  // ✅ SURGICAL FIX: Upgraded to a 4-tier Role Assignment Function
+  async function handleRoleChange(userId: string, newRole: string) {
     try {
       const { error } = await supabase
         .from("profiles")
@@ -199,8 +198,6 @@ export default function DevFab() {
         .eq("id", userId);
 
       if (error) throw error;
-
-      // Update local state instantly
       setGlobalProfiles(prev => prev.map(p => 
         p.id === userId ? { ...p, role: newRole } : p
       ));
@@ -244,7 +241,9 @@ export default function DevFab() {
               className="bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1 text-[11px] font-black text-white outline-none cursor-pointer focus:border-blue-500"
             >
               <option value="admin">ADMIN</option>
-              <option value="member">MUSICIAN</option>
+              <option value="moderator">MODERATOR</option>
+              <option value="musician">MUSICIAN</option>
+              <option value="member">MEMBER</option>
               <option value="none">NONE (AUTH)</option>
             </select>
           </div>
@@ -261,9 +260,9 @@ export default function DevFab() {
 
       {isGlobalModalOpen && (
         <div className="fixed inset-0 bg-zinc-950/60 backdrop-blur-sm z-[250000] flex items-center justify-center p-4 md:p-6 select-none animate-in fade-in duration-150">
-          <div className="bg-[#f8f9fa] rounded-[2.5rem] shadow-2xl border w-full max-w-4xl h-[80vh] flex flex-col overflow-hidden relative animate-in zoom-in-95 duration-150">
+          <div className="bg-[#f8f9fa] rounded-[1rem] shadow-2xl border w-full max-w-4xl h-[80vh] flex flex-col overflow-hidden relative animate-in zoom-in-95 duration-150">
             
-            <div className="bg-white border-b border-zinc-200 px-8 py-5 flex items-center justify-between flex-shrink-0">
+            <div className="bg-white border-b border-zinc-200 px-3 py-3 flex items-center justify-between flex-shrink-0">
               <div className="space-y-0.5">
                 <h3 className="font-black text-xl text-zinc-900 tracking-tight flex items-center gap-2">
                   <span>👥</span> Global User Accounts Registry
@@ -279,7 +278,7 @@ export default function DevFab() {
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-8 custom-scrollbar space-y-6">
+            <div className="flex-1 overflow-y-auto p-2 custom-scrollbar space-y-3">
               
               {/* ✅ ADDED: Sleek Search Bar */}
               <div className="max-w-md">
@@ -295,7 +294,7 @@ export default function DevFab() {
               {loadingProfiles ? (
                 <div className="text-center py-20 text-xs font-black uppercase text-zinc-400 tracking-widest animate-pulse">Querying Database User Registries Matrix...</div>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 items-start">
                   
                   {/* ✅ Switched to mapping filteredProfiles */}
                   {filteredProfiles.map((profile) => {
@@ -305,24 +304,29 @@ export default function DevFab() {
                       <div 
                         key={profile.id} 
                         // ✅ ADDED: 'relative' class to anchor the absolute toggle switch
-                        className={`relative bg-white border rounded-[2rem] p-6 shadow-sm transition-all duration-150 ${
+                        className={`relative bg-white border rounded-[1rem] p-3 shadow-sm transition-all duration-150 ${
                           isRowEditingActive ? "border-blue-500 ring-2 ring-blue-500/10" : "border-zinc-200"
                         }`}
                       >
                         
-                        {/* ✅ ADDED: Admin/Member Toggle Switch */}
+                        {/* ✅ SURGICAL FIX: 4-Tier Role Dropdown */}
                         {!isRowEditingActive && (
                           <div className="absolute top-6 right-6 flex items-center gap-2">
-                            <span className={`text-[9px] font-black uppercase tracking-widest ${profile.role === 'admin' ? 'text-blue-600' : 'text-zinc-400'}`}>
-                              {profile.role === 'admin' ? 'Admin' : 'Member'}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => handleToggleRole(profile.id, profile.role || 'member')}
-                              className={`w-10 h-5 rounded-full relative transition-colors duration-200 outline-none flex items-center px-0.5 shadow-inner ${profile.role === 'admin' ? 'bg-blue-600' : 'bg-zinc-200'}`}
+                            <select
+                              value={profile.role || 'member'}
+                              onChange={(e) => handleRoleChange(profile.id, e.target.value)}
+                              className={`text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded-lg border outline-none cursor-pointer transition-colors shadow-sm ${
+                                profile.role === 'admin' ? 'bg-red-50 text-red-600 border-red-200' :
+                                profile.role === 'moderator' ? 'bg-purple-50 text-purple-600 border-purple-200' :
+                                profile.role === 'musician' ? 'bg-blue-50 text-blue-600 border-blue-200' :
+                                'bg-zinc-50 text-zinc-500 border-zinc-200'
+                              }`}
                             >
-                              <div className={`w-4 h-4 bg-white rounded-full transition-transform duration-200 shadow-sm ${profile.role === 'admin' ? 'translate-x-5' : 'translate-x-0'}`} />
-                            </button>
+                              <option value="admin">Admin</option>
+                              <option value="moderator">Moderator</option>
+                              <option value="musician">Musician</option>
+                              <option value="member">Member</option>
+                            </select>
                           </div>
                         )}
 

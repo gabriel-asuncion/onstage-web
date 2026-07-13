@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef, useMemo } from "react";
-import { useRouter, useParams } from "next/navigation";
+import { useRouter, useParams, useSearchParams } from "next/navigation";
 import { createClient } from "../../../../utils/supabase/client";
 import { useEngine } from "../../../context/EngineContext";
 import { getSongChordChart } from "../../../../utils/supabase/actions";
@@ -115,15 +115,24 @@ export default function SongEditPage() {
   const supabase = createClient();
   const router = useRouter();
   const params = useParams();
+  const searchParams = useSearchParams(); // ✅ ADDED: URL query listener
   const editingSongId = params.id as string;
 
   const editorContentContainerRef = useRef<HTMLDivElement | null>(null);
   const { activeRole } = useEngine();
 
+  // ✅ SURGICAL FIX: The Bouncer - Kicks out unauthorized standard members instantly
+  useEffect(() => {
+    if (activeRole === "member") {
+      router.replace("/songs"); 
+    }
+  }, [activeRole, router]);
+
   // Primary Hydration States
   const [loading, setLoading] = useState(true);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [isConfirmExitModalOpen, setIsConfirmExitModalOpen] = useState(false);
+  const [pendingNavigationUrl, setPendingNavigationUrl] = useState<string | null>(null); // ✅ ADDED: Stores the nav destination
   const [editorActiveTab, setEditorActiveTab] = useState<"details" | "content" | "structure">("details");
 
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
@@ -153,6 +162,7 @@ export default function SongEditPage() {
   const audioCtxRef = useRef<AudioContext | null>(null);
 
   const isYtPlayerReadyRef = useRef<boolean>(false);
+  const syncWorkerRef = useRef<Worker | null>(null); // ✅ ADDED: Deterministic Engine Worker
 
   // ✅ SURGICAL ADDITION: Live MS Timer Refs
   const [isTestingActive, setIsTestingActive] = useState(false);
@@ -337,7 +347,22 @@ export default function SongEditPage() {
   useEffect(() => {
     const hydrateArrangementWorkspace = async () => {
       if (!editingSongId) return;
+      
       if (editingSongId === "new") {
+        // ✅ SURGICAL FIX: Read the Smart Import data from the URL parameters!
+        const prefillTitle = searchParams.get("title") || "";
+        const prefillArtist = searchParams.get("artist") || "";
+        const prefillYoutubeUrl = searchParams.get("youtube_url") || "";
+
+        if (prefillTitle) setFormTitle(prefillTitle);
+        if (prefillArtist) setFormArtist(prefillArtist);
+        if (prefillYoutubeUrl) setFormYoutubeUrl(prefillYoutubeUrl);
+        
+        // If the URL provided data, instantly flag unsaved changes so the Save button lights up!
+        if (prefillTitle || prefillArtist || prefillYoutubeUrl) {
+          setHasUnsavedChanges(true);
+        }
+
         setFormSections([{ id: "sec-1", type: "Verse 1", label: "Verse 1", content: "", repetitions: 1 }]);
         setLoading(false);
         return;
@@ -401,6 +426,62 @@ export default function SongEditPage() {
     return () => window.removeEventListener("keydown", handleModalHardwareEscapeKey);
   }, [hasUnsavedChanges]);
 
+  // ✅ SURGICAL ADDITION: Browser Native Refresh/Close Protection
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (hasUnsavedChanges) {
+        e.preventDefault();
+        e.returnValue = ''; // Triggers the browser's native "Leave Site?" dialog
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [hasUnsavedChanges]);
+
+  // ✅ SURGICAL ADDITION: Native Next.js App Router Navigation Blocker
+  useEffect(() => {
+    if (!hasUnsavedChanges) return;
+
+    // 1. Intercept all internal Next.js <Link> clicks
+    const handleNextJsLinkClick = (e: MouseEvent) => {
+      const target = (e.target as HTMLElement).closest('a');
+      
+      if (target && target.href && target.target !== '_blank') {
+        const targetUrl = new URL(target.href);
+        // If it's an internal route that isn't the current page...
+        if (targetUrl.origin === window.location.origin && targetUrl.pathname !== window.location.pathname) {
+          e.preventDefault(); 
+          e.stopPropagation(); 
+          
+          setPendingNavigationUrl(targetUrl.pathname + targetUrl.search);
+          setIsConfirmExitModalOpen(true);
+        }
+      }
+    };
+
+    // 2. Intercept browser back/forward buttons (popstate)
+    const handlePopState = () => {
+      if (hasUnsavedChanges) {
+        // Push the state back immediately to trap the user on the page
+        window.history.pushState(null, '', window.location.href);
+        setPendingNavigationUrl(null); // Back button doesn't have a specific target we can easily read
+        setIsConfirmExitModalOpen(true);
+      }
+    };
+
+    // Use capture phase to grab the click before Next.js Link component handles it
+    document.addEventListener('click', handleNextJsLinkClick, { capture: true });
+    window.addEventListener('popstate', handlePopState);
+
+    // Seed the history so the back button trap works
+    window.history.pushState(null, '', window.location.href);
+
+    return () => {
+      document.removeEventListener('click', handleNextJsLinkClick, { capture: true });
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, [hasUnsavedChanges]);
+
   const activeScaleDiatonicDeck = useMemo(() => DIATONIC_MODES_MAP[formKey] || DIATONIC_MODES_MAP["G"], [formKey]);
 
   // Keyboard Mode Input Listener (Diatonic Quick Keys)
@@ -448,11 +529,9 @@ export default function SongEditPage() {
     return () => window.removeEventListener("keydown", handleNashvilleNumberKeyInjections);
   }, [chordMode, chordTargetCoordinate, activeScaleDiatonicDeck]);
 
-  // ✅ SURGICAL ADDITION: Phase 2 YouTube Player API & Metronome Synthesizer
+  // ✅ SURGICAL REWRITE: The Flawless Deterministic "Hold and Fire" Engine
   useEffect(() => {
-    // ✅ SURGICAL FIX: Only initialize if we have an ID AND we are looking at the Details tab!
     if (!youtubeVideoId || editorActiveTab !== "details") {
-      // If we leave the tab, aggressively destroy the old iframe so it doesn't get orphaned in memory
       if (ytPlayerRef.current && typeof ytPlayerRef.current.destroy === 'function') {
         try { ytPlayerRef.current.destroy(); } catch(e) {}
         ytPlayerRef.current = null;
@@ -461,71 +540,19 @@ export default function SongEditPage() {
       return;
     }
 
-    const runTestMetronome = () => {
-      if (!audioCtxRef.current) return;
-
-      activeOscillatorsRef.current.forEach(osc => {
-        try { osc.stop(); osc.disconnect(); } catch (e) {}
-      });
-      activeOscillatorsRef.current = [];
-
-      const bpm = parseInt(liveTempoRef.current) || 75;
-      const beatDuration = 60 / bpm;
-      const offsetSecs = liveOffsetRef.current / 1000;
-      const startTime = audioCtxRef.current.currentTime + offsetSecs;
-
-      for (let i = 0; i < 16; i++) {
-        const osc = audioCtxRef.current.createOscillator();
-        const gain = audioCtxRef.current.createGain();
-        osc.connect(gain);
-        gain.connect(audioCtxRef.current.destination);
-        osc.frequency.value = i % 4 === 0 ? 1200 : 800; 
-        osc.type = "sine";
-        const t = startTime + (i * beatDuration);
-        gain.gain.setValueAtTime(0, t);
-        gain.gain.linearRampToValueAtTime(0.5, t + 0.005);
-        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
-        osc.start(t);
-        osc.stop(t + 0.1);
-        
-        activeOscillatorsRef.current.push(osc);
-      }
-    };
-
     const initPlayer = () => {
       if (!(window as any).YT || !(window as any).YT.Player) {
-        setTimeout(initPlayer, 200);
-        return;
+        setTimeout(initPlayer, 200); return;
       }
       
-      // ✅ SURGICAL FIX: Because we destroy the player on tab switches, we can always safely build a fresh one here
       ytPlayerRef.current = new (window as any).YT.Player('yt-player-container', {
         height: '100%', width: '100%', videoId: youtubeVideoId,
         playerVars: { 'playsinline': 1, 'controls': 1 },
         events: {
-          'onReady': () => {
-            isYtPlayerReadyRef.current = true;
-            console.log("📺 YouTube Player API fully loaded and ready for commands.");
-          },
+          'onReady': () => { isYtPlayerReadyRef.current = true; },
           'onStateChange': (event: any) => {
-            if (event.data === 1 && isTestingSyncRef.current) { 
-              isTestingSyncRef.current = false;
-              setIsTestingActive(true); // ✅ Turn on the UI Tracker
-              runTestMetronome();
-
-              // ✅ SURGICAL ADDITION: 60fps Hardware Loop tied to YouTube's brain
-              const trackTime = () => {
-                if (ytPlayerRef.current && typeof ytPlayerRef.current.getCurrentTime === 'function' && liveTimeDisplayRef.current) {
-                   const ms = Math.floor(ytPlayerRef.current.getCurrentTime() * 1000);
-                   liveTimeDisplayRef.current.innerText = `${ms} ms`;
-                }
-                testTimerRafRef.current = requestAnimationFrame(trackTime);
-              };
-              if (testTimerRafRef.current) cancelAnimationFrame(testTimerRafRef.current);
-              testTimerRafRef.current = requestAnimationFrame(trackTime);
-
-            } else if (event.data === 2 || event.data === 0) {
-              // ✅ Turn off the timer if the video is paused or ends
+            // Only used to turn off the UI timer when the user manually pauses
+            if (event.data === 2 || event.data === 0) {
               setIsTestingActive(false);
               if (testTimerRafRef.current) cancelAnimationFrame(testTimerRafRef.current);
             }
@@ -535,23 +562,23 @@ export default function SongEditPage() {
     };
 
     if (!(window as any).YT) {
-      const tag = document.createElement('script');
-      tag.src = "https://www.youtube.com/iframe_api";
+      const tag = document.createElement('script'); tag.src = "https://www.youtube.com/iframe_api";
       const firstScriptTag = document.getElementsByTagName('script')[0];
       firstScriptTag?.parentNode?.insertBefore(tag, firstScriptTag);
     }
     initPlayer();
     
-    // ✅ SURGICAL FIX: Cleanup function for when you paste a new URL
     return () => {
       if (ytPlayerRef.current && typeof ytPlayerRef.current.destroy === 'function') {
         try { ytPlayerRef.current.destroy(); } catch(e) {}
         ytPlayerRef.current = null;
         isYtPlayerReadyRef.current = false;
       }
+      if (syncWorkerRef.current) {
+        syncWorkerRef.current.terminate();
+        syncWorkerRef.current = null;
+      }
     };
-    
-  // ✅ SURGICAL FIX: Add `editorActiveTab` so the player accurately rebuilds when tabbing back to Details!
   }, [youtubeVideoId, editorActiveTab]);
 
   const handleTestYoutubeSync = () => {
@@ -560,27 +587,86 @@ export default function SongEditPage() {
     }
     if (audioCtxRef.current?.state === "suspended") audioCtxRef.current.resume();
     
-    // Immediately kill any clicks that were currently ringing out from a previous test click
-    activeOscillatorsRef.current.forEach(osc => {
-      try { osc.stop(); osc.disconnect(); } catch (e) {}
-    });
+    // Kill existing clicks
+    activeOscillatorsRef.current.forEach(osc => { try { osc.stop(); osc.disconnect(); } catch (e) {} });
     activeOscillatorsRef.current = [];
+    if (syncWorkerRef.current) { syncWorkerRef.current.terminate(); syncWorkerRef.current = null; }
 
-    if (isYtPlayerReadyRef.current && ytPlayerRef.current && typeof ytPlayerRef.current.seekTo === 'function') {
-      isTestingSyncRef.current = true;
-      
-      // ✅ SURGICAL ADDITION: Reset UI instantly on click
-      setIsTestingActive(false);
-      if (testTimerRafRef.current) cancelAnimationFrame(testTimerRafRef.current);
-      if (liveTimeDisplayRef.current) liveTimeDisplayRef.current.innerText = "0 ms";
-
-      try {
-        ytPlayerRef.current.seekTo(0);
-        ytPlayerRef.current.playVideo();
-      } catch(e) {}
-    } else {
-      console.warn("YouTube Player is still initializing in the DOM. Please wait a moment.");
+    if (!isYtPlayerReadyRef.current || !ytPlayerRef.current || typeof ytPlayerRef.current.seekTo !== 'function') {
+      console.warn("YouTube Player is still initializing."); return;
     }
+
+    // ✅ STEP 1: Pause and Reset YouTube (Hold)
+    try {
+      ytPlayerRef.current.pauseVideo();
+      ytPlayerRef.current.seekTo(0, true);
+    } catch(e) {}
+
+    // ✅ STEP 2: Calculate Absolute Math (Fire Point)
+    const bpm = parseInt(liveTempoRef.current) || 75;
+    const beatDurationSecs = 60 / bpm;
+    const currentHardwareTime = audioCtxRef.current.currentTime;
+    
+    // We will tell YouTube to start exactly 300ms in the future to allow the buffer to settle.
+    const PRE_ROLL_SECS = 0.300; 
+    const absoluteVideoStartTime = currentHardwareTime + PRE_ROLL_SECS;
+    
+    // The metronome is locked to the Video Start Time + the User's Custom Offset
+    const offsetSecs = liveOffsetRef.current / 1000;
+    const absoluteMetronomeAnchor = absoluteVideoStartTime + offsetSecs;
+
+    // ✅ STEP 3: Schedule the Flawless Metronome Clicks
+    for (let i = 0; i < 16; i++) {
+      const targetBeatTime = absoluteMetronomeAnchor + (i * beatDurationSecs);
+      
+      const osc = audioCtxRef.current.createOscillator();
+      const gain = audioCtxRef.current.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtxRef.current.destination);
+      osc.frequency.value = i % 4 === 0 ? 1200 : 800; 
+      osc.type = "sine";
+      
+      gain.gain.setValueAtTime(0, targetBeatTime);
+      gain.gain.linearRampToValueAtTime(0.5, targetBeatTime + 0.005);
+      gain.gain.exponentialRampToValueAtTime(0.001, targetBeatTime + 0.1);
+      
+      osc.start(targetBeatTime);
+      osc.stop(targetBeatTime + 0.1);
+      activeOscillatorsRef.current.push(osc);
+    }
+
+    // ✅ STEP 4: Fire YouTube precisely using an isolated Web Worker (Bypasses Main Thread Lag)
+    const workerCode = `
+      self.onmessage = function(e) {
+        if (e.data.action === 'fire') {
+          setTimeout(() => { postMessage('EXECUTE'); }, e.data.delayMs);
+        }
+      };
+    `;
+    const blob = new window.Blob([workerCode], { type: 'application/javascript' });
+    syncWorkerRef.current = new Worker(URL.createObjectURL(blob));
+    
+    syncWorkerRef.current.onmessage = (e) => {
+      if (e.data === 'EXECUTE') {
+        try { ytPlayerRef.current.playVideo(); } catch(err) {}
+        
+        // Start the UI Timer
+        setIsTestingActive(true);
+        const trackTime = () => {
+          if (ytPlayerRef.current && typeof ytPlayerRef.current.getCurrentTime === 'function' && liveTimeDisplayRef.current) {
+             const ms = Math.floor(ytPlayerRef.current.getCurrentTime() * 1000);
+             liveTimeDisplayRef.current.innerText = `${ms} ms`;
+          }
+          testTimerRafRef.current = requestAnimationFrame(trackTime);
+        };
+        if (testTimerRafRef.current) cancelAnimationFrame(testTimerRafRef.current);
+        testTimerRafRef.current = requestAnimationFrame(trackTime);
+      }
+    };
+
+    // Calculate how many milliseconds are left until the exact pre-roll point
+    const msUntilFire = Math.max(0, (absoluteVideoStartTime - audioCtxRef.current.currentTime) * 1000);
+    syncWorkerRef.current.postMessage({ action: 'fire', delayMs: msUntilFire });
   };
 
   const handleCaptureSyncPoint = () => {
@@ -867,10 +953,12 @@ export default function SongEditPage() {
 
   const handleAttemptDismissal = () => {
     if (hasUnsavedChanges) {
+      setPendingNavigationUrl(null); // ✅ Clear any intercepted nav URL
       setIsConfirmExitModalOpen(true);
       return;
     }
-    router.push("/songs");
+    // ✅ SURGICAL FIX: Native browser back instead of hardcoded route
+    router.back(); 
   };
 
   const handleCommitSongChangesToDB = async () => {
@@ -1644,8 +1732,23 @@ export default function SongEditPage() {
               <p className="text-xs text-zinc-500 font-medium leading-relaxed">You have active modifications inside your arrangement canvas layers. Discard changes and close workspace?</p>
             </div>
             <div className="grid grid-cols-2 gap-2 pt-1">
-              <button type="button" onClick={() => setIsConfirmExitModalOpen(false)} className="py-2.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 text-[11px] font-black uppercase tracking-wider rounded-xl transition-all cursor-pointer">Keep Editing</button>
-              <button type="button" onClick={() => { setHasUnsavedChanges(false); setIsConfirmExitModalOpen(false); router.push("/songs"); }} className="py-2.5 bg-red-600 hover:bg-red-700 text-white text-[11px] font-black uppercase tracking-wider rounded-xl shadow-md transition-all active:scale-95 cursor-pointer">Discard & Exit</button>
+              {/* ✅ Clear the pending URL if they cancel */}
+              <button type="button" onClick={() => { setIsConfirmExitModalOpen(false); setPendingNavigationUrl(null); }} className="py-2.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 text-[11px] font-black uppercase tracking-wider rounded-xl transition-all cursor-pointer">Keep Editing</button>
+              
+              {/* ✅ Route to intercepted URL, or native back */}
+              <button type="button" onClick={() => { 
+                  setHasUnsavedChanges(false); 
+                  setIsConfirmExitModalOpen(false); 
+                  if (pendingNavigationUrl) {
+                    router.push(pendingNavigationUrl);
+                  } else {
+                    router.back(); // ✅ SURGICAL FIX: Native browser back
+                  }
+                }} 
+                className="py-2.5 bg-red-600 hover:bg-red-700 text-white text-[11px] font-black uppercase tracking-wider rounded-xl shadow-md transition-all active:scale-95 cursor-pointer"
+              >
+                Discard & Exit
+              </button>
             </div>
           </div>
         </div>

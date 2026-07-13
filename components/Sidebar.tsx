@@ -269,7 +269,13 @@ export default function Sidebar() {
             {activeProfile?.avatar_url ? (
               <img src={activeProfile.avatar_url} className="w-full h-full rounded-full object-cover" alt="" />
             ) : (
-              <span>{simulatedRole === "admin" ? "A" : simulatedRole === "member" ? "M" : "U"}</span>
+              <span>
+                {simulatedRole === "admin" ? "A" 
+                  : simulatedRole === "moderator" ? "Mo" 
+                  : simulatedRole === "musician" ? "Mu" 
+                  : simulatedRole === "member" ? "M" 
+                  : "U"}
+              </span>
             )}
           </button>
         </div>
@@ -328,7 +334,13 @@ export default function Sidebar() {
             {activeProfile?.avatar_url ? (
               <img src={activeProfile.avatar_url} className="w-full h-full rounded-full object-cover" alt="" />
             ) : (
-              <span>{simulatedRole === "admin" ? "A" : simulatedRole === "member" ? "M" : "U"}</span>
+              <span>
+                {simulatedRole === "admin" ? "A" 
+                  : simulatedRole === "moderator" ? "Mo" 
+                  : simulatedRole === "musician" ? "Mu" 
+                  : simulatedRole === "member" ? "M" 
+                  : "U"}
+              </span>
             )}
           </button>
         </div>
@@ -339,7 +351,7 @@ export default function Sidebar() {
       {/* ======================================================== */}
       {isAccountModalOpen && activeProfile && (
         <div className="fixed inset-0 bg-zinc-950/60 backdrop-blur-sm z-[200000] flex items-center justify-center p-4 select-none animate-in fade-in duration-150">
-          <div className="bg-white rounded-[2.5rem] shadow-2xl border w-full max-w-2xl p-8 relative grid grid-cols-1 md:grid-cols-2 gap-8 animate-in zoom-in-95 duration-150">
+          <div className="bg-white rounded-[1rem] shadow-2xl border w-full max-w-2xl p-4 relative grid grid-cols-1 md:grid-cols-2 gap-4 animate-in zoom-in-95 duration-350">
             <button 
               type="button" 
               onClick={() => setIsAccountModalOpen(false)}

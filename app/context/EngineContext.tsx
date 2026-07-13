@@ -3,24 +3,26 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from "react";
 import { createClient } from "../../utils/supabase/client";
 
-type RoleType = "admin" | "member" | "none";
+type RoleType = "admin" | "moderator" | "musician" | "member" | "none";
 
 interface EngineContextProps {
   simulatedRole: RoleType;
   activeRole: string;
   simulatedUserId: string; 
-  userTeamId: string | null; // This now represents the ACTIVE workspace
-  primaryTeamId: string | null; // Keeps track of their home base
-  secondaryTeamIds: string[]; // List of other workspaces
+  userTeamId: string | null;
+  primaryTeamId: string | null;
+  secondaryTeamIds: string[];
   isSuperAdmin: boolean;
   setSimulatedRole: (role: RoleType) => void;
-  switchWorkspace: (teamId: string) => void; // ✅ The switcher function
+  switchWorkspace: (teamId: string) => void;
 }
 
 const EngineContext = createContext<EngineContextProps | undefined>(undefined);
 
 const MOCK_UUIDS = {
   admin: "11111111-1111-1111-1111-111111111111",
+  moderator: "33333333-3333-3333-3333-333333333333", // ✅ ADDED
+  musician: "44444444-4444-4444-4444-444444444444", // ✅ ADDED
   member: "22222222-2222-2222-2222-222222222222"
 };
 
@@ -183,7 +185,7 @@ export function EngineProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (typeof window !== "undefined") {
       const cached = localStorage.getItem("onpraise_sim_role") as RoleType;
-      if (cached && ["admin", "member", "none"].includes(cached)) {
+      if (cached && ["admin", "moderator", "musician", "member", "none"].includes(cached)) {
         setSimulatedRoleState(cached);
         if (cached !== "none") {
           setSimulatedUserId(MOCK_UUIDS[cached]);

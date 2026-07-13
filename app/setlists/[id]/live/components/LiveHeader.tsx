@@ -18,6 +18,7 @@ interface LiveHeaderProps {
   handleUserSelectTrackBadge: (trackIdx: number) => void;
   backdropProgressRef: React.MutableRefObject<HTMLDivElement | null>;
   accentProgressBarRef: React.MutableRefObject<HTMLDivElement | null>;
+  isSoloMode?: boolean; // ✅ Added flag for Solo Practice Room
 }
 
 export function LiveHeader({
@@ -25,7 +26,7 @@ export function LiveHeader({
   isPlayingFlow, currentBeat, currentMeasureLength, metronomeRefs,
   setIsSettingsModalOpen, handleToggleFlowPlaybackState, displayedOnlineUsers,
   tracksList, currentTrackIndex, handleUserSelectTrackBadge,
-  backdropProgressRef, accentProgressBarRef
+  backdropProgressRef, accentProgressBarRef, isSoloMode = false // ✅ Added here
 }: LiveHeaderProps) {
   
   // ✅ Encapsulated Title Overflow Logic
@@ -65,7 +66,9 @@ export function LiveHeader({
         
         {/* ROW 1: System Badges */}
         <div className="flex items-center gap-1.5 flex-wrap landscape:hidden">
-          <span className="bg-zinc-950 text-white font-mono font-black text-[8px] tracking-wider px-1.5 py-0.5 rounded">SUBSCRIBED</span>
+          {!isSoloMode && (
+            <span className="bg-zinc-950 text-white font-mono font-black text-[8px] tracking-wider px-1.5 py-0.5 rounded">SUBSCRIBED</span>
+          )}
           <span className="bg-blue-50 text-blue-600 font-mono font-black text-[8px] px-1.5 py-0.5 rounded">⏱{activeSong?.tempo || "--"}</span>
           <div className="bg-zinc-50 text-zinc-600 rounded border font-mono font-black text-[8px] px-1.5 py-0.5 flex items-center gap-0.5">K:<span className="text-blue-600 font-black">{activeDisplayKey}</span></div>
         </div>
@@ -99,30 +102,34 @@ export function LiveHeader({
         </div>
 
         {/* ROW 3: Active Presence Lobby */}
-        <div className="flex items-center gap-1 landscape:hidden">
-          <div className="flex -space-x-1.5 overflow-hidden py-0.5">
-            {displayedOnlineUsers.map((user, idx) => (
-              <div key={`${user.connectionId || user.id}-${idx}`} title={user.name} className="w-5 h-5 rounded-full ring-2 ring-white overflow-hidden shadow-sm shrink-0 select-none bg-zinc-100 flex items-center justify-center relative">
-                {user.avatar ? (<img src={user.avatar} alt="" className="w-full h-full object-cover" />) : (<div className={`w-full h-full ${user.bg || 'bg-blue-600'} text-white font-mono font-black text-[7px] flex items-center justify-center`}>{user.initials}</div>)}
-              </div>
-            ))}
+        {!isSoloMode && (
+          <div className="flex items-center gap-1 landscape:hidden">
+            <div className="flex -space-x-1.5 overflow-hidden py-0.5">
+              {displayedOnlineUsers.map((user, idx) => (
+                <div key={`${user.connectionId || user.id}-${idx}`} title={user.name} className="w-5 h-5 rounded-full ring-2 ring-white overflow-hidden shadow-sm shrink-0 select-none bg-zinc-100 flex items-center justify-center relative">
+                  {user.avatar ? (<img src={user.avatar} alt="" className="w-full h-full object-cover" />) : (<div className={`w-full h-full ${user.bg || 'bg-blue-600'} text-white font-mono font-black text-[7px] flex items-center justify-center`}>{user.initials}</div>)}
+                </div>
+              ))}
+            </div>
+            <span className="text-[9px] font-bold text-zinc-400 ml-1 lowercase">online now</span>
           </div>
-          <span className="text-[9px] font-bold text-zinc-400 ml-1 lowercase">online now</span>
-        </div>
+        )}
 
         {/* TRACK LIST TRAY WITH SCROLLING MARQUEE */}
-        <div className="w-full border-t border-zinc-100 pt-2.5 mt-1 landscape:pt-1.5 landscape:mt-0.5 flex items-center overflow-x-auto overflow-y-hidden flex-nowrap gap-1.5 scrollbar-none select-none pb-0.5 scroll-smooth">
-          {tracksList.map((track, trackIdx) => {
-            const title = track.songs?.title || "Song";
-            const needsScroll = title.length > 10;
-            return (
-              <button key={track.id} type="button" onClick={(e) => { handleUserSelectTrackBadge(trackIdx); e.currentTarget.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" }); }} className={`px-2.5 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-wider shrink-0 border transition-all cursor-pointer flex items-center gap-1 ${currentTrackIndex === trackIdx ? "bg-blue-600 border-blue-500 text-white shadow-sm" : "bg-zinc-50 border-zinc-200 text-zinc-600 hover:bg-zinc-100"}`}>
-                <div className="overflow-hidden w-[65px] relative flex items-center"><span className={`whitespace-nowrap ${needsScroll ? "animate-marquee-alt" : "truncate"}`}>{title}</span></div>
-                <span className="font-mono opacity-50 font-bold ml-0.5 shrink-0">({track.custom_key || track.songs?.original_key})</span>
-              </button>
-            );
-          })}
-        </div>
+        {!isSoloMode && (
+          <div className="w-full border-t border-zinc-100 pt-2.5 mt-1 landscape:pt-1.5 landscape:mt-0.5 flex items-center overflow-x-auto overflow-y-hidden flex-nowrap gap-1.5 scrollbar-none select-none pb-0.5 scroll-smooth">
+            {tracksList.map((track, trackIdx) => {
+              const title = track.songs?.title || "Song";
+              const needsScroll = title.length > 10;
+              return (
+                <button key={track.id} type="button" onClick={(e) => { handleUserSelectTrackBadge(trackIdx); e.currentTarget.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" }); }} className={`px-2.5 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-wider shrink-0 border transition-all cursor-pointer flex items-center gap-1 ${currentTrackIndex === trackIdx ? "bg-blue-600 border-blue-500 text-white shadow-sm" : "bg-zinc-50 border-zinc-200 text-zinc-600 hover:bg-zinc-100"}`}>
+                  <div className="overflow-hidden w-[65px] relative flex items-center"><span className={`whitespace-nowrap ${needsScroll ? "animate-marquee-alt" : "truncate"}`}>{title}</span></div>
+                  <span className="font-mono opacity-50 font-bold ml-0.5 shrink-0">({track.custom_key || track.songs?.original_key})</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
 
       </div>
     </div>

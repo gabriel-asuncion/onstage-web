@@ -39,8 +39,11 @@ export default function SetlistPerformanceRoomPage() {
   const params = useParams();
   const setlistId = params?.id as string;
 
-  const { simulatedUserId, simulatedRole } = useEngine();
+  const { simulatedUserId, simulatedRole, activeRole } = useEngine(); // ✅ Added activeRole
   const { isSynced, getGlobalTime } = useTimesync();
+
+  // ✅ SURGICAL FIX: Calculates if the current user hierarchy can edit the song
+  const canEditSong = ["admin", "moderator", "musician"].includes(activeRole);
 
   useWakeLock();
   const { initAudioContext, fetchAndDecodeAudio, playZeroLatencyAudio, playGuideCue, getAudioContext } = useWebAudioEngine();
@@ -70,6 +73,9 @@ export default function SetlistPerformanceRoomPage() {
   } = useLivePresence(supabase, simulatedUserId, simulatedRole);
 
   const [audioLatencyOffsetMs, setAudioLatencyOffsetMs] = useState<number>(0);
+  const [metronomeSoundType, setMetronomeSoundType] = useState<"blip" | "bell" | "block" | "glass">("blip");
+  const metronomeSoundTypeRef = useRef(metronomeSoundType);
+  useEffect(() => { metronomeSoundTypeRef.current = metronomeSoundType; }, [metronomeSoundType]);
   const [currentDriftMs, setCurrentDriftMs] = useState<number | null>(null);
   const [isTestingSync, setIsTestingSync] = useState<boolean>(false);
   const [testVisualBeat, setTestVisualBeat] = useState<number>(1);
@@ -155,8 +161,12 @@ export default function SetlistPerformanceRoomPage() {
 
   useEffect(() => {
     if (typeof window !== "undefined") {
-      fetchAndDecodeAudio("/sound_files/metronome_blip_1.wav", "metronome_1");
-      fetchAndDecodeAudio("/sound_files/metronome_blip_2.wav", "metronome_2");
+      // ✅ Loads all 4 custom sound variations into the Web Audio cache instantly
+      const sounds = ["blip", "bell", "block", "glass"];
+      sounds.forEach(snd => {
+        fetchAndDecodeAudio(`/sound_files/metronome_${snd}_1.wav`, `metronome_${snd}_1`);
+        fetchAndDecodeAudio(`/sound_files/metronome_${snd}_2.wav`, `metronome_${snd}_2`);
+      });
     }
   }, []);
 
@@ -268,7 +278,10 @@ export default function SetlistPerformanceRoomPage() {
 
   const triggerMetronomeSound = (beatNum: number, time: number = 0) => {
     if (!isMetronomeSoundEnabledRef.current) return;
-    const targetKey = beatNum === 1 ? "metronome_1" : "metronome_2";
+    // ✅ Dynamically injects the selected sound type into the audio key string!
+    const type = metronomeSoundTypeRef.current;
+    const targetKey = beatNum === 1 ? `metronome_${type}_1` : `metronome_${type}_2`;
+    
     const source = playZeroLatencyAudio(targetKey, localClickVolumeRef.current, time);
     if (source) {
       scheduledClicksRef.current.push({ source, audioTime: time });
@@ -844,12 +857,16 @@ export default function SetlistPerformanceRoomPage() {
         
         isZenMode={isZenMode} setIsZenMode={setIsZenMode}
         
+        // ✅ Added the sound state props here
+        metronomeSoundType={metronomeSoundType} setMetronomeSoundType={setMetronomeSoundType}
+        
         lineSpacing={lineSpacing} setLineSpacing={setLineSpacing} lyricsFontSize={lyricsFontSize} setLyricsFontSize={setLyricsFontSize}
         isMetronomeSoundEnabled={isMetronomeSoundEnabled} setIsMetronomeSoundEnabled={setIsMetronomeSoundEnabled} isDoubleMetronomeEnabled={isDoubleMetronomeEnabled} setIsDoubleMetronomeEnabled={setIsDoubleMetronomeEnabled}
         localClickVolume={localClickVolume} setLocalClickVolume={setLocalClickVolume} audioLatencyOffsetMs={audioLatencyOffsetMs} setAudioLatencyOffsetMs={setAudioLatencyOffsetMs}
         isTestingSync={isTestingSync} setIsTestingSync={setIsTestingSync} testVisualBeat={testVisualBeat} activeSong={activeSong}
         isYoutubeSyncEnabled={isYoutubeSyncEnabled} setIsYoutubeSyncEnabled={setIsYoutubeSyncEnabled} youtubeVolume={youtubeVolume} setYoutubeVolume={setYoutubeVolume}
-        isAdmin={isAdmin} isPlayingFlow={isPlayingFlow} router={router} handleOpenTransposerModal={() => setIsTransposerOpen(true)} setIsStructureModalOpen={setIsStructureModalOpen}
+        canEditSong={canEditSong} // ✅ SURGICAL FIX: Evaluates the new hierarchy
+        isPlayingFlow={isPlayingFlow} router={router} handleOpenTransposerModal={() => setIsTransposerOpen(true)} setIsStructureModalOpen={setIsStructureModalOpen}
       />
 
       <StructureEditorModal 

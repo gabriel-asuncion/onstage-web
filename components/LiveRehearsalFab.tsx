@@ -34,7 +34,8 @@ export default function LiveRehearsalFab() {
 
   useEffect(() => {
     setIsMounted(true);
-    setPosition({ x: window.innerWidth - 70, y: window.innerHeight - 90 });
+    // ✅ Spawn perfectly snapped into the bottom-right corner
+    setPosition({ x: window.innerWidth - 64, y: window.innerHeight - 64 });
   }, []);
 
   useEffect(() => {
@@ -120,17 +121,33 @@ export default function LiveRehearsalFab() {
     const dx = Math.abs(e.clientX - dragStartPos.current.x);
     const dy = Math.abs(e.clientY - dragStartPos.current.y);
     if (dx > 3 || dy > 3) isMovedRef.current = true;
+    
     if (isMovedRef.current) {
-      setPosition({ x: e.clientX - dragOffset.current.x, y: e.clientY - dragOffset.current.y });
+      // ✅ SURGICAL FIX: The Glass Wall applied during the drag.
+      // Fab is 48px + 16px padding = 64px max boundary.
+      const rawX = e.clientX - dragOffset.current.x;
+      const rawY = e.clientY - dragOffset.current.y;
+      
+      setPosition({ 
+        x: Math.min(Math.max(16, rawX), window.innerWidth - 64), 
+        y: Math.min(Math.max(16, rawY), window.innerHeight - 64) 
+      });
     }
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
     setIsDragging(false);
     (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-    const safeX = Math.max(10, Math.min(position.x, window.innerWidth - 60));
-    const safeY = Math.max(10, Math.min(position.y, window.innerHeight - 60));
-    if (safeX !== position.x || safeY !== position.y) setPosition({ x: safeX, y: safeY });
+    
+    // ✅ SURGICAL FIX: Calculate the nearest corner based on screen quadrants
+    const centerX = window.innerWidth / 2;
+    const centerY = window.innerHeight / 2;
+
+    // 48px (button size) + 16px (padding) = 64px boundaries
+    const snapX = position.x < centerX ? 16 : window.innerWidth - 64;
+    const snapY = position.y < centerY ? 16 : window.innerHeight - 64;
+
+    setPosition({ x: snapX, y: snapY });
   };
 
   // ✅ SURGICAL FIX: The Smart Router!
@@ -153,7 +170,8 @@ export default function LiveRehearsalFab() {
 
   return (
     <div 
-      className="fixed z-[100000] select-none touch-none"
+      // ✅ Applies a smooth glide transition ONLY when you are not actively dragging it
+      className={`fixed z-[100000] select-none touch-none ${!isDragging ? "transition-all duration-300 ease-out" : ""}`}
       style={{ left: position.x, top: position.y }}
     >
       {isMenuOpen && assignedEvents.length > 1 && (
@@ -214,8 +232,9 @@ export default function LiveRehearsalFab() {
           <img 
             src="/assets/setlist.svg" 
             alt="Live Rehearsal" 
-            className="w-5 h-5 object-contain" 
-            style={{ filter: "brightness(0) invert(1)" }} // Forces the icon to be white so it pops on the blue background! Remove this style if your SVG is already white.
+            // ✅ SURGICAL FIX: pointer-events-none kills the ghost drag!
+            className="w-5 h-5 object-contain pointer-events-none select-none user-select-none" 
+            style={{ filter: "brightness(0) invert(1)" }} 
           />
         )}
         
