@@ -27,202 +27,127 @@ export default function SongsListPage() {
   const { simulatedUserId, activeRole } = useEngine();
   const canEditLibrary = ["admin", "moderator", "musician"].includes(activeRole);
 
+  const canApproveSongs = ["admin", "moderator"].includes(activeRole);
+  // const pendingSongsCount = allDatabaseSongs.filter(song => song.approval_status === 'pending').length;
+
   const [loading, setLoading] = useState(true);
   const [allDatabaseSongs, setAllDatabaseSongs] = useState<any[]>([]);
   const [songSearchQuery, setSongSearchQuery] = useState("");
+  const [activeFilters, setActiveFilters] = useState<Record<string, string>>({
+    artist: "", key: "", lyrics: "", theme: "", bpm: "", bpmRange: ""
+  });
+  // ✅ SURGICAL FIX: Tracks which chip is currently an active, typing input field
+  const [editingFilter, setEditingFilter] = useState<string | null>(null);
   const [bookmarkedSongIds, setBookmarkedSongIds] = useState<string[]>([]);
 
   // Pagination State
   const [currentPage, setCurrentPage] = useState(1);
   const ITEMS_PER_PAGE = 20;
 
-  // ✅ ADDED: Smart Add Modal States
+  // Smart Add Modal States
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [ytUrlInput, setYtUrlInput] = useState("");
   const [ytLoading, setYtLoading] = useState(false);
   const [ytError, setYtError] = useState("");
 
+  const pendingSongsCount = allDatabaseSongs.filter(song => song.approval_status === 'pending').length;
+
   const loadSongsData = async () => {
     try {
       const songs = await getAllSongs();
       setAllDatabaseSongs(songs || []);
-    } catch (e) {
-      console.error("Failed to load songs assets:", e);
-    }
+    } catch (e) { console.error("Failed to load songs assets:", e); }
     setLoading(false);
   };
 
   useEffect(() => {
     async function syncActiveUserBookmarksMatrix() {
       if (!simulatedUserId || simulatedUserId === "00000000-0000-0000-0000-000000000000") {
-        setBookmarkedSongIds([]);
-        return;
+        setBookmarkedSongIds([]); return;
       }
-      
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("bookmarked_songs")
-        .eq("id", simulatedUserId)
-        .maybeSingle();
-
-      if (!error && data?.bookmarked_songs) {
-        setBookmarkedSongIds(data.bookmarked_songs);
-      } else {
-        setBookmarkedSongIds([]);
-      }
+      const { data, error } = await supabase.from("profiles").select("bookmarked_songs").eq("id", simulatedUserId).maybeSingle();
+      if (!error && data?.bookmarked_songs) setBookmarkedSongIds(data.bookmarked_songs);
+      else setBookmarkedSongIds([]);
     }
-
     syncActiveUserBookmarksMatrix();
   }, [simulatedUserId]);
 
-  useEffect(() => {
-    loadSongsData();
-  }, []);
-
-  useEffect(() => {
-    if (scrollContainerRef.current) {
-      scrollContainerRef.current.scrollTo({
-        top: 0,
-        behavior: "smooth"
-      });
-    }
-  }, [currentPage]);
+  useEffect(() => { loadSongsData(); }, []);
+  useEffect(() => { if (scrollContainerRef.current) scrollContainerRef.current.scrollTo({ top: 0, behavior: "smooth" }); }, [currentPage]);
 
   const handleToggleBookmark = async (e: React.MouseEvent, songId: string) => {
     e.stopPropagation();
     if (!simulatedUserId || simulatedUserId === "00000000-0000-0000-0000-000000000000") return;
-    
     const alreadyBookmarked = bookmarkedSongIds.includes(songId);
-    const updatedBookmarks = alreadyBookmarked 
-      ? bookmarkedSongIds.filter(id => id !== songId) 
-      : [...bookmarkedSongIds, songId];
-
+    const updatedBookmarks = alreadyBookmarked ? bookmarkedSongIds.filter(id => id !== songId) : [...bookmarkedSongIds, songId];
     try {
-      const { error } = await supabase
-        .from("profiles")
-        .update({ bookmarked_songs: updatedBookmarks })
-        .eq("id", simulatedUserId);
-
-      if (!error) {
-        setBookmarkedSongIds(updatedBookmarks);
-      } else {
-        alert(`Bookmark Update Failed: ${error.message}`);
-      }
-    } catch (err) { 
-      console.error(err); 
-    }
+      const { error } = await supabase.from("profiles").update({ bookmarked_songs: updatedBookmarks }).eq("id", simulatedUserId);
+      if (!error) setBookmarkedSongIds(updatedBookmarks);
+      else alert(`Bookmark Update Failed: ${error.message}`);
+    } catch (err) { console.error(err); }
   };
 
-  // ✅ ADDED: Clipboard Paste Handler
   const handlePasteClipboard = async () => {
     try {
       const text = await navigator.clipboard.readText();
-      if (text) {
-        setYtUrlInput(text);
-      }
-    } catch (err) {
-      console.error("Failed to read clipboard contents: ", err);
-      alert("Clipboard access is blocked or not supported by your browser.");
-    }
+      if (text) setYtUrlInput(text);
+    } catch (err) { alert("Clipboard access is blocked or not supported by your browser."); }
   };
 
-  // ✅ ADDED: The Smart YouTube Fetch Engine
   const handleProcessYoutubeLink = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!ytUrlInput.trim()) return;
-
-    setYtLoading(true);
-    setYtError("");
-
+    setYtLoading(true); setYtError("");
     try {
-      // 1. Extract the unique 11-character Video ID using Regex
       const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
       const match = ytUrlInput.match(regExp);
       const ytId = match && match[2].length === 11 ? match[2] : null;
-
-      if (!ytId) {
-        throw new Error("Invalid YouTube link. Please check the URL and try again.");
-      }
-
-      // 2. Database Duplicate Checker (Scans for the exact 11-char ID)
-      const { data: existingSongs, error: dbError } = await supabase
-        .from("songs")
-        .select("id, title")
-        .ilike("youtube_url", `%${ytId}%`)
-        .limit(1);
-
+      if (!ytId) throw new Error("Invalid YouTube link.");
+      const { data: existingSongs, error: dbError } = await supabase.from("songs").select("id, title").ilike("youtube_url", `%${ytId}%`).limit(1);
       if (dbError) throw new Error("Database scan failed.");
-
-      if (existingSongs && existingSongs.length > 0) {
-        throw new Error(`Duplicate Blocked! This song already exists in the library as: "${existingSongs[0].title}"`);
-      }
-
-      // 3. Fetch Metadata from public oEmbed proxy (Bypasses CORS restrictions)
+      if (existingSongs && existingSongs.length > 0) throw new Error(`Duplicate Blocked! Song exists as: "${existingSongs[0].title}"`);
       const oembedRes = await fetch(`https://noembed.com/embed?url=${encodeURIComponent(ytUrlInput)}`);
       const metadata = await oembedRes.json();
-
-      if (metadata.error) {
-        throw new Error("Could not fetch video metadata. The video might be private or unavailable.");
-      }
-
-      // 4. Build the query parameters and route to the editor!
-      const searchParams = new URLSearchParams({
-        title: metadata.title || "",
-        artist: metadata.author_name || "",
-        youtube_url: ytUrlInput
-      });
-
-      setIsAddModalOpen(false);
-      setYtUrlInput("");
-      
-      // Pass the scraped data straight into the URL bar for the new page to read
+      if (metadata.error) throw new Error("Could not fetch video metadata.");
+      const searchParams = new URLSearchParams({ title: metadata.title || "", artist: metadata.author_name || "", youtube_url: ytUrlInput });
+      setIsAddModalOpen(false); setYtUrlInput("");
       router.push(`/songs/new/edit?${searchParams.toString()}`);
-
-    } catch (err: any) {
-      setYtError(err.message || "An unexpected error occurred.");
-    } finally {
-      setYtLoading(false);
-    }
+    } catch (err: any) { setYtError(err.message || "An unexpected error occurred."); } 
+    finally { setYtLoading(false); }
   };
 
-  const parseColonWrappedKeywords = (rawQuery: string) => {
-    const tokens = { title: "", artist: "", key: "", lyrics: "", theme: "", bpm: "", bpmRange: "" };
-    if (!rawQuery.trim()) return tokens;
-
-    let processedString = rawQuery;
-
-    const isolateToken = (prefix: string) => {
-      const regex = new RegExp(`${prefix}\\s*([^:]+?)(?=\\s*(?::artist:|:key:|:lyrics:|:theme:|:bpm:|:bpm-range:|$))`, 'i');
-      const match = processedString.match(regex);
-      if (match) {
-        processedString = processedString.replace(match[0], "").trim();
-        return match[1].trim().toLowerCase();
-      }
-      return "";
-    };
-
-    tokens.artist = isolateToken(":artist:");
-    tokens.key = isolateToken(":key:");
-    tokens.lyrics = isolateToken(":lyrics:");
-    tokens.theme = isolateToken(":theme:");
-    tokens.bpm = isolateToken(":bpm:");
-    tokens.bpmRange = isolateToken(":bpm-range:");
+  // ✅ SURGICAL FIX: The Interceptor Engine (Instantly creates the chip when typed)
+  const handleSearchInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    const match = val.match(/:(artist|key|lyrics|theme|bpm|bpm-range):/i);
     
-    tokens.title = processedString.trim().toLowerCase();
-    return tokens;
-  };
+    if (match) {
+      const rawKey = match[1].toLowerCase();
+      const filterKey = rawKey === "bpm-range" ? "bpmRange" : rawKey;
+      const beforeToken = val.substring(0, match.index!).trim();
+      const afterToken = val.substring(match.index! + match[0].length).trim();
 
-  const searchTokens = parseColonWrappedKeywords(songSearchQuery);
+      setActiveFilters(prev => ({ ...prev, [filterKey]: afterToken }));
+      setEditingFilter(filterKey);
+      setSongSearchQuery(beforeToken); 
+      setTimeout(() => document.getElementById(`edit-${filterKey}`)?.focus(), 50);
+      return;
+    }
+    setSongSearchQuery(val);
+  };
 
   const filteredSongs = allDatabaseSongs.filter(song => {
-    if (searchTokens.title && !song.title?.toLowerCase().includes(searchTokens.title)) return false;
-    if (searchTokens.artist && !song.artist?.toLowerCase().includes(searchTokens.artist)) return false;
-    if (searchTokens.key && !song.original_key?.toLowerCase().includes(searchTokens.key)) return false;
-    if (searchTokens.theme && !song.themes?.toLowerCase().includes(searchTokens.theme)) return false;
-    if (searchTokens.lyrics && !song.chordpro_content?.toLowerCase().includes(searchTokens.lyrics)) return false;
-    if (searchTokens.bpm && String(song.tempo) !== searchTokens.bpm) return false;
-    if (searchTokens.bpmRange) {
-      const [minStr, maxStr] = searchTokens.bpmRange.split("-");
+    const cleanTitle = songSearchQuery.replace(/:[a-z-]*$/i, "").trim().toLowerCase();
+    if (cleanTitle && !song.title?.toLowerCase().includes(cleanTitle)) return false;
+    
+    // Evaluates the active filters instantly as you type inside the chips!
+    if (activeFilters.artist && !song.artist?.toLowerCase().includes(activeFilters.artist.toLowerCase())) return false;
+    if (activeFilters.key && !song.original_key?.toLowerCase().includes(activeFilters.key.toLowerCase())) return false;
+    if (activeFilters.theme && !song.themes?.toLowerCase().includes(activeFilters.theme.toLowerCase())) return false;
+    if (activeFilters.lyrics && !song.chordpro_content?.toLowerCase().includes(activeFilters.lyrics.toLowerCase())) return false;
+    if (activeFilters.bpm && String(song.tempo) !== activeFilters.bpm) return false;
+    if (activeFilters.bpmRange) {
+      const [minStr, maxStr] = activeFilters.bpmRange.split("-");
       const min = parseInt(minStr) || 0;
       const max = parseInt(maxStr) || 999;
       const songTempo = parseInt(song.tempo) || 0;
@@ -230,24 +155,6 @@ export default function SongsListPage() {
     }
     return true;
   });
-
-  const totalPages = Math.ceil(filteredSongs.length / ITEMS_PER_PAGE);
-  const paginatedSongs = filteredSongs.slice(
-    (currentPage - 1) * ITEMS_PER_PAGE,
-    currentPage * ITEMS_PER_PAGE
-  );
-
-  const getPageNumbers = () => {
-    const maxPagesToShow = 5;
-    let start = Math.max(1, currentPage - Math.floor(maxPagesToShow / 2));
-    let end = start + maxPagesToShow - 1;
-    
-    if (end > totalPages) {
-      end = totalPages;
-      start = Math.max(1, end - maxPagesToShow + 1);
-    }
-    return Array.from({ length: end - start + 1 }, (_, i) => start + i);
-  };
 
   const typingWordsArray = songSearchQuery.split(/\s+/);
   const currentActiveWordFragment = typingWordsArray[typingWordsArray.length - 1] || "";
@@ -257,15 +164,63 @@ export default function SongsListPage() {
   );
 
   const handleSelectKeywordSuggestion = (token: string) => {
+    const rawKey = token.replace(/:/g, "").toLowerCase();
+    const filterKey = rawKey === "bpm-range" ? "bpmRange" : rawKey;
     const tokensList = [...typingWordsArray];
-    tokensList[tokensList.length - 1] = token + " "; 
-    setSongSearchQuery(tokensList.join(" "));
-    if (searchInputRef.current) searchInputRef.current.focus();
+    tokensList.pop(); 
+    setSongSearchQuery(tokensList.join(" ").trim());
+    
+    // Instantly spawn the chip and focus it
+    setEditingFilter(filterKey);
+    setTimeout(() => document.getElementById(`edit-${filterKey}`)?.focus(), 50);
   };
 
-  const handleClearSpecificTokenChip = (tokenPrefix: string, tokenValue: string) => {
-    const targetMatchPattern = new RegExp(`${tokenPrefix}\\s*${tokenValue.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')}`, 'i');
-    setSongSearchQuery(prev => prev.replace(targetMatchPattern, "").trim());
+  const totalPages = Math.max(1, Math.ceil(filteredSongs.length / ITEMS_PER_PAGE));
+  const paginatedSongs = filteredSongs.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
+
+  const getPageNumbers = () => {
+    const pages: number[] = [];
+    let startPage = Math.max(1, currentPage - 2);
+    let endPage = startPage + 4;
+    if (endPage > totalPages) { endPage = totalPages; startPage = Math.max(1, endPage - 4); }
+    for (let i = startPage; i <= endPage; i++) pages.push(i);
+    return pages;
+  };
+
+  useEffect(() => { setCurrentPage(1); }, [songSearchQuery, activeFilters]);
+
+  // ✅ SURGICAL FIX: The dynamic Chip Renderer (Embeds the input INSIDE the chip!)
+  const renderInteractiveChip = (tokenPrefix: string, filterKey: string) => {
+    const isActive = activeFilters[filterKey] !== "" || editingFilter === filterKey;
+    if (!isActive) return null;
+    const isEditing = editingFilter === filterKey;
+
+    return (
+      <div 
+        key={filterKey} 
+        onClick={() => { setEditingFilter(filterKey); setTimeout(() => document.getElementById(`edit-${filterKey}`)?.focus(), 50); }} 
+        className={`inline-flex items-center gap-1 bg-white border text-zinc-800 text-[10px] font-black px-2 py-0.5 rounded-full shadow-sm cursor-pointer transition-all ${isEditing ? 'ring-2 ring-blue-500/50 border-blue-400 scale-105' : 'hover:border-blue-300 animate-in zoom-in-95'}`}
+      >
+        <span className="opacity-40 font-mono text-[9px]">{tokenPrefix}</span>
+        {isEditing ? (
+          <input
+            id={`edit-${filterKey}`}
+            value={activeFilters[filterKey]}
+            onChange={(e) => setActiveFilters(prev => ({ ...prev, [filterKey]: e.target.value }))}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') { e.preventDefault(); setEditingFilter(null); setTimeout(() => searchInputRef.current?.focus(), 50); } 
+              else if (e.key === 'Backspace' && activeFilters[filterKey] === "") { setEditingFilter(null); setActiveFilters(prev => ({ ...prev, [filterKey]: "" })); setTimeout(() => searchInputRef.current?.focus(), 50); }
+            }}
+            onBlur={() => setEditingFilter(null)}
+            className="bg-transparent outline-none min-w-[15px] max-w-[120px] text-zinc-900"
+            style={{ width: `${Math.max(1, activeFilters[filterKey].length)}ch` }}
+          />
+        ) : (
+          <span className="max-w-[70px] truncate">{activeFilters[filterKey]}</span>
+        )}
+        <button type="button" onClick={(e) => { e.stopPropagation(); setActiveFilters(prev => ({ ...prev, [filterKey]: "" })); setEditingFilter(null); setTimeout(() => searchInputRef.current?.focus(), 50); }} className="text-[10px] ml-0.5 font-bold text-zinc-400 hover:text-red-500">✕</button>
+      </div>
+    );
   };
 
   if (loading) {
@@ -280,79 +235,56 @@ export default function SongsListPage() {
     {/* 1. STICKY HEADER & SEARCH BAR BLOCK       */}
     {/* ========================================= */}
     <header className="sticky top-0 z-[100] flex-shrink-0 w-full bg-[#ffffff] px-4 md:px-8 pt-4 md:pt-8 pb-4 space-y-4 border-b border-zinc-200 shadow-sm">
-      <div className="flex items-center gap-4">
-        {/* ✅ SURGICAL FIX: Gated behind the new role hierarchy */}
-        {canEditLibrary && (
-          <button 
-            onClick={() => setIsAddModalOpen(true)}
-            className="w-11 h-11 rounded-2xl bg-[#2563eb] hover:bg-blue-700 text-white flex items-center justify-center font-black text-xl shadow-md transition-transform active:scale-95 shrink-0"
+      <div className="flex items-center justify-between w-full">
+        <div className="flex items-center gap-3 md:gap-4">
+          {canEditLibrary && (
+            <button 
+              onClick={() => setIsAddModalOpen(true)}
+              className="w-10 h-10 md:w-11 md:h-11 rounded-2xl bg-[#2563eb] hover:bg-blue-700 text-white flex items-center justify-center font-black text-xl shadow-md transition-transform active:scale-95 shrink-0"
+            >
+              ＋
+            </button>
+          )}
+          <h2 className="text-xl md:text-2xl font-bold tracking-tight text-[#111827] truncate" style={{ fontFamily: "Georgia, serif" }}>
+            Songs Database
+          </h2>
+        </div>
+        
+        {/* ✅ SURGICAL FIX: Responsive Approvals Button (Visible on Mobile!) */}
+        {canApproveSongs && pendingSongsCount > 0 && (
+          <button
+            onClick={() => router.push("/songs/approvals")}
+            className="flex items-center gap-1.5 md:gap-2 bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-700 px-2.5 py-1.5 md:px-4 md:py-2 rounded-xl transition-all cursor-pointer active:scale-95 shadow-sm shrink-0"
           >
-            ＋
+            <span className="relative flex h-2 w-2 md:h-2.5 md:w-2.5">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 md:h-2.5 md:w-2.5 bg-amber-500"></span>
+            </span>
+            <span className="text-[9px] md:text-[10px] font-black uppercase tracking-widest whitespace-nowrap">
+              {pendingSongsCount} <span className="hidden sm:inline">Pending Review</span><span className="sm:hidden">Review</span>
+            </span>
           </button>
         )}
-        <h2 className="text-xl md:text-2xl font-bold tracking-tight text-[#111827]" style={{ fontFamily: "Georgia, serif" }}>
-          Songs Database
-        </h2>
       </div>
       
       <div className="flex flex-col relative overflow-visible">
-        <div className="w-full flex flex-wrap items-center gap-2 bg-[#f3f4f6] rounded-full px-5 py-3 border border-zinc-200 shadow-inner focus-within:bg-white focus-within:border-blue-500 transition-all">
+        <div className="w-full flex flex-wrap items-center gap-2 bg-[#f3f4f6] rounded-full px-5 py-3 border border-zinc-200 shadow-inner focus-within:bg-white focus-within:border-blue-500 transition-all cursor-text" onClick={() => searchInputRef.current?.focus()}>
           
-          {searchTokens.artist && (
-            <div className="inline-flex items-center gap-1 bg-white border text-zinc-800 text-[10px] font-black px-2 py-0.5 rounded-full shadow-sm animate-in zoom-in-95">
-              <span className="opacity-40 font-mono text-[9px]">:artist:</span>
-              <span className="max-w-[70px] truncate">{searchTokens.artist}</span>
-              <button type="button" onClick={() => handleClearSpecificTokenChip(":artist:", searchTokens.artist)} className="text-[10px] ml-0.5 font-bold text-zinc-400 hover:text-red-500">✕</button>
-            </div>
-          )}
-
-          {searchTokens.key && (
-            <div className="inline-flex items-center gap-1 bg-white border text-zinc-800 text-[10px] font-black px-2 py-0.5 rounded-full shadow-sm animate-in zoom-in-95">
-              <span className="opacity-40 font-mono text-[9px]">:key:</span>
-              <span className="uppercase">{searchTokens.key}</span>
-              <button type="button" onClick={() => handleClearSpecificTokenChip(":key:", searchTokens.key)} className="text-[10px] ml-0.5 font-bold text-zinc-400 hover:text-red-500">✕</button>
-            </div>
-          )}
-
-          {searchTokens.lyrics && (
-            <div className="inline-flex items-center gap-1 bg-white border text-zinc-800 text-[10px] font-black px-2 py-0.5 rounded-full shadow-sm animate-in zoom-in-95">
-              <span className="opacity-40 font-mono text-[9px]">:lyrics:</span>
-              <span className="max-w-[70px] truncate">"{searchTokens.lyrics}"</span>
-              <button type="button" onClick={() => handleClearSpecificTokenChip(":lyrics:", searchTokens.lyrics)} className="text-[10px] ml-0.5 font-bold text-zinc-400 hover:text-red-500">✕</button>
-            </div>
-          )}
-
-          {searchTokens.theme && (
-            <div className="inline-flex items-center gap-1 bg-white border text-zinc-800 text-[10px] font-black px-2 py-0.5 rounded-full shadow-sm animate-in zoom-in-95">
-              <span className="opacity-40 font-mono text-[9px]">:theme:</span>
-              <span className="capitalize max-w-[70px] truncate">{searchTokens.theme}</span>
-              <button type="button" onClick={() => handleClearSpecificTokenChip(":theme:", searchTokens.theme)} className="text-[10px] ml-0.5 font-bold text-zinc-400 hover:text-red-500">✕</button>
-            </div>
-          )}
-
-          {searchTokens.bpm && (
-            <div className="inline-flex items-center gap-1 bg-white border text-zinc-800 text-[10px] font-black px-2 py-0.5 rounded-full shadow-sm animate-in zoom-in-95">
-              <span className="opacity-40 font-mono text-[9px]">:bpm:</span>
-              <span>{searchTokens.bpm}</span>
-              <button type="button" onClick={() => handleClearSpecificTokenChip(":bpm:", searchTokens.bpm)} className="text-[10px] ml-0.5 font-bold text-zinc-400 hover:text-red-500">✕</button>
-            </div>
-          )}
-
-          {searchTokens.bpmRange && (
-            <div className="inline-flex items-center gap-1 bg-white border text-zinc-800 text-[10px] font-black px-2 py-0.5 rounded-full shadow-sm animate-in zoom-in-95">
-              <span className="opacity-40 font-mono text-[9px]">:bpm-range:</span>
-              <span>{searchTokens.bpmRange}</span>
-              <button type="button" onClick={() => handleClearSpecificTokenChip(":bpm-range:", searchTokens.bpmRange)} className="text-[10px] ml-0.5 font-bold text-zinc-400 hover:text-red-500">✕</button>
-            </div>
-          )}
+          {/* ✅ Render the magical interactive chips */}
+          {renderInteractiveChip(":artist:", "artist")}
+          {renderInteractiveChip(":key:", "key")}
+          {renderInteractiveChip(":lyrics:", "lyrics")}
+          {renderInteractiveChip(":theme:", "theme")}
+          {renderInteractiveChip(":bpm:", "bpm")}
+          {renderInteractiveChip(":bpm-range:", "bpmRange")}
 
           <input 
             ref={searchInputRef}
             type="text" 
-            placeholder="Search library parameters..." 
+            placeholder="Search titles or type a command... (e.g. :artist:)" 
             value={songSearchQuery} 
-            onChange={e => setSongSearchQuery(e.target.value)} 
-            className="flex-1 text-xs font-semibold text-zinc-800 bg-transparent outline-none placeholder-zinc-400" 
+            onChange={handleSearchInputChange}
+            className="flex-1 text-xs font-semibold text-zinc-800 bg-transparent outline-none placeholder-zinc-400 min-w-[140px]" 
           />
         </div>
 
@@ -389,6 +321,21 @@ export default function SongsListPage() {
               className="p-5 rounded-2xl border border-zinc-200 bg-white hover:bg-zinc-50/50 transition-all cursor-pointer flex flex-col justify-between min-h-[145px] relative group shadow-sm overflow-hidden"
             >
               <div className="space-y-1 pr-10">
+                
+                {/* ✅ SURGICAL FIX: Dynamic Status Badges Row */}
+                <div className="flex flex-wrap items-center gap-1.5 mb-1.5">
+                  {song.approval_status === 'pending' && (
+                    <span className="inline-block px-1.5 py-0.5 bg-amber-100 text-amber-800 text-[8px] font-black uppercase tracking-widest rounded border border-amber-200 shadow-sm">
+                      Pending Approval
+                    </span>
+                  )}
+                  {song.youtube_url && song.youtube_url.trim() !== "" && (
+                    <span className="inline-block px-1.5 py-0.5 bg-red-50 text-red-600 text-[8px] font-black uppercase tracking-widest rounded border border-red-100 shadow-sm flex items-center gap-1">
+                      <span className="text-[9px]">▶</span> YouTube
+                    </span>
+                  )}
+                </div>
+                
                 <h4 className="font-bold text-[16px] text-zinc-900 tracking-tight" style={{ fontFamily: "Georgia, serif" }}>
                   {song.title}
                 </h4>

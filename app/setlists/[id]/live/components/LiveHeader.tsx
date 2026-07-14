@@ -89,7 +89,20 @@ export function LiveHeader({
               
               <div className="flex items-center gap-1 bg-zinc-50 p-1 rounded-lg border border-zinc-200 shadow-inner shrink-0 mr-1">
                 {[1, 2, 3, 4, 5, 6, 7, 8].map((beatNum) => (
-                  <div key={beatNum} ref={(el) => { metronomeRefs.current[beatNum - 1] = el; }} style={{ display: beatNum <= currentMeasureLength ? 'flex' : 'none' }} className={`w-6 h-6 items-center justify-center font-mono font-black text-[10px] rounded border transition-all duration-75 select-none ${isPlayingFlow && currentBeat === beatNum ? beatNum === currentMeasureLength ? "bg-[#faba37] text-white border-[#e0a22b]" : "bg-blue-600 text-white border-blue-500" : "bg-white text-zinc-200 border-zinc-100"}`}>{beatNum}</div>
+                  <div 
+                    key={beatNum} 
+                    ref={(el) => { metronomeRefs.current[beatNum - 1] = el; }} 
+                    style={{ display: beatNum <= currentMeasureLength ? 'flex' : 'none' }} 
+                    className={`w-6 h-6 items-center justify-center font-mono font-black text-[10px] rounded border transition-all duration-75 select-none ${
+                      isPlayingFlow && currentBeat === beatNum 
+                        ? beatNum === 1 
+                          ? "bg-[#faba37] text-white border-[#e0a22b]" 
+                          : "bg-blue-600 text-white border-blue-500" 
+                        : "bg-white text-zinc-200 border-zinc-100"
+                    }`}
+                  >
+                    {beatNum}
+                  </div>
                 ))}
               </div>
             </div>

@@ -1010,7 +1010,9 @@ export default function SongEditPage() {
           section_timings: updatedSectionTimings,
           chordpro_content: compiledChordPro,
           youtube_url: formYoutubeUrl.trim(),
-          youtube_sync_offset_ms: formYoutubeSyncOffset
+          youtube_sync_offset_ms: formYoutubeSyncOffset,
+          // ✅ SURGICAL ADDITION: Smart Approval Routing
+          approval_status: ["admin", "moderator"].includes(activeRole) ? "approved" : "pending"
         };
 
         if (currentTeamId) insertPayload.team_id = currentTeamId;

@@ -46,9 +46,64 @@ interface SettingsModalProps {
   router: AppRouterInstance;
   handleOpenTransposerModal: () => void;
   setIsStructureModalOpen: (val: boolean) => void;
+  isRecording: boolean;
+  setIsRecordModalOpen: (val: boolean) => void;
+  recordingStartTime?: number | null;
+  isPaused?: boolean;
+  recordingAccumulatedMs?: number;
 }
 
 export function SettingsModal(props: SettingsModalProps) {
+  const [elapsedStr, setElapsedStr] = React.useState("00:00:00");
+
+  // ✅ SURGICAL FIX: The Indestructible Ref-Timer
+  const timerStateRef = React.useRef({
+    isRecording: props.isRecording,
+    isPaused: props.isPaused,
+    accumulatedMs: props.recordingAccumulatedMs || 0,
+    startTime: props.recordingStartTime || Date.now()
+  });
+
+  // Sync incoming props to the memory reference instantly
+  React.useEffect(() => {
+    timerStateRef.current = {
+      isRecording: props.isRecording,
+      isPaused: props.isPaused,
+      accumulatedMs: props.recordingAccumulatedMs || 0,
+      startTime: props.recordingStartTime || Date.now()
+    };
+  }, [props.isRecording, props.isPaused, props.recordingAccumulatedMs, props.recordingStartTime]);
+
+  React.useEffect(() => {
+    const formatTime = (ms: number) => {
+      const diff = Math.floor(ms / 1000);
+      const hrs = Math.floor(diff / 3600).toString().padStart(2, '0');
+      const mins = Math.floor((diff % 3600) / 60).toString().padStart(2, '0');
+      const secs = (diff % 60).toString().padStart(2, '0');
+      return hrs !== "00" ? `${hrs}:${mins}:${secs}` : `${mins}:${secs}`;
+    };
+
+    // A single, unbroken interval that just checks the memory ref
+    const interval = setInterval(() => {
+      const state = timerStateRef.current;
+      
+      if (!state.isRecording) {
+        setElapsedStr("00:00:00");
+        return;
+      }
+
+      if (state.isPaused) {
+        // Force the text to lock exactly at the accumulated time
+        setElapsedStr(formatTime(state.accumulatedMs));
+      } else {
+        // Calculate live ticking time
+        setElapsedStr(formatTime(state.accumulatedMs + (Date.now() - state.startTime)));
+      }
+    }, 250); // 250ms tick guarantees instant UI response
+
+    return () => clearInterval(interval);
+  }, []);
+
   if (!props.isSettingsModalOpen) return null;
 
   const {
@@ -61,7 +116,8 @@ export function SettingsModal(props: SettingsModalProps) {
     localClickVolume, setLocalClickVolume, audioLatencyOffsetMs, setAudioLatencyOffsetMs,
     isTestingSync, setIsTestingSync, testVisualBeat, activeSong,
     isYoutubeSyncEnabled, setIsYoutubeSyncEnabled,
-    youtubeVolume, setYoutubeVolume, canEditSong, isPlayingFlow, router, handleOpenTransposerModal, setIsStructureModalOpen
+    youtubeVolume, setYoutubeVolume, canEditSong, isPlayingFlow, router, handleOpenTransposerModal, setIsStructureModalOpen,
+    isRecording, setIsRecordModalOpen // ✅ Destructured here
   } = props;
 
   const alternateMD = onlineUsers.find(u => u.isMD && u.id !== localPresenceUser?.id);
@@ -74,7 +130,16 @@ export function SettingsModal(props: SettingsModalProps) {
         <div className="flex-shrink-0 relative flex items-center justify-center pt-5 pb-4 px-4 border-b border-zinc-100">
           <div className="absolute top-2 left-1/2 -translate-x-1/2 w-10 h-1 bg-zinc-200 rounded-full sm:hidden" />
           <button type="button" onClick={() => setIsSettingsModalOpen(false)} className="absolute left-5 w-8 h-8 rounded-full bg-zinc-100 text-zinc-500 text-sm font-bold flex items-center justify-center hover:bg-zinc-200 transition-colors">✕</button>
+          
           <h3 className="text-base font-bold text-zinc-900 tracking-tight">Preferences</h3>
+
+          {/* ✅ SURGICAL FIX: The Live Ticking Indicator (Adapts to Pause) */}
+          {props.isRecording && (
+            <div className={`absolute right-5 flex items-center gap-1.5 px-2.5 py-1 rounded-lg border shadow-sm animate-in zoom-in duration-200 ${props.isPaused ? 'bg-amber-50/80 border-amber-100' : 'bg-red-50/80 border-red-100'}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${props.isPaused ? 'bg-amber-500' : 'bg-red-500 animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.6)]'}`} />
+              <span className={`text-[10px] font-mono font-black tabular-nums tracking-tight ${props.isPaused ? 'text-amber-600' : 'text-red-600'}`}>{elapsedStr}</span>
+            </div>
+          )}
         </div>
 
         <div className="flex-1 overflow-y-auto p-5 md:p-6 space-y-7 custom-scrollbar pb-12">
@@ -256,7 +321,18 @@ export function SettingsModal(props: SettingsModalProps) {
           <div className="space-y-3">
             <label className="text-xs font-bold text-zinc-900 block">Actions</label>
             <div className="bg-white border border-zinc-100 rounded-2xl overflow-hidden shadow-sm divide-y divide-zinc-50">
-              {/* ✅ SURGICAL FIX: Now respects the 4-tier hierarchy */}
+              
+              {/* ✅ SURGICAL FIX: Only show the Telemetry button in the Live room! */}
+              {setIsRecordModalOpen && (
+                <button disabled={isPlayingFlow} onClick={() => { setIsSettingsModalOpen(false); setIsRecordModalOpen(true); }} className="w-full py-4 px-4 flex justify-between items-center hover:bg-zinc-50 transition-colors disabled:opacity-40 border-b border-zinc-50">
+                  <div className="flex items-center gap-3">
+                    <span className={isRecording ? "text-red-500 animate-pulse" : "text-blue-500"}>🎙️</span>
+                    <span className="text-sm font-bold text-zinc-700">Rehearsal Telemetry</span>
+                  </div>
+                  <span className="text-zinc-300 font-bold">›</span>
+                </button>
+              )}
+
               {canEditSong && activeSong && (
                 <button type="button" disabled={isPlayingFlow} onClick={() => { setIsSettingsModalOpen(false); router.push(`/songs/${activeSong.id}/edit`); }} className="w-full py-4 px-4 flex justify-between items-center hover:bg-zinc-50 transition-colors disabled:opacity-40">
                   <div className="flex items-center gap-3"><span className="text-blue-500">📝</span><span className="text-sm font-bold text-zinc-700">Edit Song</span></div><span className="text-zinc-300 font-bold">›</span>

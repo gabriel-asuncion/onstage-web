@@ -7,6 +7,11 @@ import { usePathname, useRouter } from "next/navigation";
 import { createClient } from "../utils/supabase/client";
 import { useEngine } from "../app/context/EngineContext";
 
+// ✅ SURGICAL ADDITION: Premium Calendar Imports
+import { DayPicker, DateRange } from "react-day-picker";
+import "react-day-picker/dist/style.css";
+import { format, eachDayOfInterval } from "date-fns";
+
 interface UserProfile {
   id: string;
   full_name: string;
@@ -27,7 +32,11 @@ export default function Sidebar() {
   // Modal Layout States
   const [isAccountModalOpen, setIsAccountModalOpen] = useState(false);
   const [activeProfile, setActiveProfile] = useState<UserProfile | null>(null);
-  const [newBlockoutDate, setNewBlockoutDate] = useState("2026-06-21");
+  // const [newBlockoutDate, setNewBlockoutDate] = useState("2026-06-21");
+  const [dateRange, setDateRange] = useState<DateRange | undefined>();
+  // const [isSavingSchedule, setIsSavingSchedule] = useState(false);
+  const [blockoutStart, setBlockoutStart] = useState("");
+  const [blockoutEnd, setBlockoutEnd] = useState("");
   const [isSavingSchedule, setIsSavingSchedule] = useState(false);
   
   // ✅ SURGICAL FIX: Secure Supabase sign-out logic
@@ -178,22 +187,47 @@ export default function Sidebar() {
     fetchActiveProfileContext();
   }, [simulatedUserId, isAccountModalOpen]);
 
-  // Schedule management logic nodes
+  // ✅ SURGICAL FIX: Compute active selection strings and toggle state dynamically
+  const selectedDatesStr: string[] = [];
+  if (dateRange?.from && dateRange?.to) {
+    const days = eachDayOfInterval({ start: dateRange.from, end: dateRange.to });
+    selectedDatesStr.push(...days.map(d => format(d, 'yyyy-MM-dd')));
+  } else if (dateRange?.from) {
+    selectedDatesStr.push(format(dateRange.from, 'yyyy-MM-dd'));
+  }
+
+  // If every date currently selected by the user is ALREADY blocked, we switch to "Remove" mode
+  const isRemoving = selectedDatesStr.length > 0 && selectedDatesStr.every(d => activeProfile?.unavailable_dates.includes(d));
+
+  // Convert string array to Date objects for the calendar UI markers
+  const blockedDates = (activeProfile?.unavailable_dates || []).map(dateStr => {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    return new Date(y, m - 1, d);
+  });
+
   async function handleAddBlockoutDateSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!activeProfile || !newBlockoutDate || isSavingSchedule) return;
-    if (activeProfile.unavailable_dates.includes(newBlockoutDate)) return;
+    if (!activeProfile || selectedDatesStr.length === 0 || isSavingSchedule) return;
 
     setIsSavingSchedule(true);
-    const updatedDates = [...activeProfile.unavailable_dates, newBlockoutDate].sort();
+    let combinedDates: string[];
+
+    if (isRemoving) {
+      // ✅ REMOVE MODE: Filter out the selected dates from the database array
+      combinedDates = activeProfile.unavailable_dates.filter(d => !selectedDatesStr.includes(d));
+    } else {
+      // ✅ ADD MODE: Merge the selected dates into the database array
+      combinedDates = Array.from(new Set([...activeProfile.unavailable_dates, ...selectedDatesStr])).sort();
+    }
 
     const { error } = await supabase
       .from("profiles")
-      .update({ unavailable_dates: updatedDates })
+      .update({ unavailable_dates: combinedDates })
       .eq("id", activeProfile.id);
 
     if (!error) {
-      setActiveProfile({ ...activeProfile, unavailable_dates: updatedDates });
+      setActiveProfile({ ...activeProfile, unavailable_dates: combinedDates });
+      setDateRange(undefined); // Clear selection on success
     } else {
       alert(`Schedule Save Failed: ${error.message}`);
     }
@@ -346,12 +380,12 @@ export default function Sidebar() {
         </div>
       </nav>
 
-      {/* ======================================================== */}
+     {/* ======================================================== */}
       {/* --- UNIFIED MODAL OVERLAY: ACCOUNT & SCHEDULE PORTAL --- */}
       {/* ======================================================== */}
       {isAccountModalOpen && activeProfile && (
         <div className="fixed inset-0 bg-zinc-950/60 backdrop-blur-sm z-[200000] flex items-center justify-center p-4 select-none animate-in fade-in duration-150">
-          <div className="bg-white rounded-[1rem] shadow-2xl border w-full max-w-2xl p-4 relative grid grid-cols-1 md:grid-cols-2 gap-4 animate-in zoom-in-95 duration-350">
+          <div className="bg-white rounded-[1rem] shadow-2xl border w-full max-w-2xl p-4 relative grid grid-cols-1 md:grid-cols-2 gap-4 animate-in zoom-in-95 duration-350 max-h-[90vh] overflow-y-auto custom-scrollbar">
             <button 
               type="button" 
               onClick={() => setIsAccountModalOpen(false)}
@@ -456,48 +490,50 @@ export default function Sidebar() {
                 <h4 className="text-base font-black text-zinc-900 tracking-tight flex items-center gap-1.5">
                   📅 Blockout Schedule Manager
                 </h4>
-                <p className="text-[11px] font-bold text-zinc-400 mt-0.5">Flag dates you are unavailable to serve to automatically filter yourself out of roster line-ups.</p>
+                <p className="text-[11px] font-bold text-zinc-400 mt-0.5">
+                  Flag dates you are unavailable to serve to automatically filter yourself out of roster line-ups.
+                </p>
               </div>
 
-              {/* Staged dates listing table corridor */}
-              <div className="bg-zinc-50 rounded-2xl border p-3.5 max-h-40 overflow-y-auto custom-scrollbar space-y-1.5 shadow-inner">
-                {activeProfile.unavailable_dates.map(dateStr => (
-                  <div key={dateStr} className="flex items-center justify-between p-2 bg-white rounded-xl border border-zinc-200/60 text-xs font-bold text-zinc-700">
-                    <span>🚫 {dateStr}</span>
-                    <button 
-                      type="button" 
-                      onClick={() => handleRemoveBlockoutDate(dateStr)}
-                      className="text-[10px] text-zinc-400 hover:text-red-500 font-bold p-1 px-2 hover:bg-red-50 rounded-lg transition-colors"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                ))}
-                {activeProfile.unavailable_dates.length === 0 && (
-                  <div className="p-4 text-center text-xs italic text-zinc-400 font-medium">Your calendar is completely open. No blockout markers flagged.</div>
-                )}
-              </div>
-
-              {/* Inline input form node to append future schedule restrictions */}
-              <form onSubmit={handleAddBlockoutDateSubmit} className="flex gap-2 pt-2">
-                <input 
-                  type="date" 
-                  required
-                  value={newBlockoutDate}
-                  onChange={e => setNewBlockoutDate(e.target.value)}
-                  className="bg-zinc-50 border rounded-xl px-3 py-2 text-xs font-bold outline-none focus:border-blue-500 flex-1 cursor-pointer"
-                />
+              {/* ✅ SURGICAL FIX: Premium Visual Range Picker with Blocked Markers */}
+              <form onSubmit={handleAddBlockoutDateSubmit} className="pt-2 flex flex-col items-center flex-1 justify-center">
+                <div className="bg-zinc-50/50 border border-zinc-200 rounded-2xl p-2 w-full flex justify-center shadow-sm">
+                  <DayPicker
+                    mode="range"
+                    selected={dateRange}
+                    onSelect={setDateRange}
+                    className="!m-0 text-xs font-bold font-sans"
+                    modifiers={{
+                      blocked: blockedDates, // Feed the database dates to the UI
+                    }}
+                    modifiersClassNames={{
+                      selected: "bg-blue-600 text-white rounded-md",
+                      range_middle: "!bg-blue-50 !text-blue-900 !rounded-none",
+                      range_start: "bg-blue-600 text-white rounded-l-md",
+                      range_end: "bg-blue-600 text-white rounded-r-md",
+                      today: "text-blue-600 font-black",
+                      // Add a subtle red styling and strikethrough for blocked dates
+                      blocked: "text-red-500 font-black bg-red-50 line-through decoration-red-300", 
+                    }}
+                  />
+                </div>
+                
                 <button 
                   type="submit"
-                  disabled={isSavingSchedule}
-                  className="px-4 bg-black hover:bg-blue-700 text-white font-black text-xs rounded-xl shadow-md uppercase tracking-wider transition-all disabled:opacity-40"
+                  disabled={isSavingSchedule || selectedDatesStr.length === 0}
+                  className={`w-full py-3 mt-4 text-white font-black text-xs rounded-xl shadow-md uppercase tracking-wider transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
+                    isRemoving ? "bg-red-500 hover:bg-red-600" : "bg-zinc-900 hover:bg-blue-600"
+                  }`}
                 >
-                  {isSavingSchedule ? "Syncing..." : "Block Date"}
+                  {isSavingSchedule 
+                    ? "Syncing..." 
+                    : isRemoving 
+                      ? `Remove Block (${selectedDatesStr.length})` 
+                      : dateRange?.to ? "Block Range" : "Block Date"}
                 </button>
-                
               </form>
-              {/* ✅ SURGICAL FIX: Restored Logout Button at the bottom of the column */}
-              <div className="mt-6 pt-5 border-t border-zinc-100">
+
+              <div className="mt-4 pt-4 border-t border-zinc-100">
                 <button 
                   type="button" 
                   onClick={handleLogout}

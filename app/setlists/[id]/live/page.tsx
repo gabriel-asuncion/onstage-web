@@ -29,6 +29,9 @@ import { AddBlockModal } from "./components/AddBlockModal";
 import { TransposerModal } from "./components/TransposerModal";
 import { MdLockModal } from "./components/MdLockModal";
 import { ZenMovableFAB } from "./components/ZenMovableFAB";
+import { RecordRehearsalModal } from "./components/RecordRehearsalModal"; // ✅ Add this
+
+
 
 
 
@@ -82,6 +85,14 @@ export default function SetlistPerformanceRoomPage() {
   const [countdownValue, setCountdownValue] = useState<number | null>(null);
   const countdownValueRef = useRef<number | null>(null);
 
+  // ✅ SURGICAL ADDITION: Pause state tracking
+  const [isPaused, setIsPaused] = useState(false);
+  const [recordingAccumulatedMs, setRecordingAccumulatedMs] = useState(0);
+  
+  // ✅ Keeps paused state synced for the logger
+  const isPausedRef = useRef(false);
+
+
   const latestMdBroadcastRef = useRef<{ mdId: string | null, timestamp: number }>({ mdId: null, timestamp: 0 });
 
   const [currentMeasureLength, setCurrentMeasureLength] = useState<number>(4);
@@ -94,9 +105,18 @@ export default function SetlistPerformanceRoomPage() {
   const [draggedSectionIndex, setDraggedSectionIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const [isSavingStructure, setIsSavingStructure] = useState(false);
-  const [isTransposerOpen, setIsTransposerOpen] = useState(false);
+const [isTransposerOpen, setIsTransposerOpen] = useState(false);
   const [modalRoot, setModalRoot] = useState("G");
   const [modalAccidental, setModalAccidental] = useState<"" | "#" | "b">("");
+
+  // ✅ SURGICAL ADDITION: Telemetry States
+  const [isRecordModalOpen, setIsRecordModalOpen] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingStartTime, setRecordingStartTime] = useState<number | null>(null);
+  const [rehearsalHistory, setRehearsalHistory] = useState<any[]>([]);
+  const isRecordingRef = useRef(false);
+  const rehearsalHistoryRef = useRef<any[]>([]);
+  const jumpReasonRef = useRef<"Auto Play" | "Quick Play" | "Queued">("Auto Play");
 
   const [isZenMode, setIsZenMode] = useState<boolean>(false);
   const zenOverlayRef = useRef<HTMLDivElement | null>(null);
@@ -143,6 +163,7 @@ export default function SetlistPerformanceRoomPage() {
   
   const metronomeRefs = useRef<(HTMLDivElement | null)[]>([null, null, null, null]);
   const scheduledClicksRef = useRef<{ source: AudioBufferSourceNode, audioTime: number }[]>([]);
+  
 
   useEffect(() => { playingTrackIndexRef.current = playingTrackIndex; }, [playingTrackIndex]);
   useEffect(() => { queuedTrackIndexRef.current = queuedTrackIndex; }, [queuedTrackIndex]);
@@ -236,6 +257,51 @@ export default function SetlistPerformanceRoomPage() {
     if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("onpraise-playmode", { detail: isPlayingFlow }));
     return () => { if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("onpraise-playmode", { detail: false })); };
   }, [isPlayingFlow]);
+
+  // ✅ Keeps refs perfectly synced for the tracker hook
+  useEffect(() => { isRecordingRef.current = isRecording; }, [isRecording]);
+  useEffect(() => { isPausedRef.current = isPaused; }, [isPaused]);
+  useEffect(() => { rehearsalHistoryRef.current = rehearsalHistory; }, [rehearsalHistory]);
+
+  // ✅ SURGICAL ADDITION: Dedicated Postgres Listener for Telemetry
+  useEffect(() => {
+    if (!setlistId) return;
+    
+    const fetchTelemetry = async () => {
+       const { data, error } = await supabase
+        .from('setlists')
+        .select('is_recording, is_paused, recording_accumulated_ms, recording_start_time, rehearsal_history')
+        .eq('id', setlistId)
+        .single();
+       
+       if (error) {
+         console.error("🚨 Telemetry Fetch Error:", error.message);
+         return;
+       }
+
+       if (data) {
+          setIsRecording(data.is_recording || false);
+          setIsPaused(data.is_paused || false);
+          // ✅ SURGICAL FIX: Force int8 to be a Number so the timer math doesn't glitch
+          setRecordingAccumulatedMs(Number(data.recording_accumulated_ms) || 0);
+          setRecordingStartTime(data.recording_start_time);
+          setRehearsalHistory(data.rehearsal_history || []);
+       }
+    }
+    fetchTelemetry();
+
+    const telemetryChannel = supabase.channel(`telemetry_${setlistId}`)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'setlists', filter: `id=eq.${setlistId}` }, (payload) => {
+        setIsRecording(payload.new.is_recording || false);
+        setIsPaused(payload.new.is_paused || false);
+        // ✅ SURGICAL FIX: Force int8 to be a Number
+        setRecordingAccumulatedMs(Number(payload.new.recording_accumulated_ms) || 0);
+        setRecordingStartTime(payload.new.recording_start_time);
+        setRehearsalHistory(payload.new.rehearsal_history || []);
+      }).subscribe();
+
+    return () => { supabase.removeChannel(telemetryChannel); }
+  }, [setlistId]);
 
   const updateMetronomeUI = (activeBeat: number, isPlaying: boolean, measureLength: number = 4) => {
     // 1. Standard UI Metronome
@@ -523,6 +589,31 @@ export default function SetlistPerformanceRoomPage() {
         }
       }
     }
+
+    // ✅ SURGICAL ADDITION: The Telemetry Logger
+    if (localPresenceUserRef.current?.isMD && isRecordingRef.current && playingSectionsRef.current.length > 0) {
+      const track = tracksListRef.current[targetTrackIdx];
+      const section = playingSectionsRef.current[targetSectionIdx];
+      if (track && section) {
+          const newItem = {
+              timestamp: Date.now(),
+              title: track.songs?.title || "Unknown Song",
+              label: `[${jumpReasonRef.current}] - ${section.section_name}`
+          };
+          // Push to top, limit to 100
+          const newHistory = [newItem, ...rehearsalHistoryRef.current].slice(0, 100);
+          setRehearsalHistory(newHistory); // Optimistic UI
+          supabase
+            .from('setlists')
+            .update({ rehearsal_history: newHistory })
+            .eq('id', setlistId)
+            .then(({ error }) => {
+                if (error) console.error("Failed to save telemetry to Supabase:", error.message);
+            });
+      }
+    }
+    jumpReasonRef.current = "Auto Play"; // Reset baseline tracker
+
     currentSectionIndexRef.current = targetSectionIdx; setCurrentSectionIndex(targetSectionIdx);
     lastAudioBeatRef.current = beatMapRef.current.sectionStartBeats[targetSectionIdx] || 0; 
     lastBeatRef.current = 0; lastVisualBeatRef.current = 0;
@@ -563,7 +654,8 @@ export default function SetlistPerformanceRoomPage() {
   }
 
   function handleAdvanceToNextSetlistTrack() {
-    const nextTrackIndex = playingTrackIndexRef.current + 1; 
+    jumpReasonRef.current = "Auto Play"; // ✅ Tag for the tracker
+    const nextTrackIndex = playingTrackIndexRef.current + 1;
     if (nextTrackIndex < tracksListRef.current.length) {
       mountTargetSetlistTrackIndex(nextTrackIndex);
       
@@ -627,6 +719,10 @@ export default function SetlistPerformanceRoomPage() {
 
   function handleSectionInteractiveSelection(index: number) {
     if (!localPresenceUser?.isMD && (onlineUsers.find(u => u.isMD && u.id !== localPresenceUser?.id) !== undefined)) return; 
+    
+    // ✅ Tag the telemetry engine before jumping
+    jumpReasonRef.current = isPlayingFlow ? "Queued" : "Quick Play"; 
+
     if (!isPlayingFlow) {
       const jumpTime = getGlobalTime() + 150; executeJumpNow(currentTrackIndex, index, jumpTime);
       sendSupabaseBroadcast({ action: "JUMP", trackIndex: currentTrackIndex, sectionIndex: index, mdSectionStartTime: jumpTime });
@@ -865,7 +961,10 @@ export default function SetlistPerformanceRoomPage() {
         localClickVolume={localClickVolume} setLocalClickVolume={setLocalClickVolume} audioLatencyOffsetMs={audioLatencyOffsetMs} setAudioLatencyOffsetMs={setAudioLatencyOffsetMs}
         isTestingSync={isTestingSync} setIsTestingSync={setIsTestingSync} testVisualBeat={testVisualBeat} activeSong={activeSong}
         isYoutubeSyncEnabled={isYoutubeSyncEnabled} setIsYoutubeSyncEnabled={setIsYoutubeSyncEnabled} youtubeVolume={youtubeVolume} setYoutubeVolume={setYoutubeVolume}
-        canEditSong={canEditSong} // ✅ SURGICAL FIX: Evaluates the new hierarchy
+        canEditSong={canEditSong} 
+        isRecording={isRecording} setIsRecordModalOpen={setIsRecordModalOpen} 
+        recordingStartTime={recordingStartTime}
+        isPaused={isPaused} recordingAccumulatedMs={recordingAccumulatedMs} // ✅ Passed here
         isPlayingFlow={isPlayingFlow} router={router} handleOpenTransposerModal={() => setIsTransposerOpen(true)} setIsStructureModalOpen={setIsStructureModalOpen}
       />
 
@@ -906,6 +1005,79 @@ export default function SetlistPerformanceRoomPage() {
           setActiveDisplayKey(formatted); setIsTransposerOpen(false);
           supabase.from("setlist_songs").update({ custom_key: formatted }).eq("id", tracksList[currentTrackIndex]?.id);
           setTracksList(prev => prev.map((t, idx) => idx === currentTrackIndex ? { ...t, custom_key: formatted } : t)); handleResetFlowTrigger();
+        }}
+      />
+
+      <RecordRehearsalModal 
+        isRecordModalOpen={isRecordModalOpen} 
+        setIsRecordModalOpen={setIsRecordModalOpen} 
+        isMD={localPresenceUser?.isMD}
+        isRecording={isRecording}
+        isPaused={isPaused} // ✅ Passed here
+        recordingStartTime={recordingStartTime}
+        recordingAccumulatedMs={recordingAccumulatedMs} // ✅ Passed here
+        history={rehearsalHistory}
+        onStartRecording={async () => {
+          if (!localPresenceUser?.isMD) return;
+          const now = Date.now();
+          setIsRecording(true);
+          setIsPaused(false);
+          setRecordingStartTime(now);
+          
+          const isFreshStart = !isPaused && recordingAccumulatedMs === 0;
+          let updatedHistory = rehearsalHistoryRef.current;
+          
+          // ✅ SURGICAL FIX: Log "Session Started" OR "Session Resumed"
+          if (isFreshStart) {
+            updatedHistory = [{ timestamp: now, title: "🎙️ New Recording Session", label: "Session Initiated" }, ...rehearsalHistoryRef.current].slice(0, 100);
+          } else {
+            updatedHistory = [{ timestamp: now, title: "▶️ Session Resumed", label: "Timer continued" }, ...rehearsalHistoryRef.current].slice(0, 100);
+          }
+          setRehearsalHistory(updatedHistory);
+
+          await supabase.from('setlists').update({ 
+            is_recording: true, 
+            is_paused: false, 
+            recording_start_time: now,
+            rehearsal_history: updatedHistory,
+            ...(isFreshStart ? { recording_accumulated_ms: 0 } : {})
+          }).eq('id', setlistId).then();
+        }}
+        onPauseRecording={async () => {
+          if (!localPresenceUser?.isMD || !recordingStartTime) return;
+          const now = Date.now();
+          const newAccumulated = recordingAccumulatedMs + (now - recordingStartTime);
+          setIsPaused(true);
+          setRecordingAccumulatedMs(newAccumulated);
+
+          // ✅ SURGICAL FIX: Log the Pause event
+          const updatedHistory = [{ timestamp: now, title: "⏸️ Session Paused", label: "Timer halted" }, ...rehearsalHistoryRef.current].slice(0, 100);
+          setRehearsalHistory(updatedHistory);
+
+          await supabase.from('setlists').update({ 
+            is_paused: true, 
+            recording_accumulated_ms: newAccumulated,
+            rehearsal_history: updatedHistory
+          }).eq('id', setlistId).then();
+        }}
+        onStopRecording={async () => {
+          if (!localPresenceUser?.isMD) return;
+          const now = Date.now();
+          setIsRecording(false);
+          setIsPaused(false);
+          setRecordingAccumulatedMs(0);
+
+          // ✅ SURGICAL FIX: Log the Stop event
+          const updatedHistory = [{ timestamp: now, title: "⏹️ Session Ended", label: "Recording finalized" }, ...rehearsalHistoryRef.current].slice(0, 100);
+          setRehearsalHistory(updatedHistory);
+
+          await supabase.from('setlists').update({ 
+            is_recording: false, 
+            is_paused: false,
+            recording_start_time: null,
+            recording_accumulated_ms: 0,
+            rehearsal_history: updatedHistory
+          }).eq('id', setlistId).then();
         }}
       />
 

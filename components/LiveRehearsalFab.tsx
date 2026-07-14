@@ -36,6 +36,23 @@ export default function LiveRehearsalFab() {
     setIsMounted(true);
     // ✅ Spawn perfectly snapped into the bottom-right corner
     setPosition({ x: window.innerWidth - 64, y: window.innerHeight - 64 });
+
+    // ✅ SURGICAL FIX: Keep it glued to the correct corner during window resizes
+    const handleResize = () => {
+      setPosition((prev) => {
+        const centerX = window.innerWidth / 2;
+        const centerY = window.innerHeight / 2;
+
+        // Check if it was previously sitting on the right or bottom halves of the screen
+        const snapX = prev.x > centerX ? window.innerWidth - 64 : 16;
+        const snapY = prev.y > centerY ? window.innerHeight - 64 : 16;
+
+        return { x: snapX, y: snapY };
+      });
+    };
+
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
   }, []);
 
   useEffect(() => {

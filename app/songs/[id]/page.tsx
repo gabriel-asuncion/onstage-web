@@ -176,6 +176,11 @@ export default function SoloPracticeRoomPage() {
         });
         uniqueFiles.forEach(fileName => fetchAndDecodeAudio(`/sound_files/${fileName}.wav`, fileName));
 
+        // ✅ SURGICAL FIX: Auto-enable YouTube Sync if the song has a backing track!
+        if (song.youtube_url && song.youtube_url.trim() !== "") {
+          setIsYoutubeSyncEnabled(true);
+        }
+
         setLoading(false);
       } else {
         router.push("/songs");
@@ -649,7 +654,10 @@ export default function SoloPracticeRoomPage() {
         localClickVolume={localClickVolume} setLocalClickVolume={setLocalClickVolume} audioLatencyOffsetMs={audioLatencyOffsetMs} setAudioLatencyOffsetMs={setAudioLatencyOffsetMs}
         isTestingSync={isTestingSync} setIsTestingSync={setIsTestingSync} testVisualBeat={testVisualBeat} activeSong={activeSong}
         isYoutubeSyncEnabled={isYoutubeSyncEnabled} setIsYoutubeSyncEnabled={setIsYoutubeSyncEnabled} youtubeVolume={youtubeVolume} setYoutubeVolume={setYoutubeVolume}
-        canEditSong={["admin", "moderator", "musician"].includes(activeRole)} // ✅ SURGICAL FIX: Evaluates the new hierarchy
+        canEditSong={["admin", "moderator", "musician"].includes(activeRole)} 
+        // ✅ SURGICAL FIX: Dummy values to satisfy TypeScript in the Solo room!
+        isRecording={false}
+        setIsRecordModalOpen={() => {}} 
         isPlayingFlow={isPlayingFlow} router={router as any} handleOpenTransposerModal={() => setIsTransposerOpen(true)} setIsStructureModalOpen={() => {}}
       />
 
