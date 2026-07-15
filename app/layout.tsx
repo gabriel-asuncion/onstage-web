@@ -13,7 +13,6 @@ import FabWrapper from "../components/FabWrapper";
 export const metadata: Metadata = {
   title: "Worship Matrix",
   description: "Live Setlist and Worship Management",
-  manifest: "/manifest.json?v=2", // ✅ SURGICAL FIX: Re-linked with a cache-buster!
   appleWebApp: {
     capable: true,
     title: "Matrix",

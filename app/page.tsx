@@ -57,7 +57,11 @@ export default function Home() {
   }, []);
 
   const handleInstallClick = async () => {
-    if (!deferredPrompt) return;
+    // ✅ SURGICAL FIX: Fallback alert for iOS or strict browsers
+    if (!deferredPrompt) {
+      alert("To install this app on your device:\n\n📱 iOS / Safari: Tap the 'Share' icon at the bottom of your screen, then select 'Add to Home Screen'.\n\n🤖 Android: Tap the 3 dots in the top right of your browser and select 'Install App'.");
+      return;
+    }
     
     // Show the native browser install prompt
     deferredPrompt.prompt();
