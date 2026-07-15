@@ -348,12 +348,14 @@ export default function Home() {
         
         {/* ✅ SURGICAL ADDITION: Native PWA Install Button */}
         
-        <button
+        {isInstallable && (
+          <button
             onClick={handleInstallClick}
             className="w-full max-w-sm mb-3 bg-zinc-900 hover:bg-zinc-800 text-white font-black text-sm uppercase tracking-wider py-4 px-4 rounded-2xl shadow-xl transition-all active:scale-95 flex items-center justify-center gap-3 cursor-pointer"
           >
             <span className="text-lg">📱</span> Install to Home Screen
           </button>
+        )}
         <button
           onClick={handleGoogleLogin}
           className="w-full max-w-sm bg-white hover:bg-zinc-50 text-zinc-800 font-black text-sm uppercase tracking-wider py-4 px-4 rounded-2xl border border-zinc-200/80 shadow-[0_8px_30px_rgb(0,0,0,0.08)] transition-all active:scale-95 flex items-center justify-center gap-3 cursor-pointer"
