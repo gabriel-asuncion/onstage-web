@@ -40,6 +40,37 @@ export default function Home() {
   const [activeSlide, setActiveSlide] = useState(0);
   const [isTransitioning, setIsTransitioning] = useState(true);
 
+  // ✅ SURGICAL ADDITION: PWA Install Engine
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isInstallable, setIsInstallable] = useState(false);
+
+  useEffect(() => {
+    // Listen for the browser signaling that the app is ready to be installed
+    const handleBeforeInstallPrompt = (e: Event) => {
+      e.preventDefault(); // Stop Chrome from showing the default mini-infobar
+      setDeferredPrompt(e);
+      setIsInstallable(true); // Reveal our custom button
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+  }, []);
+
+  const handleInstallClick = async () => {
+    if (!deferredPrompt) return;
+    
+    // Show the native browser install prompt
+    deferredPrompt.prompt();
+    
+    // Wait for the user to respond
+    const { outcome } = await deferredPrompt.userChoice;
+    
+    if (outcome === 'accepted') {
+      setIsInstallable(false); // Hide button once installed
+    }
+    setDeferredPrompt(null);
+  };
+
   const handleGoogleLogin = async () => {
     try {
       console.log("Attempting Google Login...");
@@ -308,8 +339,19 @@ export default function Home() {
         <div className="w-full h-[120px] bg-[#EFF6FF]" /> 
       </div>
 
-      {/* BUTTON */}
-      <div className="absolute bottom-0 left-0 w-full z-50 p-6 pb-10 pointer-events-auto flex justify-center bg-gradient-to-t from-[#EFF6FF] via-[#EFF6FF]/80 to-transparent">
+      {/* BUTTONS */}
+      <div className="absolute bottom-0 left-0 w-full z-50 p-6 pb-10 pointer-events-auto flex flex-col items-center justify-center bg-gradient-to-t from-[#EFF6FF] via-[#EFF6FF]/80 to-transparent">
+        
+        {/* ✅ SURGICAL ADDITION: Native PWA Install Button */}
+        {isInstallable && (
+          <button
+            onClick={handleInstallClick}
+            className="w-full max-w-sm mb-3 bg-zinc-900 hover:bg-zinc-800 text-white font-black text-sm uppercase tracking-wider py-4 px-4 rounded-2xl shadow-xl transition-all active:scale-95 flex items-center justify-center gap-3 cursor-pointer"
+          >
+            <span className="text-lg">📱</span> Install to Home Screen
+          </button>
+        )}
+
         <button
           onClick={handleGoogleLogin}
           className="w-full max-w-sm bg-white hover:bg-zinc-50 text-zinc-800 font-black text-sm uppercase tracking-wider py-4 px-4 rounded-2xl border border-zinc-200/80 shadow-[0_8px_30px_rgb(0,0,0,0.08)] transition-all active:scale-95 flex items-center justify-center gap-3 cursor-pointer"
