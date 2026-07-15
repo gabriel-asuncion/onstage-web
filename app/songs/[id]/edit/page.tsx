@@ -1012,7 +1012,7 @@ export default function SongEditPage() {
           youtube_url: formYoutubeUrl.trim(),
           youtube_sync_offset_ms: formYoutubeSyncOffset,
           // ✅ SURGICAL ADDITION: Smart Approval Routing
-          approval_status: ["admin", "moderator"].includes(activeRole) ? "approved" : "pending"
+          approval_status: ["admin", "moderator"].includes(activeRole) ? "pending" : "approved"
         };
 
         if (currentTeamId) insertPayload.team_id = currentTeamId;

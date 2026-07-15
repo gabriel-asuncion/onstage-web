@@ -490,7 +490,7 @@ export default function EventCockpitPage() {
           return <div key={`flat-g-${gIdx}`} className="space-y-2.5">{group.items.map(({item, globalIndex}: any) => renderTrackRow(item, globalIndex))}</div>;
         }
         return (
-          <div key={`g-${gIdx}`} className={`border-2 ${groupPalette.border} ${groupPalette.bg} rounded-[1.5rem] p-4 space-y-3 shadow-sm`}>
+          <div key={`g-${gIdx}`} className={`border-2 ${groupPalette.border} ${groupPalette.bg} rounded-[1rem] p-4 space-y-3 shadow-sm`}>
             <div className="flex justify-between items-center pb-2 border-b border-zinc-200/40">
               <h5 className={`font-black text-[12px] uppercase tracking-widest ${groupPalette.text}`}>{group.groupName || "SECTION BLOCK"}</h5>
             </div>

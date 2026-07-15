@@ -19,6 +19,8 @@ interface LiveHeaderProps {
   backdropProgressRef: React.MutableRefObject<HTMLDivElement | null>;
   accentProgressBarRef: React.MutableRefObject<HTMLDivElement | null>;
   isSoloMode?: boolean; // ✅ Added flag for Solo Practice Room
+  isSimplifiedMode?: boolean;
+  
 }
 
 export function LiveHeader({
@@ -26,7 +28,7 @@ export function LiveHeader({
   isPlayingFlow, currentBeat, currentMeasureLength, metronomeRefs,
   setIsSettingsModalOpen, handleToggleFlowPlaybackState, displayedOnlineUsers,
   tracksList, currentTrackIndex, handleUserSelectTrackBadge,
-  backdropProgressRef, accentProgressBarRef, isSoloMode = false // ✅ Added here
+  backdropProgressRef, accentProgressBarRef, isSoloMode = false, isSimplifiedMode = false // ✅ Added here
 }: LiveHeaderProps) {
   
   // ✅ Encapsulated Title Overflow Logic
@@ -59,6 +61,27 @@ export function LiveHeader({
 
   return (
     <div id="fixed-live-header" className="w-full bg-white border-b border-zinc-200 flex-shrink-0 z-50 shadow-sm px-4 md:px-8 py-3.5 landscape:py-2 relative overflow-hidden">
+      
+      {/* ✅ SURGICAL ADDITION: Injects the missing keyframes for Title & Track Pills */}
+      <style>{`
+        @keyframes marquee-dynamic {
+          0%, 15% { transform: translateX(0); }
+          85%, 100% { transform: translateX(calc(var(--marquee-container-width) - 100%)); }
+        }
+        @keyframes marquee-alt {
+          0%, 15% { transform: translateX(0); }
+          85%, 100% { transform: translateX(calc(65px - 100%)); }
+        }
+        .animate-marquee-dynamic {
+          display: inline-block;
+          animation: marquee-dynamic 8s ease-in-out infinite alternate;
+        }
+        .animate-marquee-alt {
+          display: inline-block;
+          animation: marquee-alt 5s ease-in-out infinite alternate;
+        }
+      `}</style>
+
       <div ref={backdropProgressRef} className="absolute inset-y-0 left-0 bg-blue-500/5 pointer-events-none z-0 origin-left w-full" style={{ willChange: 'transform' }} />
       <div ref={accentProgressBarRef} className="absolute bottom-0 left-0 h-[3px] bg-blue-600 pointer-events-none z-35 origin-left w-full" style={{ willChange: 'transform' }} />
 
@@ -128,8 +151,8 @@ export function LiveHeader({
           </div>
         )}
 
-        {/* TRACK LIST TRAY WITH SCROLLING MARQUEE */}
-        {!isSoloMode && (
+       {/* TRACK LIST TRAY WITH SCROLLING MARQUEE */}
+        {!isSoloMode && !isSimplifiedMode && (
           <div className="w-full border-t border-zinc-100 pt-2.5 mt-1 landscape:pt-1.5 landscape:mt-0.5 flex items-center overflow-x-auto overflow-y-hidden flex-nowrap gap-1.5 scrollbar-none select-none pb-0.5 scroll-smooth">
             {tracksList.map((track, trackIdx) => {
               const title = track.songs?.title || "Song";

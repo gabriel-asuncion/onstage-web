@@ -101,6 +101,29 @@ export default function SetlistPerformanceRoomPage() {
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false); 
   const [isMdLockModalOpen, setIsMdLockModalOpen] = useState<boolean>(false);
   const [isAddBlockModalOpen, setIsAddBlockModalOpen] = useState<boolean>(false);
+  
+  // ✅ SURGICAL ADDITION: Smart Available Sections Fetcher
+  const [availableSongSections, setAvailableSongSections] = useState<string[]>([]);
+  
+  useEffect(() => {
+    if (!activeSong?.id) {
+      setAvailableSongSections([]);
+      return;
+    }
+    const fetchAvailableSections = async () => {
+      const { data, error } = await supabase
+        .from("song_sections")
+        .select("section_name")
+        .eq("song_id", activeSong.id);
+        
+      if (!error && data) {
+        // Extract names and remove any potential duplicates
+        const uniqueNames = Array.from(new Set(data.map(s => s.section_name)));
+        setAvailableSongSections(uniqueNames);
+      }
+    };
+    fetchAvailableSections();
+  }, [activeSong?.id]);
   const [isStructureModalOpen, setIsStructureModalOpen] = useState(false);
   const [draggedSectionIndex, setDraggedSectionIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
@@ -783,6 +806,67 @@ const [isTransposerOpen, setIsTransposerOpen] = useState(false);
     });
   }, [sections, runtimeSemitoneDelta]);
 
+  useEffect(() => { astTreeRef.current = memoizedSongAstTree; }, [memoizedSongAstTree]);
+
+  // =========================================================================
+  // ✅ SURGICAL ADDITION: PHASE 1 - THE MASTER SETLIST PARSING ENGINE
+  // =========================================================================
+  const memoizedSetlistAst = useMemo(() => {
+    if (!tracksList || tracksList.length === 0) return [];
+    
+    return tracksList.map((track, trackIndex) => {
+      const song = track.songs;
+      if (!song) return { trackIndex, trackId: track.id, title: "Unknown", displayKey: "C", ast: [] };
+
+      // 1. Calculate the specific key transposition for THIS specific track
+      const displayKey = track.custom_key || song.original_key || "C";
+      const originalKey = song.original_key || "C";
+      const isMinor = originalKey.endsWith("m");
+      
+      const oldIdx = CHROMATIC_SCALE.indexOf(normalizeKeyNote(isMinor ? originalKey.slice(0, -1) : originalKey));
+      const newIdx = CHROMATIC_SCALE.indexOf(normalizeKeyNote(isMinor ? displayKey.slice(0, -1) : displayKey));
+      let delta = 0;
+      if (oldIdx !== -1 && newIdx !== -1) delta = (newIdx - oldIdx + 12) % 12;
+
+      const trackSections = track.custom_structure || [];
+
+      // 2. Parse every section in this track
+      const ast = trackSections.map((section): CompiledSectionToken => {
+        const rawText = section.content || "";
+        if (!rawText.trim()) return { id: section.id, section_name: section.section_name, lines: [] };
+        
+        const linesArray = rawText.split("\n").map((line): ParsedLineToken => {
+          let commentText = "";
+          const cleanLineText = line.replace(/\{([^\}]+)\}/g, (_, p1) => { commentText = p1.trim(); return ""; });
+          const wordsMatch = cleanLineText.match(/(?:\[[^\]]+\]|\S)+/g) || [];
+          
+          const wordsTokens = wordsMatch.map((chunk): ParsedWordToken => {
+            const chordRegex = /\[([^\]]+)\]/g; 
+            const chordsList: string[] = []; 
+            let match;
+            while ((match = chordRegex.exec(chunk)) !== null) {
+              chordsList.push(delta !== 0 ? transposeBracketContent(match[1], delta) : match[1]);
+            }
+            return { chords: chordsList, word: chunk.replace(/\[[^\]]+\]/g, "") };
+          });
+          return { words: wordsTokens, comment: commentText };
+        });
+        return { id: section.id, section_name: section.section_name, lines: linesArray };
+      });
+
+      // 3. Return the fully compiled song packet
+      return { 
+        trackIndex, 
+        trackId: track.id, 
+        title: song.title, 
+        originalKey: song.original_key,
+        displayKey, 
+        tempo: song.tempo,
+        ast 
+      };
+    });
+  }, [tracksList]);
+
   beatMapRef.current = useMemo(() => {
     const map: BeatNode[] = []; const sectionStartBeats: number[] = []; let currentAbsoluteBeat = 0;
     if (!activeSong || sections.length === 0) return { totalBeats: 0, nodes: [], sectionStartBeats: [] };
@@ -883,15 +967,24 @@ const [isTransposerOpen, setIsTransposerOpen] = useState(false);
           handleToggleFlowPlaybackState={handleToggleFlowPlaybackState} displayedOnlineUsers={displayedOnlineUsers}
           tracksList={tracksList} currentTrackIndex={currentTrackIndex} handleUserSelectTrackBadge={handleUserSelectTrackBadge}
           backdropProgressRef={backdropProgressRef} accentProgressBarRef={accentProgressBarRef}
+          isSimplifiedMode={isSimplifiedMode} // ✅ SURGICAL ADDITION
         />
       )}
 
       {isSimplifiedMode ? (
         <SimplifiedStackView 
+          setlistAst={memoizedSetlistAst}
           memoizedSongAstTree={memoizedSongAstTree} currentSectionIndex={currentSectionIndex} queuedSectionIndex={queuedSectionIndex}
           queuedTrackIndex={queuedTrackIndex} currentTrackIndex={currentTrackIndex} activeLineIndex={activeLineIndex}
           chordFormat={chordFormat} activeDisplayKey={activeDisplayKey} getSectionDurationString={getSectionDurationString}
           simplifiedProgressBarRef={simplifiedProgressBarRef} upcomingTrackItem={tracksList[currentTrackIndex + 1] || null}
+          
+          // ✅ SURGICAL ADDITIONS: Phase 3 Interactivity & Typography 
+          handleSectionInteractiveSelection={handleSectionInteractiveSelection}
+          handleUserSelectTrackBadge={handleUserSelectTrackBadge}
+          showChords={showChords}
+          lyricsFontSize={lyricsFontSize}
+          lineSpacing={lineSpacing}
         />
       ) : (
         <StandardSheetView 
@@ -918,6 +1011,10 @@ const [isTransposerOpen, setIsTransposerOpen] = useState(false);
       <ScrubberOverlay 
         sections={sections} currentSectionIndex={currentSectionIndex} queuedTrackIndex={queuedTrackIndex} currentTrackIndex={currentTrackIndex}
         queuedSectionIndex={queuedSectionIndex} isPlayingFlow={isPlayingFlow} sectionRefs={sectionRefs} isAutoScrollingRef={isAutoScrollingRef} setShowSyncBack={setShowSyncBack}
+        // ✅ SURGICAL ADDITIONS
+        isSimplifiedMode={isSimplifiedMode}
+        tracksList={tracksList}
+        handleUserSelectTrackBadge={handleUserSelectTrackBadge}
       />
 
       {/* ✅ Hide the Scrubber in Zen Mode */}
@@ -925,6 +1022,10 @@ const [isTransposerOpen, setIsTransposerOpen] = useState(false);
         <ScrubberOverlay 
           sections={sections} currentSectionIndex={currentSectionIndex} queuedTrackIndex={queuedTrackIndex} currentTrackIndex={currentTrackIndex}
           queuedSectionIndex={queuedSectionIndex} isPlayingFlow={isPlayingFlow} sectionRefs={sectionRefs} isAutoScrollingRef={isAutoScrollingRef} setShowSyncBack={setShowSyncBack}
+          // ✅ SURGICAL ADDITIONS
+          isSimplifiedMode={isSimplifiedMode}
+          tracksList={tracksList}
+          handleUserSelectTrackBadge={handleUserSelectTrackBadge}
         />
       )}
 
@@ -986,7 +1087,10 @@ const [isTransposerOpen, setIsTransposerOpen] = useState(false);
       />
 
       <AddBlockModal 
-        isAddBlockModalOpen={isAddBlockModalOpen} setIsAddBlockModalOpen={setIsAddBlockModalOpen} availableSectionNames={[]}
+        isAddBlockModalOpen={isAddBlockModalOpen} 
+        setIsAddBlockModalOpen={setIsAddBlockModalOpen} 
+        // ✅ SURGICAL FIX: Feed the smart database results into the modal
+        availableSectionNames={availableSongSections}
         handleModalAppendNewSectionItem={async (name) => {
           if (!activeSong) return;
           let sectionContent = sections.find(s => s.section_name === name)?.content;
