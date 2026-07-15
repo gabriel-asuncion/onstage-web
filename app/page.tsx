@@ -44,16 +44,41 @@ export default function Home() {
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [isInstallable, setIsInstallable] = useState(false);
 
+  const [hasInstalledApp, setHasInstalledApp] = useState(false);
+  const [isInBrowserTab, setIsInBrowserTab] = useState(true);
+
   useEffect(() => {
-    // Listen for the browser signaling that the app is ready to be installed
+    // 1. Check if they are in the browser or already inside the standalone app
+    const isStandalone = window.matchMedia('(display-mode: standalone)').matches 
+                      || (window.navigator as any).standalone === true;
+    setIsInBrowserTab(!isStandalone);
+
+    // 2. Check our local memory to see if they installed OnPraise in the past
+    if (localStorage.getItem('onpraise_app_installed') === 'true') {
+      setHasInstalledApp(true);
+    }
+
+    // 3. Listen for the native install prompt
     const handleBeforeInstallPrompt = (e: Event) => {
-      e.preventDefault(); // Stop Chrome from showing the default mini-infobar
+      e.preventDefault();
       setDeferredPrompt(e);
-      setIsInstallable(true); // Reveal our custom button
+      setIsInstallable(true);
+    };
+
+    // 4. Listen for the exact moment they finish installing it!
+    const handleAppInstalled = () => {
+      localStorage.setItem('onpraise_app_installed', 'true');
+      setHasInstalledApp(true);
+      setIsInstallable(false);
     };
 
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-    return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('appinstalled', handleAppInstalled);
+    
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', handleAppInstalled);
+    };
   }, []);
 
   const handleInstallClick = async () => {
@@ -347,7 +372,25 @@ export default function Home() {
       <div className="absolute bottom-0 left-0 w-full z-50 p-6 pb-10 pointer-events-auto flex flex-col items-center justify-center bg-gradient-to-t from-[#EFF6FF] via-[#EFF6FF]/80 to-transparent">
         
         {/* ✅ SURGICAL ADDITION: Native PWA Install Button */}
-        
+        {/* ✅ SHOW THIS IF THEY HAVE NOT INSTALLED IT YET */}
+        {isInstallable && !hasInstalledApp && isInBrowserTab && (
+          <button
+            onClick={handleInstallClick}
+            className="w-full max-w-sm mb-3 bg-zinc-900 hover:bg-zinc-800 text-white font-black text-sm uppercase tracking-wider py-4 px-4 rounded-2xl shadow-xl transition-all active:scale-95 flex items-center justify-center gap-3 cursor-pointer"
+          >
+            <span className="text-lg">📱</span> Install to Home Screen
+          </button>
+        )}
+
+        {/* ✅ SHOW THIS IF IT IS INSTALLED, BUT THEY ARE IN THE BROWSER */}
+        {hasInstalledApp && isInBrowserTab && (
+          <a
+            href="web+onpraise://open"
+            className="w-full max-w-sm mb-3 bg-[#009DFE] hover:bg-[#1954D5] text-white font-black text-sm uppercase tracking-wider py-4 px-4 rounded-2xl shadow-xl transition-all active:scale-95 flex items-center justify-center gap-3 cursor-pointer text-center decoration-transparent"
+          >
+            <span className="text-lg">🚀</span> Open OnPraise App
+          </a>
+        )}
         {isInstallable && (
           <button
             onClick={handleInstallClick}

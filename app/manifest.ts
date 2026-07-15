@@ -9,6 +9,13 @@ export default function manifest(): MetadataRoute.Manifest {
     display: 'standalone',
     background_color: '#1954D5',
     theme_color: '#009DFE',
+    // ✅ SURGICAL ADDITION: Registering the custom protocol
+    protocol_handlers: [
+      {
+        protocol: "web+onpraise",
+        url: "/?mode=%s"
+      }
+    ] as any, // 'as any' prevents Next.js strict typing from throwing a false error here
     icons: [
       {
         src: '/icon-192x192.png',
