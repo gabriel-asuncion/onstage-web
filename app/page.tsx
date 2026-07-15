@@ -47,6 +47,8 @@ export default function Home() {
   const [hasInstalledApp, setHasInstalledApp] = useState(false);
   const [isInBrowserTab, setIsInBrowserTab] = useState(true);
 
+  const [showInstallSuccessModal, setShowInstallSuccessModal] = useState(false);
+
   useEffect(() => {
     // 1. Check if they are in the browser or already inside the standalone app
     const isStandalone = window.matchMedia('(display-mode: standalone)').matches 
@@ -70,6 +72,7 @@ export default function Home() {
       localStorage.setItem('onpraise_app_installed', 'true');
       setHasInstalledApp(true);
       setIsInstallable(false);
+      setShowInstallSuccessModal(true);
     };
 
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
@@ -391,14 +394,6 @@ export default function Home() {
             <span className="text-lg">🚀</span> Open OnPraise App
           </a>
         )}
-        {isInstallable && (
-          <button
-            onClick={handleInstallClick}
-            className="w-full max-w-sm mb-3 bg-zinc-900 hover:bg-zinc-800 text-white font-black text-sm uppercase tracking-wider py-4 px-4 rounded-2xl shadow-xl transition-all active:scale-95 flex items-center justify-center gap-3 cursor-pointer"
-          >
-            <span className="text-lg">📱</span> Install to Home Screen
-          </button>
-        )}
         <button
           onClick={handleGoogleLogin}
           className="w-full max-w-sm bg-white hover:bg-zinc-50 text-zinc-800 font-black text-sm uppercase tracking-wider py-4 px-4 rounded-2xl border border-zinc-200/80 shadow-[0_8px_30px_rgb(0,0,0,0.08)] transition-all active:scale-95 flex items-center justify-center gap-3 cursor-pointer"
@@ -412,7 +407,52 @@ export default function Home() {
           Continue with Google
         </button>
       </div>
+      
+    {/* ======================================================= */}
+      {/* ✅ SURGICAL ADDITION: INSTALLATION SUCCESS MODAL          */}
+      {/* ======================================================= */}
+      {showInstallSuccessModal && (
+        <div className="fixed inset-0 z-[200000] flex items-center justify-center p-4 bg-zinc-950/40 backdrop-blur-sm animate-in fade-in duration-200 pointer-events-auto">
+          <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-sm p-8 flex flex-col items-center text-center animate-in zoom-in-95 slide-in-from-bottom-4 duration-300 relative overflow-hidden">
+            
+            {/* Background Confetti/Blob effect */}
+            <div className="absolute -top-10 -right-10 w-32 h-32 bg-blue-500/10 rounded-full blur-2xl" />
+            <div className="absolute -bottom-10 -left-10 w-32 h-32 bg-amber-500/10 rounded-full blur-2xl" />
 
+            <div className="w-20 h-20 bg-blue-50 rounded-full flex items-center justify-center mb-6 shadow-inner relative">
+              <span className="text-4xl relative z-10">🎉</span>
+              <div className="absolute inset-0 border-4 border-blue-500 rounded-full animate-ping opacity-20" />
+            </div>
+            
+            <h3 className="text-2xl font-black text-zinc-900 tracking-tight mb-2">
+              App Installed!
+            </h3>
+            <p className="text-[13px] font-bold text-zinc-500 leading-relaxed mb-8">
+              OnPraise is now on your home screen. You can safely close this browser tab and launch the app directly from your phone.
+            </p>
+
+            <div className="w-full space-y-3 relative z-10">
+              <a
+                href="web+onpraise://open"
+                onClick={() => {
+                  // Wait a second, then close the modal so they aren't trapped if the protocol fails
+                  setTimeout(() => setShowInstallSuccessModal(false), 1000);
+                }}
+                className="w-full bg-[#009DFE] hover:bg-[#1954D5] text-white font-black text-sm uppercase tracking-wider py-4 px-4 rounded-xl shadow-md transition-all active:scale-95 flex items-center justify-center gap-2 cursor-pointer decoration-transparent block"
+              >
+                Launch OnPraise App
+              </a>
+              <button
+                onClick={() => setShowInstallSuccessModal(false)}
+                className="w-full bg-zinc-100 hover:bg-zinc-200 text-zinc-600 font-black text-[11px] uppercase tracking-widest py-3.5 px-4 rounded-xl transition-all active:scale-95 flex items-center justify-center"
+              >
+                Close & Find on Home Screen
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
     </main>
   );
 }
