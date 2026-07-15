@@ -603,12 +603,29 @@ export default function SoloPracticeRoomPage() {
       )}
 
       {isSimplifiedMode ? (
-        <SimplifiedStackView 
-          memoizedSongAstTree={memoizedSongAstTree} currentSectionIndex={currentSectionIndex} queuedSectionIndex={queuedSectionIndex}
-          queuedTrackIndex={null} currentTrackIndex={0} activeLineIndex={activeLineIndex}
-          chordFormat={chordFormat} activeDisplayKey={activeDisplayKey} getSectionDurationString={getSectionDurationString}
-          simplifiedProgressBarRef={simplifiedProgressBarRef} upcomingTrackItem={null}
-        />
+          <SimplifiedStackView 
+            memoizedSongAstTree={memoizedSongAstTree} 
+            currentSectionIndex={currentSectionIndex}
+            queuedSectionIndex={queuedSectionIndex}
+            queuedTrackIndex={null} 
+            currentTrackIndex={0} 
+            activeLineIndex={activeLineIndex}
+            chordFormat={chordFormat} 
+            activeDisplayKey={activeDisplayKey} 
+            getSectionDurationString={getSectionDurationString}
+            // ✅ SURGICAL FIX: Passed the missing progress bar ref
+            simplifiedProgressBarRef={simplifiedProgressBarRef}
+            upcomingTrackItem={null}
+            showChords={showChords}
+            lyricsFontSize={lyricsFontSize}
+            lineSpacing={lineSpacing}
+            handleSectionInteractiveSelection={(idx: number) => {
+              console.log("Section clicked in solo mode:", idx);
+            }}
+            handleUserSelectTrackBadge={(idx: number) => {
+              // Not used in solo mode, but TS requires it
+            }}
+          />
       ) : (
         <StandardSheetView 
           memoizedSongAstTree={memoizedSongAstTree} isPlayingFlow={isPlayingFlow} playingTrackIndex={0}
