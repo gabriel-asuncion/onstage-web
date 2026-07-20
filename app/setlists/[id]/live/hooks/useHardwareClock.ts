@@ -156,9 +156,10 @@ export function useHardwareClock(config: HardwareClockConfig) {
         elapsedMs = c.getGlobalTime() - c.mdSectionStartTimeRef.current;
       }
       
-      if (elapsedMs < -500 && !c.isYtBackingTrackStartRef.current) {
+      // ✅ SURGICAL FIX: Show the 5-second visual countdown for ALL users and ALL tracks
+      if (elapsedMs < -500) {
         const secondsLeft = Math.ceil(Math.abs(elapsedMs) / 1000);
-        if (secondsLeft <= 3 && secondsLeft > 0) {
+        if (secondsLeft <= 5 && secondsLeft > 0) {
           if (c.countdownValueRef.current !== secondsLeft) {
             c.countdownValueRef.current = secondsLeft;
             c.setCountdownValue(secondsLeft);

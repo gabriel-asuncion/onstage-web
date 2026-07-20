@@ -469,7 +469,9 @@ const [isTransposerOpen, setIsTransposerOpen] = useState(false);
     isPlayingRef.current = true;
     setIsPlayingFlow(true);
 
-    const delayMs = useCountdown ? 3150 : 150; 
+    // ✅ SURGICAL FIX: Deterministic 5-Second Buffer
+    // Completely neutralizes network latency by scheduling execution in the future
+    const delayMs = 5000; 
     const startTimestamp = forcedStartTimestamp ?? (getGlobalTime() + delayMs);
     mdSectionStartTimeRef.current = startTimestamp;
 
@@ -607,8 +609,15 @@ const [isTransposerOpen, setIsTransposerOpen] = useState(false);
             }, timeUntilPlayMs);
           } catch(e) {}
         }
-        if (timeUntilJumpMs >= 3000 && !isYtBackingTrackStartRef.current) {
-          triggerMetronomeSound(2, absoluteHardwareTimeAtJump - 3); triggerMetronomeSound(2, absoluteHardwareTimeAtJump - 2); triggerMetronomeSound(1, absoluteHardwareTimeAtJump - 1); 
+        
+        // ✅ SURGICAL FIX: The "Drummer" Count-in
+        // Plays 4 perfect clicks matching the song's tempo right before Beat 1
+        if (timeUntilJumpMs >= 4000) {
+          const countInSpeed = 60 / (activeSongRef.current?.tempo || 75);
+          triggerMetronomeSound(2, absoluteHardwareTimeAtJump - (countInSpeed * 4));
+          triggerMetronomeSound(2, absoluteHardwareTimeAtJump - (countInSpeed * 3));
+          triggerMetronomeSound(2, absoluteHardwareTimeAtJump - (countInSpeed * 2));
+          triggerMetronomeSound(1, absoluteHardwareTimeAtJump - (countInSpeed * 1)); 
         }
       }
     }
@@ -707,29 +716,15 @@ const [isTransposerOpen, setIsTransposerOpen] = useState(false);
       handleResetFlowTrigger();
     } else {
       if (sections.length === 0 || !activeSong) return;
-      const triggerYoutubeSync = () => {
-        if (ytPlayerRef.current && typeof ytPlayerRef.current.playVideo === 'function') {
-          setIsYtBuffering(true); ytSyncPendingRef.current = true;
-          let targetVideoTime = 0;
-          if (currentSectionIndexRef.current > 0) {
-            const beatSpeedSecs = 60 / (activeSongRef.current?.tempo || 75);
-            targetVideoTime = ((activeSongRef.current?.youtube_sync_offset_ms || 0) / 1000) + ((beatMapRef.current.sectionStartBeats[currentSectionIndexRef.current] || 0) * beatSpeedSecs);
-          }
-          if (Math.abs((ytPlayerRef.current.getCurrentTime() || 0) - targetVideoTime) > 0.5) ytPlayerRef.current.seekTo(targetVideoTime, true);
-          ytPlayerRef.current.playVideo();
-        } else { executeStartSequence(true); }
-      };
 
+      // ✅ SURGICAL FIX: Cleaned up dead code and enforced the safe start for both YT and Metronome
       if (playClickTimeoutRef.current) {
         clearTimeout(playClickTimeoutRef.current); playClickTimeoutRef.current = null;
-        // ✅ ALWAYS force the countdown buffer phase if YouTube is enabled
-        if (isYoutubeSyncEnabled && youtubeVideoId) executeStartSequence(true, undefined, true); 
-        else executeStartSequence(true); 
+        executeStartSequence(true, undefined, isYoutubeSyncEnabled && !!youtubeVideoId); 
       } else {
         playClickTimeoutRef.current = setTimeout(() => {
           playClickTimeoutRef.current = null;
-          if (isYoutubeSyncEnabled && youtubeVideoId) executeStartSequence(true, undefined, true); 
-          else executeStartSequence(false);
+          executeStartSequence(true, undefined, isYoutubeSyncEnabled && !!youtubeVideoId);
         }, 250);
       }
     }
@@ -1191,17 +1186,32 @@ const [isTransposerOpen, setIsTransposerOpen] = useState(false);
         initAudioContext={initAudioContext} 
       />
 
-      {countdownValue !== null && (
-        <div className="fixed inset-0 z-[400000] bg-zinc-950/90 backdrop-blur-md flex flex-col items-center justify-center animate-in fade-in duration-100 select-none touch-none">
-          <span className="text-blue-500 font-black tracking-widest uppercase mb-4 text-xl md:text-2xl animate-pulse">Pre-Warming Sync Engine</span>
-          <span className="text-[150px] md:text-[250px] font-black text-white leading-none tracking-tighter drop-shadow-2xl">{countdownValue}</span>
-        </div>
-      )}
       <div className="absolute opacity-0 pointer-events-none w-[1px] h-[1px] overflow-hidden -z-50"><div id="yt-live-player-container"></div></div>
-      {isYtBuffering && (
+      
+      {/* ✅ SURGICAL FIX: Unified Pre-Roll & Buffering Overlay */}
+      {(countdownValue !== null || isYtBuffering) && (
         <div className="fixed inset-0 z-[400000] bg-zinc-950/90 backdrop-blur-md flex flex-col items-center justify-center animate-in fade-in duration-100 select-none touch-none">
-          <span className="text-red-500 font-black tracking-widest uppercase mb-4 text-xl md:text-2xl animate-pulse">Buffering Backing Track</span>
-          <span className="text-[100px] md:text-[150px] font-black text-white leading-none tracking-tighter drop-shadow-2xl">∞</span>
+          {countdownValue !== null ? (
+            <>
+              {/* Prioritize the countdown, but acknowledge buffering if it's happening */}
+              <span className={`font-black tracking-widest uppercase mb-4 text-xl md:text-2xl animate-pulse ${isYtBuffering ? 'text-amber-500' : 'text-blue-500'}`}>
+                {isYtBuffering ? "Buffering & Syncing Engine" : "Pre-Warming Sync Engine"}
+              </span>
+              <span className="text-[150px] md:text-[250px] font-black text-white leading-none tracking-tighter drop-shadow-2xl">
+                {countdownValue}
+              </span>
+            </>
+          ) : (
+            <>
+              {/* Fallback to infinity if the countdown finishes but we are still waiting on network lag */}
+              <span className="text-red-500 font-black tracking-widest uppercase mb-4 text-xl md:text-2xl animate-pulse">
+                Buffering Backing Track
+              </span>
+              <span className="text-[100px] md:text-[150px] font-black text-white leading-none tracking-tighter drop-shadow-2xl">
+                ∞
+              </span>
+            </>
+          )}
         </div>
       )}
 

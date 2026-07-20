@@ -159,6 +159,7 @@ export default function SongEditPage() {
   
   const ytPlayerRef = useRef<any>(null);
   const isTestingSyncRef = useRef<boolean>(false);
+  const testLastScheduledBeatRef = useRef<number>(-1); // ✅ ADDED: Tracks test beats
   const audioCtxRef = useRef<AudioContext | null>(null);
 
   const isYtPlayerReadyRef = useRef<boolean>(false);
@@ -554,6 +555,7 @@ export default function SongEditPage() {
             // Only used to turn off the UI timer when the user manually pauses
             if (event.data === 2 || event.data === 0) {
               setIsTestingActive(false);
+              isTestingSyncRef.current = false; // ✅ Kills the dynamic loop
               if (testTimerRafRef.current) cancelAnimationFrame(testTimerRafRef.current);
             }
           }
@@ -587,7 +589,7 @@ export default function SongEditPage() {
     }
     if (audioCtxRef.current?.state === "suspended") audioCtxRef.current.resume();
     
-    // Kill existing clicks
+    // ✅ SURGICAL FIX: Instantly kill any currently playing clicks to prevent stacking
     activeOscillatorsRef.current.forEach(osc => { try { osc.stop(); osc.disconnect(); } catch (e) {} });
     activeOscillatorsRef.current = [];
     if (syncWorkerRef.current) { syncWorkerRef.current.terminate(); syncWorkerRef.current = null; }
@@ -596,77 +598,107 @@ export default function SongEditPage() {
       console.warn("YouTube Player is still initializing."); return;
     }
 
-    // ✅ STEP 1: Pause and Reset YouTube (Hold)
+    // ✅ STEP 1: Seek to 0 and hit play immediately
     try {
-      ytPlayerRef.current.pauseVideo();
       ytPlayerRef.current.seekTo(0, true);
+      ytPlayerRef.current.playVideo();
     } catch(e) {}
 
-    // ✅ STEP 2: Calculate Absolute Math (Fire Point)
-    const bpm = parseInt(liveTempoRef.current) || 75;
-    const beatDurationSecs = 60 / bpm;
-    const currentHardwareTime = audioCtxRef.current.currentTime;
-    
-    // We will tell YouTube to start exactly 300ms in the future to allow the buffer to settle.
-    const PRE_ROLL_SECS = 0.300; 
-    const absoluteVideoStartTime = currentHardwareTime + PRE_ROLL_SECS;
-    
-    // The metronome is locked to the Video Start Time + the User's Custom Offset
-    const offsetSecs = liveOffsetRef.current / 1000;
-    const absoluteMetronomeAnchor = absoluteVideoStartTime + offsetSecs;
+    setIsTestingActive(true);
+    isTestingSyncRef.current = true;
 
-    // ✅ STEP 3: Schedule the Flawless Metronome Clicks
-    for (let i = 0; i < 16; i++) {
-      const targetBeatTime = absoluteMetronomeAnchor + (i * beatDurationSecs);
-      
-      const osc = audioCtxRef.current.createOscillator();
-      const gain = audioCtxRef.current.createGain();
-      osc.connect(gain);
-      gain.connect(audioCtxRef.current.destination);
-      osc.frequency.value = i % 4 === 0 ? 1200 : 800; 
-      osc.type = "sine";
-      
-      gain.gain.setValueAtTime(0, targetBeatTime);
-      gain.gain.linearRampToValueAtTime(0.5, targetBeatTime + 0.005);
-      gain.gain.exponentialRampToValueAtTime(0.001, targetBeatTime + 0.1);
-      
-      osc.start(targetBeatTime);
-      osc.stop(targetBeatTime + 0.1);
-      activeOscillatorsRef.current.push(osc);
-    }
+    // Reset trackers
+    let testAnchorVideoTime: number | null = null;
+    let testAnchorAudioTime: number | null = null;
 
-    // ✅ STEP 4: Fire YouTube precisely using an isolated Web Worker (Bypasses Main Thread Lag)
-    const workerCode = `
-      self.onmessage = function(e) {
-        if (e.data.action === 'fire') {
-          setTimeout(() => { postMessage('EXECUTE'); }, e.data.delayMs);
+    // ✅ STEP 2: The Resilient Rubber-Band Loop
+    const trackTime = () => {
+      if (!isTestingSyncRef.current) return;
+
+      const playerState = ytPlayerRef.current.getPlayerState();
+      
+      // 1 = Playing, 3 = Buffering. We track time for both.
+      if (playerState === 1 || playerState === 3) { 
+        const currentVideoTime = ytPlayerRef.current.getCurrentTime() || 0;
+        const audioTimeNow = audioCtxRef.current!.currentTime;
+
+        const offsetSecs = liveOffsetRef.current / 1000;
+        const bpm = parseInt(liveTempoRef.current) || 75;
+        const beatDurationSecs = 60 / bpm;
+
+        // Establish sync anchor
+        if (testAnchorVideoTime === null || testAnchorAudioTime === null) {
+          testAnchorVideoTime = currentVideoTime;
+          testAnchorAudioTime = audioTimeNow;
+          testLastScheduledBeatRef.current = Math.floor((currentVideoTime - offsetSecs) / beatDurationSecs) - 1;
         }
-      };
-    `;
-    const blob = new window.Blob([workerCode], { type: 'application/javascript' });
-    syncWorkerRef.current = new Worker(URL.createObjectURL(blob));
-    
-    syncWorkerRef.current.onmessage = (e) => {
-      if (e.data === 'EXECUTE') {
-        try { ytPlayerRef.current.playVideo(); } catch(err) {}
-        
-        // Start the UI Timer
-        setIsTestingActive(true);
-        const trackTime = () => {
-          if (ytPlayerRef.current && typeof ytPlayerRef.current.getCurrentTime === 'function' && liveTimeDisplayRef.current) {
-             const ms = Math.floor(ytPlayerRef.current.getCurrentTime() * 1000);
-             liveTimeDisplayRef.current.innerText = `${ms} ms`;
+
+        // Rubber-band correction: Detects iframe jitter AND massive seekTo() delays
+        // ✅ SURGICAL FIX: Added the "!" non-null assertions to satisfy TypeScript
+        const expectedVideoTime = testAnchorVideoTime! + (audioTimeNow - testAnchorAudioTime!);
+        if (Math.abs(expectedVideoTime - currentVideoTime) > 0.150) {
+          testAnchorVideoTime = currentVideoTime;
+          testAnchorAudioTime = audioTimeNow;
+          
+          // ✅ SURGICAL FIX: If the video jumps (e.g. finally finishes seeking to 0), 
+          // recalculate the beat index and kill the old clicks immediately!
+          testLastScheduledBeatRef.current = Math.floor((currentVideoTime - offsetSecs) / beatDurationSecs) - 1;
+          activeOscillatorsRef.current.forEach(osc => { try { osc.stop(); osc.disconnect(); } catch (e) {} });
+          activeOscillatorsRef.current = [];
+        }
+
+        let nextBeatIndex = testLastScheduledBeatRef.current + 1;
+        let nextBeatVideoTime = offsetSecs + (nextBeatIndex * beatDurationSecs);
+
+        // Schedule clicks dynamically, looking 0.5s into the future
+        while (nextBeatVideoTime < currentVideoTime + 0.5) {
+          // ✅ SURGICAL FIX: Prevent "Phantom Beats" from playing before the offset!
+          if (nextBeatVideoTime >= currentVideoTime && nextBeatIndex >= 0) {
+            const timeUntilBeat = nextBeatVideoTime - currentVideoTime;
+            const playTime = audioTimeNow + timeUntilBeat;
+
+            const osc = audioCtxRef.current!.createOscillator();
+            const gain = audioCtxRef.current!.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtxRef.current!.destination);
+            osc.frequency.value = nextBeatIndex % 4 === 0 ? 1200 : 800; // Accent on downbeats
+            osc.type = "sine";
+
+            gain.gain.setValueAtTime(0, playTime);
+            gain.gain.linearRampToValueAtTime(0.5, playTime + 0.005);
+            gain.gain.exponentialRampToValueAtTime(0.001, playTime + 0.1);
+
+            // Clean up the oscillator array when it finishes playing to prevent memory leaks
+            osc.onended = () => {
+              const idx = activeOscillatorsRef.current.indexOf(osc);
+              if (idx > -1) activeOscillatorsRef.current.splice(idx, 1);
+            };
+
+            osc.start(playTime);
+            osc.stop(playTime + 0.1);
+            activeOscillatorsRef.current.push(osc);
           }
-          testTimerRafRef.current = requestAnimationFrame(trackTime);
-        };
-        if (testTimerRafRef.current) cancelAnimationFrame(testTimerRafRef.current);
-        testTimerRafRef.current = requestAnimationFrame(trackTime);
+          testLastScheduledBeatRef.current = nextBeatIndex;
+          nextBeatIndex++;
+          nextBeatVideoTime = offsetSecs + (nextBeatIndex * beatDurationSecs);
+        }
+
+        // Update UI timer
+        if (liveTimeDisplayRef.current) {
+          const ms = Math.floor(currentVideoTime * 1000);
+          liveTimeDisplayRef.current.innerText = `${ms} ms`;
+        }
+      } else {
+        // Reset anchor if paused or ended
+        testAnchorVideoTime = null;
+        testAnchorAudioTime = null;
       }
+
+      testTimerRafRef.current = requestAnimationFrame(trackTime);
     };
 
-    // Calculate how many milliseconds are left until the exact pre-roll point
-    const msUntilFire = Math.max(0, (absoluteVideoStartTime - audioCtxRef.current.currentTime) * 1000);
-    syncWorkerRef.current.postMessage({ action: 'fire', delayMs: msUntilFire });
+    if (testTimerRafRef.current) cancelAnimationFrame(testTimerRafRef.current);
+    testTimerRafRef.current = requestAnimationFrame(trackTime);
   };
 
   const handleCaptureSyncPoint = () => {
